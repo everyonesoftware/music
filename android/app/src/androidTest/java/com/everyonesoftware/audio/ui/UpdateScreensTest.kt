@@ -33,30 +33,31 @@ class UpdateScreensTest {
         compose.setContent { AudioTheme { AudioApp(state, actions) { null } } }
     }
 
-    @Test fun libraryNotificationRoutesToUpdatesWithoutReplacingLibraryOrMiniPlayer() {
+    @Test fun libraryNotificationRoutesToSettingsWithoutReplacingLibraryOrMiniPlayer() {
         render(state(Screen.PLAYLISTS, UpdateUiState(stage = UpdateStage.AVAILABLE, release = release)))
         compose.onNodeWithText("Playlists").assertIsDisplayed()
         compose.onNodeWithText("Albums").assertIsDisplayed()
         compose.onNodeWithTag("mini-player").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Update available").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(listOf(Screen.UPDATES), actions.screens); assertEquals(0, actions.pauses) }
+        compose.onNodeWithTag("settings-update-dot", useUnmergedTree = true).assertIsDisplayed()
+        compose.onNodeWithContentDescription("Settings, update available").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(listOf(Screen.SETTINGS), actions.screens); assertEquals(0, actions.pauses) }
     }
 
     @Test fun playerNotificationPreservesQueueAndPlaylistContext() {
         render(state(Screen.PLAYER, UpdateUiState(stage = UpdateStage.AVAILABLE, release = release)).copy(playing = true))
         compose.onNodeWithText("Test playlist").assertIsDisplayed()
         compose.onNodeWithTag("player-queue").assertIsDisplayed().performClick()
-        compose.onNodeWithContentDescription("Update available").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("Settings, update available").assertIsDisplayed().performClick()
         compose.onNodeWithTag("player-toggle").assertIsDisplayed()
-        compose.runOnIdle { assertEquals(listOf(Screen.QUEUE, Screen.UPDATES), actions.screens); assertEquals(0, actions.pauses) }
+        compose.runOnIdle { assertEquals(listOf(Screen.QUEUE, Screen.SETTINGS), actions.screens); assertEquals(0, actions.pauses) }
     }
 
     @Test fun noNotificationWhenThereIsNoRelease() {
         val current = mutableStateOf(state(Screen.PLAYLISTS))
         compose.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
-        compose.onNodeWithContentDescription("Update available").assertDoesNotExist()
+        compose.onNodeWithTag("settings-update-dot", useUnmergedTree = true).assertDoesNotExist()
         compose.runOnIdle { current.value = current.value.copy(screen = Screen.PLAYER) }
-        compose.onNodeWithContentDescription("Update available").assertDoesNotExist()
+        compose.onNodeWithTag("settings-update-dot", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test fun settingsEntryPreservesConnectionAndLibraryControls() {
@@ -146,14 +147,14 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(1, actions.installs) }
     }
 
-    @Test fun updatesSelectsSettingsPreservesFullWidthChromeAndReturnsToCaller() {
+    @Test fun updatesPreservesFullWidthMiniPlayerAndReturnsToCaller() {
         render(state().copy(updatesReturnScreen = Screen.PLAYER))
-        compose.onNodeWithTag("tab-settings").assertIsSelected()
+        compose.onNodeWithTag("settings-gear").assertIsDisplayed()
         val mini = compose.onNodeWithTag("mini-player").fetchSemanticsNode().boundsInRoot
-        val nav = compose.onNodeWithTag("bottom-navigation").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
         assertEquals(root.width, mini.width, 1f)
-        assertEquals(mini.bottom, nav.top, 1f)
+        org.junit.Assert.assertTrue(mini.bottom <= root.bottom)
         compose.onNodeWithContentDescription("Back").performClick()
         compose.runOnIdle { assertEquals(listOf(Screen.PLAYER), actions.screens) }
     }
@@ -180,11 +181,11 @@ class UpdateScreensTest {
         }
     }
 
-    @Test fun updatesWithoutAQueueHasNoSecondPlayerAndStillSelectsSettings() {
+    @Test fun updatesWithoutAQueueHasNoSecondPlayerAndStillHasSettings() {
         render(state().copy(session = null, connection = null))
         compose.onNodeWithTag("mini-player").assertDoesNotExist()
         compose.onNodeWithTag("player-toggle").assertDoesNotExist()
-        compose.onNodeWithTag("tab-settings").assertIsSelected()
+        compose.onNodeWithTag("settings-gear").assertIsDisplayed()
     }
 
     private class RecordingActions : AudioUiActions {

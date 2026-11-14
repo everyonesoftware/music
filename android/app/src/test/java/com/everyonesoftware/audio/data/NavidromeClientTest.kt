@@ -77,6 +77,33 @@ class NavidromeClientTest {
             assertEquals("p &/雪", server.takeRequest().requestUrl!!.queryParameter("id"))
         }
     }
+    @Test fun searchSongsUsesServerQueryAndParsesSongMetadata() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(""", "searchResult3":{"song":[{"id":"remote","title":"Only on server","artist":"Artist","album":"Album","coverArt":"cover","duration":93,"userRating":4},{"id":"minimal","title":"Minimal"}]}"""))
+            val songs = client(server).searchSongs("a+b &雪")
+            assertEquals(listOf(Song("remote", "Only on server", "Artist", "Album", "cover", 93, 4), Song("minimal", "Minimal", "Unknown artist")), songs)
+            val url = server.takeRequest().requestUrl!!
+            assertEquals("/music/rest/search3.view", url.encodedPath)
+            assertEquals("a+b &雪", url.queryParameter("query"))
+            assertEquals("0", url.queryParameter("artistCount"))
+            assertEquals("0", url.queryParameter("albumCount"))
+            assertEquals("100", url.queryParameter("songCount"))
+        }
+    }
+
+    @Test fun searchSongsSupportsEmptyResultsAndRejectsMalformedSongs() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(""", "searchResult3":{}"""))
+            server.enqueue(ok(""", "searchResult3":{"song":[{"id":"missing-title"}]}"""))
+            server.enqueue(MockResponse().setResponseCode(503))
+            val client = client(server)
+            assertTrue(client.searchSongs("empty").isEmpty())
+            rejects<NavidromeException> { runBlocking { client.searchSongs("malformed") } }
+            rejects<NavidromeException> { runBlocking { client.searchSongs("unavailable") } }
+            Unit
+        }
+    }
+
     @Test fun parsesAlbumListAndAlbumTracks() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(ok(",\"albumList2\":{\"album\":[{\"id\":\"a1\",\"name\":\"Album One\",\"artist\":\"Artist\",\"coverArt\":\"art-a1\",\"songCount\":2,\"year\":2020}]}"))

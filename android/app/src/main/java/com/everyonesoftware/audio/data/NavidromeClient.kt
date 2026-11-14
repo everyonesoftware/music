@@ -33,6 +33,13 @@ class NavidromeClient(
     suspend fun playlists(): List<Playlist> = api("getPlaylists").obj("playlists").items("playlist").map {
         Playlist(it.required("id"), it.required("name"), it.number("songCount"), it.text("coverArt"), it.validUntil())
     }
+    suspend fun searchSongs(query: String): List<Song> = api("search3", "query" to query,
+        "artistCount" to "0", "albumCount" to "0", "songCount" to "100")
+        .obj("searchResult3").items("song").map {
+            Song(it.required("id"), it.required("title"), it.text("artist") ?: "Unknown artist", it.text("album") ?: "",
+                it.text("coverArt"), it.number("duration"), it.number("userRating"))
+        }
+
     suspend fun albums(size: Int = 100, offset: Int = 0): List<Album> {
         require(size in 1..500 && offset >= 0) { "Album page is out of range." }
         return api("getAlbumList2", "type" to "alphabeticalByName", "size" to size.toString(), "offset" to offset.toString())

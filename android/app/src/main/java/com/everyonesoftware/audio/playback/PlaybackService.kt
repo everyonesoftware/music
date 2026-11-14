@@ -30,6 +30,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.SessionResult
 import com.everyonesoftware.audio.AudioApplication
 import com.everyonesoftware.audio.AudioGraph
+import com.everyonesoftware.audio.MainActivity
 import com.everyonesoftware.audio.BuildConfig
 import com.everyonesoftware.audio.PlaybackSnapshot
 import com.everyonesoftware.audio.R
@@ -200,6 +201,7 @@ class PlaybackService : MediaLibraryService() {
                 .setIconUri(Uri.parse("android.resource://$packageName/${R.drawable.ic_shuffle}"))
                 .setSessionCommand(SessionCommand(CarLibrary.SHUFFLE_PLAYLIST, Bundle.EMPTY)).build()))
         packageManager.getLaunchIntentForPackage(packageName)?.let { intent ->
+            intent.action = MainActivity.ACTION_OPEN_PLAYER
             builder.setSessionActivity(PendingIntent.getActivity(this, 0, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
         }

@@ -72,7 +72,7 @@ class AudioViewModelTest {
         } finally { onMain { owner.clear() }; server.shutdown() }
     }
 
-    @Test fun returningListenerLandsInFullPlayerWithExactPersistedQueue() = runBlocking {
+    @Test fun coldStartWithSavedSessionLandsInLibraryAndRestoresQueue() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val graph = AudioGraph(app)
         val id = "vm-returning-fixture"
@@ -85,7 +85,7 @@ class AudioViewModelTest {
             lateinit var model: AudioViewModel
             onMain { model = AudioViewModel(app, graph, false); owner.put("fixture", model) }
             until { !model.state.value.booting }
-            assertEquals(Screen.PLAYER, model.state.value.screen)
+            assertEquals(Screen.PLAYLISTS, model.state.value.screen)
             assertEquals(session, model.state.value.session)
             assertEquals(34567L, model.state.value.positionMs)
             assertFalse(model.state.value.playing)
@@ -118,6 +118,114 @@ class AudioViewModelTest {
             until { model.state.value.playlists.singleOrNull()?.songCount == 2 && !model.state.value.playlistsRefreshing }
             assertEquals(session, graph.session.value)
             assertEquals(2, graph.store.cachedPlaylists(id).single().songCount)
+        } finally {
+            onMain { owner.clear() }
+            graph.store.removeConnection(id)
+            server.shutdown()
+        }
+    }
+
+    @Test fun openingPlaylistLoadsContentsWithoutChangingListeningSession() = runBlocking {
+        withBrowseFixture { model, graph, _ ->
+            val session = graph.session.value
+            onMain { model.openPlaylist("p") }
+            until { !model.state.value.playlistLoading && model.state.value.playlistSongs.isNotEmpty() }
+            assertEquals(Screen.PLAYLIST, model.state.value.screen)
+            assertEquals("Browse", model.state.value.selectedPlaylist?.name)
+            assertEquals("remote", model.state.value.playlistSongs.single().id)
+            assertNull(model.state.value.playlistDetailError)
+            assertEquals(session, graph.session.value)
+            assertEquals(session, graph.store.session("vm-browse-fixture"))
+        }
+    }
+
+    @Test fun searchDebouncesAndDiscardsStaleServerSongs() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            val queries = java.util.concurrent.CopyOnWriteArrayList<String>()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    val query = request.requestUrl!!.queryParameter("query") ?: return MockResponse().setResponseCode(404)
+                    queries.add(query)
+                    return ok(""", "searchResult3":{"song":[{"id":"$query","title":"$query"}]}""")
+                        .setBodyDelay(if (query == "old") 800 else 0, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            }
+            val session = graph.session.value
+            onMain { model.search("discarded"); model.search("old") }
+            until { queries.contains("old") }
+            onMain { model.search("new") }
+            until { !model.state.value.searchLoading && model.state.value.searchSongs.singleOrNull()?.id == "new" }
+            Thread.sleep(900)
+            assertEquals(listOf("old", "new"), queries.toList())
+            assertEquals("new", model.state.value.searchQuery)
+            assertEquals("new", model.state.value.searchSongs.single().id)
+            assertNull(model.state.value.searchError)
+            assertEquals(session, graph.session.value)
+            onMain { model.search("   ") }
+            assertFalse(model.state.value.searchLoading)
+            assertTrue(model.state.value.searchSongs.isEmpty())
+        }
+    }
+
+    @Test fun browseErrorsDoNotChangeQueueAndAccountSwitchResetsBrowseState() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            val session = graph.session.value
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { model.openPlaylist("p"); model.search("failure") }
+            until { model.state.value.playlistDetailError != null && model.state.value.searchError != null }
+            assertFalse(model.state.value.playlistLoading)
+            assertFalse(model.state.value.searchLoading)
+            assertTrue(model.state.value.playlistSongs.isEmpty())
+            assertEquals(session, graph.session.value)
+            val second = "vm-browse-second"
+            try {
+                graph.store.saveConnection(Credentials(Connection(second, "Second", server.url("/").toString(), "vm-second-user"), "test-only-password"))
+                onMain { model.switchConnection(second) }
+                until { model.state.value.connection?.id == second && !model.state.value.loading }
+                assertNull(model.state.value.selectedPlaylist)
+                assertNull(model.state.value.playlistDetailError)
+                assertFalse(model.state.value.playlistLoading)
+                assertEquals("", model.state.value.searchQuery)
+                assertTrue(model.state.value.searchSongs.isEmpty())
+                assertNull(model.state.value.searchError)
+            } finally { graph.store.removeConnection(second) }
+        }
+    }
+
+    @Test fun singleSongPlaybackRequiresControllerBeforeMutatingSession() = runBlocking {
+        withBrowseFixture { model, graph, _ ->
+            val previous = graph.session.value
+            onMain { model.playSong(Song("chosen", "Chosen", "Artist")) }
+            until { model.state.value.error != null && !model.state.value.loading }
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
+    private suspend fun withBrowseFixture(block: suspend (AudioViewModel, AudioGraph, MockWebServer) -> Unit) {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val graph = AudioGraph(app)
+        val server = MockWebServer()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                request.path!!.contains("getPlaylists.view") -> ok(""", "playlists":{"playlist":[{"id":"p","name":"Browse","songCount":1}]}""")
+                request.path!!.contains("getPlaylist.view") -> ok(""", "playlist":{"entry":[{"id":"remote","title":"Remote song"}]}""")
+                request.path!!.contains("getAlbumList2.view") -> ok(""", "albumList2":{}""")
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val id = "vm-browse-fixture"
+        val owner = ViewModelStore()
+        try {
+            graph.store.saveConnection(Credentials(Connection(id, "Fixture", server.url("/").toString(), "vm-browse-user"), "test-only-password"))
+            graph.store.selectConnection(id)
+            graph.store.saveSession(ListeningSession(id, "old", "Playing", listOf(Song("old", "Old song", "Fixture")), positionMs = 4321L))
+            lateinit var model: AudioViewModel
+            onMain { model = AudioViewModel(app, graph, false); owner.put("fixture", model) }
+            until { !model.state.value.booting && model.state.value.playlists.isNotEmpty() && !model.state.value.playlistsRefreshing }
+            block(model, graph, server)
         } finally {
             onMain { owner.clear() }
             graph.store.removeConnection(id)

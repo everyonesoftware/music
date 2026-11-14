@@ -9,7 +9,7 @@ import com.everyonesoftware.audio.data.Song
 
 import com.everyonesoftware.audio.updates.UpdateUiState
 
-enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES }
+enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES }
 
 data class AudioUiState(
     val booting: Boolean = true,
@@ -19,6 +19,14 @@ data class AudioUiState(
     val libraries: List<MusicLibrary> = emptyList(),
     val selectedLibraries: Set<String> = emptySet(),
     val playlists: List<Playlist> = emptyList(),
+    val selectedPlaylist: Playlist? = null,
+    val playlistSongs: List<Song> = emptyList(),
+    val playlistLoading: Boolean = false,
+    val playlistDetailError: String? = null,
+    val searchQuery: String = "",
+    val searchSongs: List<Song> = emptyList(),
+    val searchLoading: Boolean = false,
+    val searchError: String? = null,
     val albums: List<Album> = emptyList(),
     val albumsRefreshing: Boolean = false,
     val albumsError: String? = null,
@@ -56,6 +64,9 @@ interface AudioUiActions {
     fun loadAlbums()
     fun openAlbum(id: String)
     fun playAlbum(id: String)
+    fun playSong(song: Song) = Unit
+    fun search(query: String) = Unit
+    fun openPlaylist(id: String) = Unit
     fun startPlaylist(id: String)
     fun togglePlay()
     fun next()

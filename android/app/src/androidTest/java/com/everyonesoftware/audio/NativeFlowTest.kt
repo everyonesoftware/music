@@ -80,6 +80,8 @@ class NativeFlowTest {
                 if (url.queryParameter("u") != "native-fixture-user" || url.queryParameter("t").isNullOrBlank() || url.queryParameter("p") != null) return MockResponse().setResponseCode(401)
                 return when (url.encodedPath.substringAfterLast('/')) {
                     "ping.view" -> ok()
+                    "getAlbumList2.view" -> ok(",\"albumList2\":{\"album\":[]}")
+                    "search3.view" -> ok(",\"searchResult3\":{\"song\":[${song("s1")}]}")
                     "getMusicFolders.view" -> ok(",\"musicFolders\":{\"musicFolder\":[{\"id\":\"main\",\"name\":\"Fixture library\"}]}")
                     "getPlaylists.view" -> ok(",\"playlists\":{\"playlist\":[{\"id\":\"routine\",\"name\":\"Fixture routine\",\"songCount\":3}]}")
                     "getPlaylist.view" -> ok(",\"playlist\":{\"id\":\"routine\",\"name\":\"Fixture routine\",\"entry\":[${listOf("s1", "s2", "s3").joinToString(",") { song(it) }}]}")
@@ -107,11 +109,18 @@ class NativeFlowTest {
             compose.waitUntil(15_000) { graph.session.value != null }
             // Graph bootstrap restores the session before the activity finishes loading its
             // connection/UI state. Wait for that boundary, not only the earlier graph write.
-            compose.waitUntil(20_000) { compose.onAllNodesWithTag("player-toggle").fetchSemanticsNodes().isNotEmpty() }
-            compose.onNodeWithTag("player-toggle").assertIsDisplayed()
+            compose.waitUntil(20_000) { compose.onAllNodesWithTag("mini-player").fetchSemanticsNodes().isNotEmpty() }
+            compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
+            compose.onNodeWithText("Search playlists, albums, and songs").assertIsDisplayed()
+            compose.onNodeWithTag("player-toggle").assertDoesNotExist()
+            compose.onNodeWithTag("mini-player").assertIsDisplayed()
             Assert.assertEquals(expected, graph.session.value)
             Assert.assertFalse(graph.playback.value.playing)
             capture("native-cold-restored")
+            compose.onNodeWithText(expected.queue[expected.index].title).performClick()
+            compose.onNodeWithTag("player-toggle").assertIsDisplayed()
+            Assert.assertEquals(expected, graph.session.value)
+            Assert.assertFalse(graph.playback.value.playing)
             return
         }
         val baseUrl = server.url("/").toString()
@@ -137,7 +146,27 @@ class NativeFlowTest {
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Choose a playlist").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Choose a playlist").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-shuffle-routine").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("playlist-shuffle-routine").performClick()
+        compose.onNodeWithText("Search playlists, albums, and songs").performClick()
+        compose.onNodeWithTag("library-search").performTextInput("s1")
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s1").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Fixture s1").performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing }
+        Assert.assertEquals("song", graph.session.value!!.sourceType)
+        Assert.assertEquals(listOf("s1"), graph.session.value!!.queue.map { it.id })
+        Assert.assertFalse(graph.session.value!!.shuffle)
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        compose.onNodeWithContentDescription("Back").performClick()
+        val beforeBrowsing = graph.session.value
+        compose.onNodeWithTag("playlist-card-routine").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s2").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Fixture s2").performScrollTo().assertIsDisplayed()
+        // The service may persist its final pause position asynchronously; browsing must
+        // preserve the queue identity, order, source and paused state.
+        Assert.assertEquals(beforeBrowsing?.copy(positionMs = graph.session.value!!.positionMs), graph.session.value)
+        Assert.assertFalse(graph.playback.value.playing)
+        capture("native-playlist-details")
+        compose.onNodeWithTag("playlist-play").performScrollTo().performClick()
         compose.waitUntil(20_000) { graph.playback.value.playing }
         val original = graph.session.value!!
         Assert.assertEquals(setOf("s1", "s2", "s3"), original.queue.map { it.id }.toSet())
@@ -174,19 +203,18 @@ class NativeFlowTest {
         Assert.assertTrue(requests.any { it.requestUrl?.encodedPath?.endsWith("/setRating.view") == true })
         Assert.assertTrue(requests.any { it.requestUrl?.encodedPath?.endsWith("/getSong.view") == true })
         // Exercise the production edge-to-edge activity, including its real system insets.
-        compose.onNodeWithTag("tab-library").performClick()
+        compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithTag("mini-player-toggle").assertIsDisplayed()
         val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-        val navigation = compose.onNodeWithTag("bottom-navigation").fetchSemanticsNode().boundsInRoot
+        compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
         val mini = compose.onNodeWithTag("mini-player").fetchSemanticsNode().boundsInRoot
-        Assert.assertEquals(root.left, navigation.left, 1f)
-        Assert.assertEquals(root.right, navigation.right, 1f)
-        Assert.assertEquals(root.bottom, navigation.bottom, 1f)
-        Assert.assertEquals(mini.bottom, navigation.top, 1f)
+        Assert.assertEquals(root.left, mini.left, 1f)
+        Assert.assertEquals(root.right, mini.right, 1f)
+        Assert.assertTrue(mini.bottom <= root.bottom)
         val pixels = compose.onRoot().captureToImage().toPixelMap()
         val edgeX = (root.width - 2).toInt()
         Assert.assertEquals(Color(0xFF354239), pixels[edgeX, mini.center.y.toInt()])
-        Assert.assertEquals(Color(0xFF262E29), pixels[edgeX, (root.height - 2).toInt()])
+
         capture("native-tonal-library")
         compose.onNodeWithTag("mini-player-toggle").performClick()
         compose.waitUntil(10_000) { graph.playback.value.playing }

@@ -73,6 +73,24 @@ class AudioScreensTest {
         }
     }
 
+    @Test fun settingsBackReturnsToLibraryEvenWithASavedSession() {
+        render(playerState().copy(screen = Screen.SETTINGS))
+        compose.runOnIdle { backDispatcher.onBackPressed() }
+        compose.runOnIdle { assertEquals(listOf(Screen.PLAYLISTS), actions.screens) }
+    }
+
+    @Test fun everyPageHasASettingsGearAndNoBottomTabs() {
+        val state = mutableStateOf(playerState())
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        for (screen in Screen.entries) {
+            compose.runOnIdle { state.value = state.value.copy(screen = screen) }
+            compose.onNodeWithTag("settings-gear").assertIsDisplayed().performClick()
+            compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
+            compose.onNodeWithTag("settings-update-dot", useUnmergedTree = true).assertDoesNotExist()
+        }
+        compose.runOnIdle { assertTrue(actions.screens.all { it == Screen.SETTINGS }) }
+    }
+
     @Test fun systemBackFromLibraryFallsThroughToAndroid() {
         render(playerState().copy(screen = Screen.PLAYLISTS))
         compose.runOnIdle {
@@ -173,6 +191,33 @@ class AudioScreensTest {
         compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
     }
 
+    @Test fun playlistCardOpensDetailsWithoutStartingPlayback() {
+        render(playerState().copy(screen = Screen.PLAYLISTS,
+            playlists = listOf(Playlist("test-playlist", "Test playlist", songCount = 1))))
+        compose.onNodeWithTag("playlist-card-test-playlist").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("test-playlist"), actions.openedPlaylists)
+            assertTrue(actions.startedPlaylists.isEmpty())
+            assertEquals(0, actions.playToggles)
+        }
+    }
+
+    @Test fun playlistDetailsListsSongsAndProvidesExplicitShuffle() {
+        render(playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("test-playlist", "Test playlist", songCount = 1),
+            playlistSongs = listOf(song.copy(title = "Playlist track"))))
+        compose.onNodeWithText("Playlist track").assertIsDisplayed()
+        compose.onNodeWithTag("playlist-play").performClick()
+        compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
+    }
+
+    @Test fun searchIncludesServerSongsAndOpensThemForPlayback() {
+        render(playerState().copy(screen = Screen.SEARCH, searchQuery = "rare",
+            searchSongs = listOf(song.copy(title = "Rare server song"))))
+        compose.onNodeWithText("Rare server song").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(listOf("test-song"), actions.playedSongs) }
+    }
+
     @Test fun cachedZeroDoesNotPreventCheckingPlaylistContents() {
         render(AudioUiState(
             booting = false, screen = Screen.PLAYLISTS, connection = connection,
@@ -182,7 +227,7 @@ class AudioScreensTest {
         compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
     }
 
-    @Test fun libraryShowsPlaylistAndAlbumShelvesAndPersistentTabs() {
+    @Test fun libraryShowsPlaylistAndAlbumShelvesAndSearchWithoutTabs() {
         render(AudioUiState(
             booting = false, screen = Screen.PLAYLISTS, connection = connection,
             playlists = listOf(Playlist("test-playlist", "Test playlist", songCount = 3)),
@@ -193,39 +238,32 @@ class AudioScreensTest {
         compose.onNodeWithTag("playlist-shuffle-test-playlist").assertIsDisplayed()
         compose.onNodeWithTag("album-card-test-album").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(listOf("test-album"), actions.openedAlbums) }
-        compose.onNodeWithTag("tab-library").assertIsDisplayed()
-        compose.onNodeWithTag("tab-search").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
+        compose.onNodeWithText("Search playlists, albums, and songs").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(Screen.SEARCH, actions.screens.last()) }
     }
 
-    @Test fun bottomChromeSpansWidthAndUsesApprovedTonalSurfacesAcrossScreens() {
+    @Test fun miniPlayerSpansWidthWithoutTabsAcrossScreens() {
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLISTS))
         compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
-        for (screen in listOf(Screen.PLAYLISTS, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.SETTINGS, Screen.PLAYER)) {
+        for (screen in listOf(Screen.PLAYLISTS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.SETTINGS, Screen.PLAYER)) {
             compose.runOnIdle { state.value = state.value.copy(screen = screen) }
             val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
-            val first = compose.onNodeWithTag("tab-library").fetchSemanticsNode().boundsInRoot
-            val last = compose.onNodeWithTag("tab-settings").fetchSemanticsNode().boundsInRoot
-            assertEquals("$screen: no left tab gutter", root.left, first.left, 1f)
-            assertEquals("$screen: no right tab gutter", root.right, last.right, 1f)
-            val navigation = compose.onNodeWithTag("bottom-navigation").fetchSemanticsNode().boundsInRoot
-            assertEquals("$screen: navigation reaches the bottom", root.bottom, navigation.bottom, 1f)
+            compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
             val pixels = compose.onRoot().captureToImage().toPixelMap()
             val edgeX = (root.width - 2).toInt()
-            assertEquals("$screen: darker tabs", Color(0xFF262E29), pixels[edgeX, first.center.y.toInt()])
-            // The generic Compose test activity has its own three-button contrast scrim.
-            // NativeFlowTest checks the inset pixels with MainActivity's real dark system-bar style.
+
             if (screen == Screen.PLAYER) {
                 compose.onNodeWithTag("mini-player").assertDoesNotExist()
             } else {
                 val mini = compose.onNodeWithTag("mini-player").fetchSemanticsNode().boundsInRoot
                 assertEquals("$screen: full-width mini-player", root.width, mini.width, 1f)
-                assertEquals("$screen: mini-player touches tabs", mini.bottom, navigation.top, 1f)
+                assertTrue("$screen: mini-player stays above system navigation", mini.bottom <= root.bottom)
                 assertEquals("$screen: lighter player", Color(0xFF354239), pixels[edgeX, mini.center.y.toInt()])
                 compose.onNodeWithTag("mini-player-toggle").assertIsDisplayed().performClick()
             }
         }
-        compose.runOnIdle { assertEquals(5, actions.playToggles) }
+        compose.runOnIdle { assertEquals(6, actions.playToggles) }
         assertTrue(actions.screens.isEmpty())
     }
 
@@ -277,7 +315,7 @@ class AudioScreensTest {
         render(playerState())
         compose.onNodeWithTag("player-rating").assertIsDisplayed().performClick()
         compose.onNodeWithTag("player-queue").assertIsDisplayed()
-        compose.onNodeWithTag("tab-library").assertIsDisplayed()
+        compose.onNodeWithTag("settings-gear").assertIsDisplayed()
         compose.onNodeWithText("Change playlist").assertDoesNotExist()
         compose.onNodeWithText("READY TO RESUME").assertDoesNotExist()
         compose.onNodeWithText("Tap a star to save to Navidrome. Clear removes your song rating.").assertDoesNotExist()
@@ -336,6 +374,8 @@ class AudioScreensTest {
         val screens = mutableListOf<Screen>()
         val connects = mutableListOf<ConnectCall>()
         val startedPlaylists = mutableListOf<String>()
+        val openedPlaylists = mutableListOf<String>()
+        val playedSongs = mutableListOf<String>()
         val openedAlbums = mutableListOf<String>()
         val playedAlbums = mutableListOf<String>()
         val ratings = mutableListOf<Int>()
@@ -353,6 +393,8 @@ class AudioScreensTest {
         override fun openAlbum(id: String) { openedAlbums += id }
         override fun playAlbum(id: String) { playedAlbums += id }
         override fun startPlaylist(id: String) { startedPlaylists += id }
+        override fun openPlaylist(id: String) { openedPlaylists += id }
+        override fun playSong(song: Song) { playedSongs += song.id }
         override fun togglePlay() { playToggles++ }
         override fun next() { nextCalls++ }
         override fun previous() = Unit

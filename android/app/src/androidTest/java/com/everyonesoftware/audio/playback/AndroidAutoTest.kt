@@ -406,12 +406,46 @@ class AndroidAutoTest {
         }
     }
 
+    @Test fun mediaSessionActivityOpensPlayerWithoutChangingTheSession() {
+        root()
+        until { onMain { browser.mediaItemCount == fixtureSongs.size } }
+        val saved = graph.session.value!!
+        val activityRef = java.util.concurrent.atomic.AtomicReference<com.everyonesoftware.audio.MainActivity>()
+        val modelRef = java.util.concurrent.atomic.AtomicReference<com.everyonesoftware.audio.ui.AudioViewModel>()
+        val monitor = androidx.test.runner.lifecycle.ActivityLifecycleMonitorRegistry.getInstance()
+        val callback = androidx.test.runner.lifecycle.ActivityLifecycleCallback { activity, stage ->
+            if (activity is com.everyonesoftware.audio.MainActivity && stage == androidx.test.runner.lifecycle.Stage.RESUMED) {
+                activityRef.set(activity)
+                modelRef.set(androidx.lifecycle.ViewModelProvider(activity)[com.everyonesoftware.audio.ui.AudioViewModel::class.java])
+            }
+        }
+        onMain { monitor.addLifecycleCallback(callback) }
+        try {
+            val pendingIntent = requireNotNull(onMain { browser.sessionActivity })
+            pendingIntent.send()
+            until { modelRef.get()?.state?.value?.let { !it.booting && it.screen == com.everyonesoftware.audio.ui.Screen.PLAYER } == true }
+            assertEquals(saved, graph.session.value)
+            assertFalse(graph.playback.value.playing)
+            onMain { modelRef.get().showScreen(com.everyonesoftware.audio.ui.Screen.PLAYLISTS) }
+            pendingIntent.send()
+            until { modelRef.get().state.value.screen == com.everyonesoftware.audio.ui.Screen.PLAYER }
+            assertEquals(saved, graph.session.value)
+            assertFalse(graph.playback.value.playing)
+        } finally {
+            onMain { activityRef.get()?.finish(); monitor.removeLifecycleCallback(callback) }
+        }
+    }
+
     @Test fun voiceSearchIntentOpensTheNativePlayer() {
         val intent = Intent("android.media.action.MEDIA_PLAY_FROM_SEARCH").setPackage(app.packageName)
             .putExtra(android.app.SearchManager.QUERY, "Drive fixture").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         assertNotNull("Voice search must be discoverable", app.packageManager.resolveActivity(intent, 0))
         androidx.test.core.app.ActivityScenario.launch<com.everyonesoftware.audio.MainActivity>(intent).use { scenario ->
             until { graph.playback.value.playing && graph.session.value?.shuffle == true }
+            scenario.onActivity { activity ->
+                val model = androidx.lifecycle.ViewModelProvider(activity)[com.everyonesoftware.audio.ui.AudioViewModel::class.java]
+                assertEquals(com.everyonesoftware.audio.ui.Screen.PLAYER, model.state.value.screen)
+            }
             val queueId = graph.session.value!!.queueId
             scenario.recreate()
             assertEquals("Recreation must not replay the voice selection", queueId, graph.session.value!!.queueId)

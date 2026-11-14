@@ -9,7 +9,7 @@ object SessionRules {
     fun start(connectionId: String, playlistId: String, playlistName: String, songs: List<Song>, random: Random = Random.Default, sourceType: String = "playlist", shuffle: Boolean = true): ListeningSession {
         require(songs.isNotEmpty()) { "This collection has no playable songs." }
         require(connectionId.isNotBlank() && playlistId.isNotBlank()) { "A collection and connection are required." }
-        require(sourceType in setOf("playlist", "album")) { "Unsupported playback source." }
+        require(sourceType in setOf("playlist", "album", "song")) { "Unsupported playback source." }
         return ListeningSession(connectionId, playlistId, playlistName, if (shuffle) songs.shuffled(random) else songs, shuffle = shuffle,
             queueId = java.util.UUID.randomUUID().toString(), sourceType = sourceType)
     }

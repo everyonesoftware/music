@@ -53,10 +53,11 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
             IconButton({ actions.showScreen(state.updatesReturnScreen) }, Modifier.sizeIn(minWidth = 48.dp, minHeight = 52.dp)) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
             }
-            Column {
+            Column(Modifier.weight(1f)) {
                 Text("Settings", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("Updates", style = MaterialTheme.typography.titleMedium, modifier = Modifier.semantics { heading() })
             }
+            SettingsGear()
         }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
             Text("Installed version ${update.installedVersion}", style = MaterialTheme.typography.titleMedium)

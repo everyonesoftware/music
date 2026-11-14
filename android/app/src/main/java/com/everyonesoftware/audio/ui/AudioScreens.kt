@@ -15,6 +15,7 @@ import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -51,8 +52,7 @@ import com.everyonesoftware.audio.data.Song
 /** This is the single owner of system/cutout and keyboard insets. */
 @Composable
 fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
-    val home = if (state.session != null) Screen.PLAYER else if (state.connection != null) Screen.PLAYLISTS else Screen.WELCOME
-    val showNavigation = (state.connection != null || state.screen == Screen.UPDATES) && state.screen in listOf(Screen.PLAYLISTS, Screen.SEARCH, Screen.ALBUM, Screen.PLAYER, Screen.SETTINGS, Screen.QUEUE, Screen.UPDATES)
+    val home = if (state.connection != null) Screen.PLAYLISTS else Screen.WELCOME
     BackHandler(enabled = state.screen != Screen.WELCOME && state.screen != Screen.PLAYLISTS) {
         actions.showScreen(when (state.screen) {
             Screen.UPDATES -> state.updatesReturnScreen
@@ -61,15 +61,16 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
             else -> home
         })
     }
+    CompositionLocalProvider(LocalSettings provides SettingsAffordance(state.updates.release != null) { actions.showScreen(Screen.SETTINGS) }) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)).imePadding()) {
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top + WindowInsetsSides.Bottom)).imePadding()) {
             if (state.booting) {
                 Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom)), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(Modifier.semantics { contentDescription = "Restoring your listening session" })
                 }
             } else {
                 Box(Modifier.weight(1f).fillMaxWidth()
-                    .windowInsetsPadding(WindowInsets.safeDrawing.only(if (showNavigation) WindowInsetsSides.Horizontal else WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))
+                    .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                     .padding(horizontal = 18.dp)) {
                     when (state.screen) {
                         Screen.WELCOME -> Welcome(actions)
@@ -77,6 +78,7 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.LIBRARIES -> Libraries(state, actions)
                         Screen.READY -> Ready(state, actions)
                         Screen.PLAYLISTS -> Playlists(state, actions, artworkUrl)
+                        Screen.PLAYLIST -> PlaylistDetails(state, actions, artworkUrl)
                         Screen.SEARCH -> Search(state, actions, artworkUrl)
                         Screen.ALBUM -> AlbumDetails(state, actions, artworkUrl)
                         Screen.PLAYER -> Player(state, actions, artworkUrl)
@@ -85,27 +87,38 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.UPDATES -> Updates(state, actions)
                     }
                 }
-                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES)) {
+                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES)) {
                     MiniPlayer(state, actions, artworkUrl)
                 }
-                if (showNavigation) {
-                    MainNavigation(state.screen, actions)
-                }
             }
+        }
+    }
+    }
+}
+
+private data class SettingsAffordance(val updateAvailable: Boolean, val open: () -> Unit)
+private val LocalSettings = staticCompositionLocalOf { SettingsAffordance(false) {} }
+
+@Composable
+internal fun SettingsGear() {
+    val settings = LocalSettings.current
+    IconButton(settings.open, Modifier.sizeIn(minWidth = 48.dp, minHeight = 52.dp).testTag("settings-gear")) {
+        Box(Modifier.size(28.dp)) {
+            Icon(Icons.Default.Settings, if (settings.updateAvailable) "Settings, update available" else "Settings", Modifier.align(Alignment.Center))
+            if (settings.updateAvailable) Box(Modifier.size(7.dp).align(Alignment.TopEnd).background(MaterialTheme.colorScheme.primary, CircleShape).testTag("settings-update-dot"))
         }
     }
 }
 
 @Composable
-private fun Header(title: String, eyebrow: String = "", back: (() -> Unit)? = null, settings: (() -> Unit)? = null, update: (() -> Unit)? = null) {
+private fun Header(title: String, eyebrow: String = "", back: (() -> Unit)? = null) {
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) AudioIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = back)
         Column(Modifier.weight(1f)) {
             if (eyebrow.isNotBlank()) Text(eyebrow, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
         }
-        if (settings != null) AudioIcon(Icons.Default.Settings, "Server and libraries", onClick = settings)
-        if (update != null) UpdateNotificationIcon(update)
+        SettingsGear()
     }
 }
 
@@ -116,27 +129,6 @@ private fun AudioIcon(icon: ImageVector, label: String, modifier: Modifier = Mod
     }
 }
 
-@Composable
-private fun MainNavigation(screen: Screen, actions: AudioUiActions) {
-    val selected = when (screen) {
-        Screen.SEARCH -> Screen.SEARCH
-        Screen.SETTINGS, Screen.UPDATES -> Screen.SETTINGS
-        else -> Screen.PLAYLISTS
-    }
-    // Paint behind system navigation, but keep tab targets inside the safe drawing area.
-    Surface(Modifier.fillMaxWidth().testTag("bottom-navigation"), color = MaterialTheme.colorScheme.surface) {
-        Column(Modifier.windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom))) {
-            NavigationBar(modifier = Modifier.fillMaxWidth().height(68.dp), containerColor = MaterialTheme.colorScheme.surface, tonalElevation = 0.dp, windowInsets = WindowInsets(0, 0, 0, 0)) {
-                NavigationBarItem(selected == Screen.PLAYLISTS, { actions.showScreen(Screen.PLAYLISTS) },
-                    icon = { Icon(Icons.Default.LibraryMusic, null) }, label = { Text("Library") }, modifier = Modifier.testTag("tab-library"))
-                NavigationBarItem(selected == Screen.SEARCH, { actions.showScreen(Screen.SEARCH) },
-                    icon = { Icon(Icons.Default.Search, null) }, label = { Text("Search") }, modifier = Modifier.testTag("tab-search"))
-                NavigationBarItem(selected == Screen.SETTINGS, { actions.showScreen(Screen.SETTINGS) },
-                    icon = { Icon(Icons.Default.Settings, null) }, label = { Text("Settings") }, modifier = Modifier.testTag("tab-settings"))
-            }
-        }
-    }
-}
 
 @Composable
 private fun Primary(label: String, modifier: Modifier = Modifier, enabled: Boolean = true, onClick: () -> Unit) {
@@ -156,6 +148,7 @@ private fun ErrorMessage(error: String?) {
 @Composable
 private fun Welcome(actions: AudioUiActions) {
     Column(Modifier.fillMaxSize().padding(vertical = 16.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) { SettingsGear() }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(20.dp)) {
             Hint("WELCOME TO MUSIC")
             Icon(Icons.Default.GraphicEq, null, Modifier.size(64.dp), tint = MaterialTheme.colorScheme.primary)
@@ -165,7 +158,7 @@ private fun Welcome(actions: AudioUiActions) {
             Text("Bring your playlists", style = MaterialTheme.typography.titleMedium)
             Hint("Choose your usual rotation. Shuffle once and start listening.")
             Text("Keep your place", style = MaterialTheme.typography.titleMedium)
-            Hint("Next time, open right to the player and continue your session.")
+            Hint("Next time, open your Library and continue from the saved mini-player.")
         }
         Primary("Connect to Navidrome", Modifier.padding(top = 16.dp)) { actions.showScreen(Screen.CONNECT) }
         Hint("Use your existing Navidrome account.", Modifier.padding(top = 12.dp))
@@ -259,11 +252,11 @@ private fun Artwork(id: String?, artworkUrl: (String?) -> String?, modifier: Mod
 @Composable
 private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     Column(Modifier.fillMaxSize()) {
-        Header("Library", state.connection?.name.orEmpty(), update = if (state.updates.release != null) ({ actions.showScreen(Screen.UPDATES) }) else null)
+        Header("Library", state.connection?.name.orEmpty())
         Surface(Modifier.fillMaxWidth().clickable { actions.showScreen(Screen.SEARCH) }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
             Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Hint("Search playlists and albums", Modifier.padding(start = 10.dp))
+                Hint("Search playlists, albums, and songs", Modifier.padding(start = 10.dp))
             }
         }
         ErrorMessage(state.error)
@@ -279,7 +272,8 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                 if (state.playlists.isEmpty() && !state.playlistsRefreshing) Hint("No playlists available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.playlists, key = { "playlist-${it.id}" }) { playlist ->
-                        PlaylistTile(playlist, playlist.id in state.stalePlaylistIds, artworkUrl, enabled = !state.loading) { actions.startPlaylist(playlist.id) }
+                        PlaylistTile(playlist, playlist.id in state.stalePlaylistIds, artworkUrl, enabled = !state.loading,
+                            onOpen = { actions.openPlaylist(playlist.id) }, onShuffle = { actions.startPlaylist(playlist.id) })
                     }
                 }
             }
@@ -298,10 +292,10 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
 }
 
 @Composable
-private fun PlaylistTile(playlist: Playlist, stale: Boolean, artworkUrl: (String?) -> String?, enabled: Boolean, onShuffle: () -> Unit) {
-    Column(Modifier.width(132.dp)) {
+private fun PlaylistTile(playlist: Playlist, stale: Boolean, artworkUrl: (String?) -> String?, enabled: Boolean, onOpen: () -> Unit, onShuffle: () -> Unit) {
+    Column(Modifier.width(132.dp).clickable(enabled = enabled, onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
         Box(Modifier.size(132.dp)) {
-            Artwork(playlist.coverArtId, artworkUrl, Modifier.fillMaxSize().clickable(enabled = enabled, onClick = onShuffle).testTag("playlist-card-${playlist.id}"))
+            Artwork(playlist.coverArtId, artworkUrl, Modifier.fillMaxSize())
             FilledTonalIconButton(onShuffle, Modifier.align(Alignment.BottomEnd).padding(6.dp).size(42.dp).testTag("playlist-shuffle-${playlist.id}"), enabled = enabled) {
                 Icon(Icons.Default.Shuffle, "Shuffle and play ${playlist.name}")
             }
@@ -322,19 +316,21 @@ private fun AlbumTile(album: Album, artworkUrl: (String?) -> String?, onClick: (
 
 @Composable
 private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
-    var query by rememberSaveable(state.connection?.id) { mutableStateOf("") }
-    val term = query.trim()
+    val term = state.searchQuery.trim()
     val playlists = state.playlists.filter { it.name.contains(term, ignoreCase = true) }
     val albums = state.albums.filter { it.name.contains(term, ignoreCase = true) || it.artist.contains(term, ignoreCase = true) }
     Column(Modifier.fillMaxSize()) {
-        Header("Search", state.connection?.name.orEmpty())
-        OutlinedTextField(query, { query = it }, Modifier.fillMaxWidth().padding(bottom = 10.dp), label = { Text("Playlists and albums") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true)
+        Header("Search", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        OutlinedTextField(state.searchQuery, actions::search, Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("library-search"), label = { Text("Playlists, albums, and songs") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true)
         ErrorMessage(state.albumsError)
+        ErrorMessage(state.searchError)
+        if (state.searchError != null) TextButton({ actions.search(state.searchQuery) }) { Text("Retry song search") }
+        if (state.searchLoading) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Searching songs" })
         LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
-            if (term.isBlank()) item { Hint("Search your playlists and albums by name or artist.") }
+            if (term.isBlank()) item { Hint("Search your playlists, albums, and songs by name or artist.") }
             if (playlists.isNotEmpty()) item { Text("Playlists", style = MaterialTheme.typography.titleLarge) }
             items(playlists, key = { "search-playlist-${it.id}" }) { playlist ->
-                Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clickable { actions.startPlaylist(playlist.id) }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clickable { actions.openPlaylist(playlist.id) }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Artwork(playlist.coverArtId, artworkUrl, Modifier.size(52.dp))
                     Column(Modifier.weight(1f)) { Text(playlist.name, style = MaterialTheme.typography.titleMedium); Hint("${playlist.songCount} songs") }
                     AudioIcon(Icons.Default.Shuffle, "Shuffle and play ${playlist.name}") { actions.startPlaylist(playlist.id) }
@@ -350,7 +346,53 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
                 }
                 HorizontalDivider()
             }
-            if (term.isNotBlank() && playlists.isEmpty() && albums.isEmpty()) item { Hint("No playlists or albums match “$term”.") }
+            if (state.searchSongs.isNotEmpty()) item { Text("Songs", style = MaterialTheme.typography.titleLarge) }
+            items(state.searchSongs, key = { "search-song-${it.id}" }) { song ->
+                SongRow(song, artworkUrl, enabled = !state.loading) { actions.playSong(song) }
+            }
+            if (term.isNotBlank() && playlists.isEmpty() && albums.isEmpty() && state.searchSongs.isEmpty() && !state.searchLoading && state.searchError == null) item { Hint("No playlists, albums, or songs match “$term”.") }
+        }
+    }
+}
+
+@Composable
+private fun SongRow(song: Song, artworkUrl: (String?) -> String?, enabled: Boolean, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = enabled, onClick = onClick), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Artwork(song.coverArtId, artworkUrl, Modifier.size(46.dp))
+        Column(Modifier.weight(1f)) {
+            Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Hint(song.artist)
+        }
+        Hint(timeLabel(song.durationSeconds * 1000L))
+    }
+}
+
+@Composable
+private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
+    val playlist = state.selectedPlaylist
+    Column(Modifier.fillMaxSize()) {
+        Header(playlist?.name ?: "Playlist", "Playlist", back = { actions.showScreen(Screen.PLAYLISTS) })
+        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (playlist != null) item {
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
+                    Artwork(playlist.coverArtId, artworkUrl, Modifier.size(180.dp))
+                }
+                Text(playlist.name, style = MaterialTheme.typography.headlineSmall)
+                Hint(if (state.playlistLoading) "Loading songs…" else "${state.playlistSongs.size} songs", Modifier.padding(vertical = 8.dp))
+                Primary(if (state.loading) "Starting…" else "Shuffle and play", Modifier.testTag("playlist-play"), enabled = !state.loading && !state.playlistLoading && state.playlistSongs.isNotEmpty()) { actions.startPlaylist(playlist.id) }
+            }
+            if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
+            item {
+                ErrorMessage(state.playlistDetailError)
+                if (state.playlistDetailError != null && playlist != null) TextButton({ actions.openPlaylist(playlist.id) }) { Text("Retry") }
+                if (!state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isEmpty()) Hint("This playlist has no songs.")
+            }
+            // Playlists may contain the same song more than once; retain the server's order.
+            items(state.playlistSongs.size) { index ->
+                val song = state.playlistSongs[index]
+                SongRow(song, artworkUrl, enabled = !state.loading) { actions.playSong(song) }
+                HorizontalDivider()
+            }
         }
     }
 }
@@ -390,7 +432,8 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
     val session = state.session
     val song = session?.queue?.getOrNull(session.index)
     if (session == null || song == null) {
-        Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center) {
+        Column(Modifier.fillMaxSize()) {
+            Header("Now playing", back = { actions.showScreen(Screen.PLAYLISTS) })
             Text("Choose something to listen to", style = MaterialTheme.typography.headlineMedium)
             ErrorMessage(state.error)
             Primary("Choose a playlist", Modifier.padding(vertical = 16.dp), enabled = !state.loading, onClick = actions::loadPlaylists)
@@ -403,12 +446,13 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
         val scrollFallback = maxHeight < 580.dp || LocalDensity.current.fontScale > 1.3f
         Column(if (scrollFallback) Modifier.fillMaxSize().verticalScroll(rememberScrollState()) else Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
+                AudioIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back") { actions.showScreen(Screen.PLAYLISTS) }
                 Text(session.playlistName, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 TextButton({ actions.showScreen(Screen.QUEUE) }, Modifier.testTag("player-queue")) {
                     Icon(Icons.AutoMirrored.Filled.QueueMusic, null)
                     Text("Queue", Modifier.padding(start = 6.dp))
                 }
-                if (state.updates.release != null) UpdateNotificationIcon { actions.showScreen(Screen.UPDATES) }
+                SettingsGear()
             }
             Box(if (scrollFallback) Modifier.fillMaxWidth().height(140.dp) else Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                 BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -463,10 +507,10 @@ private fun RatingDialog(title: String, artist: String, confirmed: Int, busy: Bo
                 Text("Rate this song", style = MaterialTheme.typography.headlineSmall, modifier = Modifier.semantics { heading() })
                 Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Hint(artist)
-                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
                     (1..5).forEach { rating ->
                         Surface(Modifier.weight(1f), color = if (rating == confirmed) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.background, shape = RoundedCornerShape(12.dp), border = BorderStroke(1.dp, if (rating == confirmed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)) {
-                            Box(Modifier.widthIn(min = 42.dp).heightIn(min = 68.dp).testTag("rating-$rating").selectable(selected = rating == confirmed, enabled = !busy, role = Role.RadioButton, onClick = { onRate(rating) }).semantics { contentDescription = "$rating ${if (rating == 1) "star" else "stars"}" }, contentAlignment = Alignment.Center) {
+                            Box(Modifier.widthIn(min = 48.dp).heightIn(min = 68.dp).testTag("rating-$rating").selectable(selected = rating == confirmed, enabled = !busy, role = Role.RadioButton, onClick = { onRate(rating) }).semantics { contentDescription = "$rating ${if (rating == 1) "star" else "stars"}" }, contentAlignment = Alignment.Center) {
                                 Icon(if (rating <= confirmed) Icons.Default.Star else Icons.Outlined.StarBorder, null, Modifier.size(30.dp), tint = if (rating <= confirmed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }

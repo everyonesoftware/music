@@ -21,6 +21,10 @@ import com.everyonesoftware.audio.ui.AudioTheme
 import com.everyonesoftware.audio.ui.AudioViewModel
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        const val ACTION_OPEN_PLAYER = "com.everyonesoftware.audio.action.OPEN_PLAYER"
+    }
+
     private val model: AudioViewModel by viewModels()
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -30,7 +34,7 @@ class MainActivity : ComponentActivity() {
             val artwork = remember(state.connection) { { id: String? -> model.artworkUrl(id) } }
             AudioTheme { AudioApp(state, model, artwork) }
         }
-        if (savedInstanceState == null) handleVoiceIntent(intent)
+        if (savedInstanceState == null) handlePlaybackIntent(intent)
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.RESUMED) {
                 model.installIntents.collect { request ->
@@ -47,7 +51,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        handleVoiceIntent(intent)
+        handlePlaybackIntent(intent)
     }
 
     override fun onResume() {
@@ -60,8 +64,10 @@ class MainActivity : ComponentActivity() {
         super.onStop()
     }
 
-    private fun handleVoiceIntent(intent: Intent) {
-        if (intent.action != "android.media.action.MEDIA_PLAY_FROM_SEARCH") return
-        model.playFromSearch(intent.getStringExtra(SearchManager.QUERY).orEmpty())
+    private fun handlePlaybackIntent(intent: Intent) {
+        when (intent.action) {
+            ACTION_OPEN_PLAYER -> model.openPlayer()
+            "android.media.action.MEDIA_PLAY_FROM_SEARCH" -> model.playFromSearch(intent.getStringExtra(SearchManager.QUERY).orEmpty())
+        }
     }
 }
