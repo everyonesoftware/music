@@ -14,6 +14,7 @@ import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertWidthIsAtLeast
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
@@ -32,6 +33,9 @@ import com.everyonesoftware.audio.data.ListeningSession
 import com.everyonesoftware.audio.data.MusicLibrary
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.Song
+import com.everyonesoftware.audio.playback.output.MediaOutputState
+import com.everyonesoftware.audio.playback.output.OutputDevice
+import com.everyonesoftware.audio.playback.output.OutputDeviceKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -63,6 +67,80 @@ class AudioScreensTest {
         session = session,
         durationMs = 180_000L,
     )
+
+    @Test fun mediaOutputIsBelowPlaybackAndLeftOfQueueAndOpensPicker() {
+        render(playerState().copy(playing = true))
+        val output = compose.onNodeWithTag("player-output").assertIsDisplayed()
+        val outputBounds = output.fetchSemanticsNode().boundsInRoot
+        val queueBounds = compose.onNodeWithTag("player-queue").fetchSemanticsNode().boundsInRoot
+        val playBounds = compose.onNodeWithTag("player-toggle").fetchSemanticsNode().boundsInRoot
+        assertTrue(outputBounds.top >= playBounds.bottom)
+        assertTrue(outputBounds.right <= queueBounds.left)
+        output.performClick()
+        compose.onNodeWithTag("output-sheet-content").assertIsDisplayed()
+        compose.onNodeWithTag("output-close").performClick()
+        compose.onNodeWithTag("output-sheet-content").assertDoesNotExist()
+        compose.runOnIdle {
+            assertTrue(actions.screens.isEmpty())
+            assertEquals(0, actions.playToggles)
+        }
+    }
+
+    @Test fun outputPickerWaitsForConfirmationAndKeepsFailuresVisible() {
+        val phone = OutputDevice("phone", "This phone", "Built-in speaker", OutputDeviceKind.PHONE)
+        val headphones = OutputDevice("headphones", "Wireless headphones", "Bluetooth", OutputDeviceKind.HEADPHONES)
+        val state = mutableStateOf(playerState().copy(playing = true,
+            mediaOutput = MediaOutputState(devices = listOf(phone, headphones), selectedId = phone.id)))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        compose.onNodeWithTag("player-output").performClick()
+        compose.onNodeWithTag("output-route-headphones").performClick()
+        compose.onNodeWithTag("output-sheet-content").assertIsDisplayed()
+        captureOutputEvidence("output-picker", compose.onNodeWithTag("output-sheet-content"))
+        compose.runOnIdle {
+            assertEquals(listOf("headphones"), actions.selectedOutputs)
+            state.value = state.value.copy(mediaOutput = state.value.mediaOutput.copy(pendingId = "headphones"))
+        }
+        compose.onNodeWithText("Switching audio output…").assertIsDisplayed()
+        compose.onNodeWithTag("output-route-phone").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(mediaOutput = state.value.mediaOutput.copy(pendingId = null, error = "Output disconnected")) }
+        compose.onNodeWithText("Output disconnected").assertIsDisplayed()
+        compose.onNodeWithTag("output-route-headphones").performClick()
+        compose.runOnIdle { state.value = state.value.copy(mediaOutput = state.value.mediaOutput.copy(selectedId = "headphones", error = null)) }
+        compose.onNodeWithTag("output-close").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Choose output, Wireless headphones").assertIsDisplayed()
+        captureOutputEvidence("output-player", compose.onRoot())
+        compose.runOnIdle {
+            assertEquals(listOf("headphones", "headphones"), actions.selectedOutputs)
+            assertEquals(0, actions.playToggles)
+            assertEquals(session, state.value.session)
+            assertTrue(state.value.playing)
+        }
+    }
+
+    @Test fun outputPickerReflectsDisconnectsAndPermissionDenial() {
+        val phone = OutputDevice("phone", "This phone", "Built-in speaker", OutputDeviceKind.PHONE)
+        val headphones = OutputDevice("headphones", "Headphones", "Bluetooth", OutputDeviceKind.HEADPHONES)
+        val state = mutableStateOf(playerState().copy(mediaOutput = MediaOutputState(listOf(phone, headphones), "headphones")))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        compose.onNodeWithTag("player-output").performClick()
+        compose.runOnIdle { state.value = state.value.copy(mediaOutput = MediaOutputState(listOf(phone), "phone", permissionRequired = true)) }
+        compose.onNodeWithTag("output-route-headphones").assertDoesNotExist()
+        compose.onNodeWithTag("output-permission").assertIsDisplayed()
+        compose.onNodeWithTag("output-close").performClick()
+        compose.onNodeWithContentDescription("Choose output, This phone").assertIsDisplayed()
+        compose.runOnIdle { assertTrue(actions.selectedOutputs.isEmpty()) }
+    }
+
+    @Test fun olderAndroidOutputFallbackDoesNotPretendToSwitchDevices() {
+        val phone = OutputDevice("phone", "This phone", "Built-in speaker", OutputDeviceKind.PHONE)
+        val headphones = OutputDevice("headphones", "Headphones", "Bluetooth", OutputDeviceKind.HEADPHONES)
+        render(playerState().copy(mediaOutput = MediaOutputState(listOf(phone, headphones), "phone", systemPickerRequired = true)))
+        compose.onNodeWithTag("player-output").performClick()
+        compose.onNodeWithTag("output-route-headphones").assertIsNotEnabled()
+        compose.onNodeWithText("Device settings").assertIsDisplayed()
+        compose.onNodeWithText("Android manages output switching", substring = true).assertIsDisplayed()
+        compose.runOnIdle { assertTrue(actions.selectedOutputs.isEmpty()) }
+    }
 
     @Test fun systemBackFromPlayerOpensLibraryWithoutPausingPlayback() {
         render(playerState().copy(playing = true))
@@ -182,13 +260,14 @@ class AudioScreensTest {
         compose.onNodeWithTag("library-continue").assertIsDisplayed().assertIsNotEnabled()
     }
 
-    @Test fun playlistShuffleStartsTheChosenPlaylistExactlyOnce() {
+    @Test fun libraryPlaylistCardsHaveNoPlaybackShortcut() {
         render(AudioUiState(
             booting = false, screen = Screen.PLAYLISTS, connection = connection,
             playlists = listOf(Playlist("test-playlist", "Test playlist", songCount = 3)),
         ))
-        compose.onNodeWithTag("playlist-shuffle-test-playlist").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
+        compose.onNodeWithTag("playlist-card-test-playlist").assertIsDisplayed()
+        compose.onNodeWithTag("playlist-shuffle-test-playlist", useUnmergedTree = true).assertDoesNotExist()
+        compose.runOnIdle { assertTrue(actions.startedPlaylists.isEmpty()) }
     }
 
     @Test fun playlistCardOpensDetailsWithoutStartingPlayback() {
@@ -223,8 +302,11 @@ class AudioScreensTest {
             booting = false, screen = Screen.PLAYLISTS, connection = connection,
             playlists = listOf(Playlist("test-playlist", "Test playlist", songCount = 0)),
         ))
-        compose.onNodeWithTag("playlist-shuffle-test-playlist").assertIsDisplayed().performClick()
-        compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
+        compose.onNodeWithTag("playlist-card-test-playlist").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("test-playlist"), actions.openedPlaylists)
+            assertTrue(actions.startedPlaylists.isEmpty())
+        }
     }
 
     @Test fun libraryShowsPlaylistAndAlbumShelvesAndSearchWithoutTabs() {
@@ -235,7 +317,8 @@ class AudioScreensTest {
         ))
         compose.onNodeWithText("Playlists").assertIsDisplayed()
         compose.onNodeWithText("Albums").assertIsDisplayed()
-        compose.onNodeWithTag("playlist-shuffle-test-playlist").assertIsDisplayed()
+        compose.onNodeWithTag("playlist-card-test-playlist").assertIsDisplayed()
+        compose.onNodeWithTag("playlist-shuffle-test-playlist", useUnmergedTree = true).assertDoesNotExist()
         compose.onNodeWithTag("album-card-test-album").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(listOf("test-album"), actions.openedAlbums) }
         compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
@@ -311,6 +394,20 @@ class AudioScreensTest {
         }
     }
 
+    @Test fun playerQueueIsBelowTransportAndStillOpensQueueWithoutTogglingPlayback() {
+        render(playerState())
+        val transport = compose.onNodeWithTag("player-toggle").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val queue = compose.onNodeWithTag("player-queue").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("Queue must be below the transport buttons", queue.top >= transport.bottom)
+        compose.onNodeWithContentDescription("Shuffle").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Repeat").assertIsDisplayed()
+        compose.onNodeWithTag("player-queue").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(Screen.QUEUE), actions.screens)
+            assertEquals(0, actions.playToggles)
+        }
+    }
+
     @Test fun ratingModalHasFiveLargeRadioTargetsAndDoneClosesWithoutSaving() {
         render(playerState())
         compose.onNodeWithTag("player-rating").assertIsDisplayed().performClick()
@@ -368,6 +465,13 @@ class AudioScreensTest {
         }
     }
 
+    private fun captureOutputEvidence(name: String, node: androidx.compose.ui.test.SemanticsNodeInteraction) {
+        val image = node.captureToImage().asAndroidBitmap()
+        val directory = java.io.File(InstrumentationRegistry.getInstrumentation().targetContext.getExternalFilesDir(null), "evidence").apply { mkdirs() }
+        java.io.File(directory, "$name.png").outputStream().use { assertTrue(image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
+        image.recycle()
+    }
+
     private data class ConnectCall(val name: String, val url: String, val username: String, val password: String)
 
     private class RecordingActions : AudioUiActions {
@@ -379,6 +483,8 @@ class AudioScreensTest {
         val openedAlbums = mutableListOf<String>()
         val playedAlbums = mutableListOf<String>()
         val ratings = mutableListOf<Int>()
+        val selectedOutputs = mutableListOf<String>()
+        override fun selectMediaOutput(id: String) { selectedOutputs += id }
         var librarySaves = 0
         var playToggles = 0
         var nextCalls = 0

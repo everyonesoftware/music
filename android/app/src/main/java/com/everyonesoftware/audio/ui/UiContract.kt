@@ -6,6 +6,7 @@ import com.everyonesoftware.audio.data.Album
 import com.everyonesoftware.audio.data.MusicLibrary
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.Song
+import com.everyonesoftware.audio.playback.output.MediaOutputState
 
 import com.everyonesoftware.audio.updates.UpdateUiState
 
@@ -43,6 +44,7 @@ data class AudioUiState(
     val playing: Boolean = false,
     val positionMs: Long = 0,
     val durationMs: Long = 0,
+    val mediaOutput: MediaOutputState = MediaOutputState(),
     val ratingBusy: Boolean = false,
     val ratingError: String? = null,
     val updates: UpdateUiState = UpdateUiState(),
@@ -50,6 +52,8 @@ data class AudioUiState(
 )
 
 interface AudioUiActions {
+    fun refreshMediaOutputs() = Unit
+    fun selectMediaOutput(id: String) = Unit
     fun checkForUpdates() = Unit
     fun setAutomaticUpdates(enabled: Boolean) = Unit
     fun downloadUpdate() = Unit

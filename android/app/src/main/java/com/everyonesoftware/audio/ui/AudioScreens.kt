@@ -21,6 +21,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
@@ -48,6 +49,7 @@ import coil.compose.AsyncImage
 import com.everyonesoftware.audio.data.Album
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.Song
+import com.everyonesoftware.audio.playback.output.OutputDeviceKind
 
 /** This is the single owner of system/cutout and keyboard insets. */
 @Composable
@@ -273,7 +275,7 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.playlists, key = { "playlist-${it.id}" }) { playlist ->
                         PlaylistTile(playlist, playlist.id in state.stalePlaylistIds, artworkUrl, enabled = !state.loading,
-                            onOpen = { actions.openPlaylist(playlist.id) }, onShuffle = { actions.startPlaylist(playlist.id) })
+                            onOpen = { actions.openPlaylist(playlist.id) })
                     }
                 }
             }
@@ -292,14 +294,9 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
 }
 
 @Composable
-private fun PlaylistTile(playlist: Playlist, stale: Boolean, artworkUrl: (String?) -> String?, enabled: Boolean, onOpen: () -> Unit, onShuffle: () -> Unit) {
+private fun PlaylistTile(playlist: Playlist, stale: Boolean, artworkUrl: (String?) -> String?, enabled: Boolean, onOpen: () -> Unit) {
     Column(Modifier.width(132.dp).clickable(enabled = enabled, onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
-        Box(Modifier.size(132.dp)) {
-            Artwork(playlist.coverArtId, artworkUrl, Modifier.fillMaxSize())
-            FilledTonalIconButton(onShuffle, Modifier.align(Alignment.BottomEnd).padding(6.dp).size(42.dp).testTag("playlist-shuffle-${playlist.id}"), enabled = enabled) {
-                Icon(Icons.Default.Shuffle, "Shuffle and play ${playlist.name}")
-            }
-        }
+        Artwork(playlist.coverArtId, artworkUrl, Modifier.size(132.dp))
         Text(playlist.name, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Hint("${playlist.songCount} songs" + if (stale) " · last known" else "")
     }
@@ -441,6 +438,7 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
         return
     }
     var showRating by rememberSaveable(session.connectionId, song.id) { mutableStateOf(false) }
+    var showOutput by rememberSaveable { mutableStateOf(false) }
     var attemptedRating by rememberSaveable(session.connectionId, song.id) { mutableStateOf<Int?>(null) }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val scrollFallback = maxHeight < 580.dp || LocalDensity.current.fontScale > 1.3f
@@ -448,10 +446,6 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
             Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
                 AudioIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back") { actions.showScreen(Screen.PLAYLISTS) }
                 Text(session.playlistName, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                TextButton({ actions.showScreen(Screen.QUEUE) }, Modifier.testTag("player-queue")) {
-                    Icon(Icons.AutoMirrored.Filled.QueueMusic, null)
-                    Text("Queue", Modifier.padding(start = 6.dp))
-                }
                 SettingsGear()
             }
             Box(if (scrollFallback) Modifier.fillMaxWidth().height(140.dp) else Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -487,11 +481,39 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
                 AudioIcon(Icons.Default.SkipNext, "Next track", Modifier.testTag("player-next"), onClick = actions::next)
                 AudioIcon(if (session.repeatMode == 1) Icons.Default.RepeatOne else Icons.Default.Repeat, "Repeat", Modifier.semantics { stateDescription = when (session.repeatMode) { 1 -> "Repeat one"; 2 -> "Repeat all"; else -> "Off" } }, active = session.repeatMode != 0, onClick = actions::toggleRepeat)
             }
+            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                val device = state.mediaOutput.selected
+                val label = device?.name ?: "Choose device"
+                TextButton({ actions.refreshMediaOutputs(); showOutput = true }, Modifier.weight(1f).heightIn(min = 52.dp).testTag("player-output").semantics { contentDescription = "Choose output, $label" }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(outputDeviceIcon(device?.kind), null)
+                        Column(Modifier.weight(1f)) {
+                            Text("Media output", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text(label, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                        Icon(Icons.Default.ExpandMore, null, Modifier.size(18.dp))
+                    }
+                }
+                TextButton({ actions.showScreen(Screen.QUEUE) }, Modifier.heightIn(min = 52.dp).testTag("player-queue")) {
+                    Icon(Icons.AutoMirrored.Filled.QueueMusic, null)
+                    Text("Queue", Modifier.padding(start = 6.dp))
+                }
+            }
             Spacer(Modifier.height(16.dp))
             ErrorMessage(state.error)
         }
     }
     if (showRating) RatingDialog(song.title, song.artist, song.userRating, state.ratingBusy, state.ratingError, attemptedRating, onRate = { attemptedRating = it; actions.rateSong(it) }, onClose = { showRating = false })
+    if (showOutput) MediaOutputSheet(state.mediaOutput, actions, onClose = { showOutput = false })
+}
+
+internal fun outputDeviceIcon(kind: OutputDeviceKind?): ImageVector = when (kind) {
+    OutputDeviceKind.PHONE -> Icons.Default.PhoneAndroid
+    OutputDeviceKind.HEADPHONES -> Icons.Default.Headphones
+    OutputDeviceKind.BLUETOOTH -> Icons.Default.BluetoothAudio
+    OutputDeviceKind.USB -> Icons.Default.Usb
+    OutputDeviceKind.SPEAKER -> Icons.Default.Speaker
+    else -> Icons.AutoMirrored.Filled.VolumeUp
 }
 
 private fun timeLabel(milliseconds: Long): String {

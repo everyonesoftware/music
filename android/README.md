@@ -20,6 +20,16 @@ Music replaces Audio as the native app's display name only. The application ID, 
 - The title-side rating trigger opens five large choices. `setRating` is followed by `getSong`; only the server-confirmed value becomes local state. Failures retain the last confirmed value. Clear sends zero. Responses are bound to the captured account/song, not whichever song is visible when a request completes.
 - Settings supports adding/switching connections, changing accessible-library selections and opening Navidrome administration in the browser. Library preferences are local browsing preferences, not permissions, server folder management, playlist filters or changes to an existing queue. Album/all-song browsing, local account removal UI and playlist editing are not implemented.
 
+## Phone media output
+
+Now Playing shows the current Android media output at bottom left and Queue at bottom right. Tapping the output opens a native device picker. On Android 14+ it requests Nearby devices access (`BLUETOOTH_CONNECT` and `BLUETOOTH_SCAN`) and lists only system routes actually reported by Android. It does not scan for unpaired devices, offer Cast destinations, or invent separate speaker/wired outputs when Android exposes only a combined device route.
+
+Output changes use `MediaRouter2.transferTo`; the displayed selection changes only after Android confirms it. Pending transfers, disconnects, rejected requests and timeouts stay separate from the listening queue. Routing observers run only while the activity is in the foreground and refresh when it resumes or permissions change. Pairing remains in Android device settings.
+
+On Android 8–13, the picker reports the current framework route and links to Android device settings rather than claiming to switch devices using legacy route bookkeeping, which can disagree with hardware while playback is paused. No privileged audio-routing permission, call-audio override or ExoPlayer preferred-device hint is used.
+
+Validation separates real framework route reporting/permission updates on an emulator from deterministic transfer tests using an injected backend. Audible Bluetooth/wired transfers, paused-device behavior and physical disconnects still need a hardware trial.
+
 ## Android Auto: first integration, not yet host-validated
 
 The manifest declares media support, and the existing `MediaLibraryService` serves a shallow Playlists / Queue tree. Android Auto supplies the actual browsing and playback UI; this is not a custom car activity or the HTML mockup embedded in a WebView.

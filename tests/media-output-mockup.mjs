@@ -1,0 +1,50 @@
+import { chromium } from 'playwright';
+import assert from 'node:assert/strict';
+import { mkdir } from 'node:fs/promises';
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1200, height: 1000 } });
+const source = new URL('../mockups/now-playing-media-output.html', import.meta.url).href;
+const errors = [];
+page.on('pageerror', e => errors.push(e.message));
+try {
+  await page.goto(source);
+  const output = page.getByRole('button', { name: 'Choose output, This phone', exact: true });
+  const queue = page.getByRole('button', { name: 'Open queue', exact: true });
+  const o = await output.boundingBox(), q = await queue.boundingBox();
+  assert.ok(o.x < q.x && Math.abs(o.y - q.y) < 10);
+  const play = await page.getByRole('button', { name: 'Pause', exact: true }).boundingBox();
+  assert.ok(o.y >= play.y + play.height);
+  await output.click();
+  const dialog = page.getByRole('dialog', { name: 'Media output', exact: true });
+  assert.ok(await dialog.isVisible());
+  await page.getByRole('radio', { name: 'Wireless headphones Bluetooth', exact: true }).click();
+  assert.equal(await dialog.isVisible(), false);
+  const updated = page.getByRole('button', { name: 'Choose output, Wireless headphones', exact: true });
+  assert.ok(await updated.isVisible());
+  await updated.click();
+  assert.equal(await page.getByRole('radio', { name: 'Wireless headphones Bluetooth', exact: true }).getAttribute('aria-checked'), 'true');
+  await page.keyboard.press('Escape');
+  assert.equal(await dialog.isVisible(), false);
+  assert.ok(await updated.evaluate(el => document.activeElement === el));
+  await queue.click();
+  assert.ok(await page.getByRole('dialog', { name: 'Queue', exact: true }).isVisible());
+  await page.getByRole('button', { name: 'Close Queue', exact: true }).click();
+  for (const width of [360, 390, 768, 1200]) {
+    await page.setViewportSize({ width, height: 1000 });
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
+    await updated.click();
+    assert.equal(await dialog.evaluate(el => el.scrollWidth > el.clientWidth), false);
+    await page.keyboard.press('Escape');
+  }
+  await page.setViewportSize({ width: 1200, height: 1000 });
+  await mkdir(new URL('../test-results/', import.meta.url), { recursive: true });
+  await page.screenshot({ path: new URL('../test-results/media-output-player.png', import.meta.url).pathname, fullPage: true });
+  await updated.click();
+  await page.screenshot({ path: new URL('../test-results/media-output-picker.png', import.meta.url).pathname, fullPage: true });
+  assert.deepEqual(errors, []);
+  const staticPage = await browser.newPage({ javaScriptEnabled: false });
+  await staticPage.goto(source);
+  assert.ok(await staticPage.getByText('Lavender Haze', { exact: true }).first().isVisible());
+  assert.ok(await staticPage.getByRole('button', { name: 'Choose output, This phone', exact: true }).isVisible());
+  console.log('PASS: footer placement; picker open/select/reopen/Escape/focus; queue; four responsive widths; no JS errors; static fallback.');
+} finally { await browser.close(); }

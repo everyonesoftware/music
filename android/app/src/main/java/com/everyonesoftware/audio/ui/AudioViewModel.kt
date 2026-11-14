@@ -22,11 +22,15 @@ import com.everyonesoftware.audio.playback.PlaybackService
 import com.everyonesoftware.audio.playback.CarLibrary
 import com.everyonesoftware.audio.playback.CarMediaIds
 import com.everyonesoftware.audio.playback.SessionRules
+import com.everyonesoftware.audio.playback.output.AndroidMediaOutputBackend
+import com.everyonesoftware.audio.playback.output.MediaOutputBackend
+import com.everyonesoftware.audio.playback.output.MediaOutputController
 import com.google.common.util.concurrent.ListenableFuture
 import java.util.UUID
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -38,9 +42,11 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.receiveAsFlow
 
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
-class AudioViewModel @JvmOverloads constructor(application: Application, private val graph: AudioGraph = (application as AudioApplication).graph, private val connectController: Boolean = true) : AndroidViewModel(application), AudioUiActions {
+class AudioViewModel @JvmOverloads constructor(application: Application, private val graph: AudioGraph = (application as AudioApplication).graph, private val connectController: Boolean = true,
+    outputBackend: MediaOutputBackend? = if (connectController) AndroidMediaOutputBackend(application) else null) : AndroidViewModel(application), AudioUiActions {
     private val current = MutableStateFlow(AudioUiState())
     val state = current.asStateFlow()
+    private val mediaOutput = outputBackend?.let { MediaOutputController(it, viewModelScope) }
     private var operation: Job? = null
     private var albumsOperation: Job? = null
     private var searchOperation: Job? = null
@@ -59,10 +65,15 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     } else null
 
     init {
+        mediaOutput?.let { output ->
+            viewModelScope.launch { output.state.collect { routes -> current.update { it.copy(mediaOutput = routes) } } }
+        }
         viewModelScope.launch {
             graph.updates.state.collect { updates -> current.update { it.copy(updates = updates) } }
         }
-        initialization = viewModelScope.launch {
+        // Main.immediate may run startup to completion inline. Publish the Job before any
+        // startup-triggered refresh can join it (also true for an already-bootstrapped graph).
+        initialization = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
                 graph.bootstrap()
                 restoreConnection()
@@ -75,6 +86,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { current.update { it.copy(booting = false, error = safeMessage(error)) } }
         }
+        initialization.start()
         viewModelScope.launch {
             graph.session.collect { session -> current.update { it.copy(session = session, positionMs = session?.positionMs ?: 0) } }
         }
@@ -262,11 +274,16 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     fun onForeground() {
+        mediaOutput?.start()
+        mediaOutput?.refresh()
         if (connectController) graph.updates.onForeground()
         if (!current.value.booting && current.value.screen == Screen.PLAYLISTS) loadPlaylists()
     }
 
-    fun onBackground() { installOperation?.cancel() }
+    fun onBackground() { installOperation?.cancel(); mediaOutput?.stop() }
+
+    override fun refreshMediaOutputs() { mediaOutput?.refresh() }
+    override fun selectMediaOutput(id: String) { mediaOutput?.select(id) }
 
     override fun checkForUpdates() { graph.updates.coordinator.check() }
     override fun setAutomaticUpdates(enabled: Boolean) { graph.updates.coordinator.setAutomaticChecks(enabled) }
@@ -509,6 +526,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     override fun onCleared() {
+        mediaOutput?.stop()
         controllerFuture?.let(MediaController::releaseFuture)
         super.onCleared()
     }

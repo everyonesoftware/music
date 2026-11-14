@@ -11,7 +11,8 @@
     "test:phone-size": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node tests/phone-size.mjs",
     "test:onboarding": "node scripts/build-onboarding.mjs && node tests/first-install.mjs",
     "test:workflow": "node tests/playlist-workflow.mjs",
-    "test:auto": "node tests/android-auto.mjs"
+    "test:auto": "node tests/android-auto.mjs",
+    "test:now-playing": "node tests/now-playing-options.mjs"
   },
   "devDependencies": {
     "playwright": "1.56.1"
