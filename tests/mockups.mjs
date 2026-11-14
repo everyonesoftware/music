@@ -24,7 +24,7 @@ async function load(hash) {
   await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 }
 try {
-  for (const width of [1440, 390, 320]) {
+  for (const width of [1440, 1080, 1024, 801, 800, 390, 320]) {
     await page.setViewportSize({ width, height: 1240 });
     for (const direction of directions) {
       for (const screen of screens) {
@@ -47,6 +47,30 @@ try {
         }, direction);
         assert.deepEqual(geometry, { outerOverflow: false, innerOverflow: false, brokenImages: 0, playerFooterClipped: false, controlsOutside: 0 }, `${direction}/${screen} at ${width}: ${JSON.stringify(geometry)}`);
         checks.push(`${width}: ${direction}/${screen} geometry and artwork`);
+      }
+    }
+  }
+  for (const width of [1440, 1080, 1024, 801, 800, 390, 320]) {
+    await page.setViewportSize({ width, height: 1240 });
+    for (const screen of screens) {
+      await load('all/' + screen);
+      for (const direction of directions) {
+        const geometry = await page.locator('.device.' + direction).evaluate(device => {
+          const content = device.querySelector('.app-content');
+          const bounds = device.getBoundingClientRect();
+          const footer = device.querySelector('.player-footer');
+          return {
+            outerOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+            innerOverflow: content.scrollWidth > content.clientWidth,
+            playerFooterClipped: !!footer && footer.getBoundingClientRect().bottom > content.getBoundingClientRect().bottom,
+            controlsOutside: [...device.querySelectorAll('.playback button, .bottom-nav button')].filter(button => {
+              const rect = button.getBoundingClientRect();
+              return rect.right > bounds.right + 1 || rect.left < bounds.left - 1;
+            }).length
+          };
+        });
+        assert.deepEqual(geometry, { outerOverflow: false, innerOverflow: false, playerFooterClipped: false, controlsOutside: 0 }, `all/${screen}/${direction} at ${width}: ${JSON.stringify(geometry)}`);
+        checks.push(`${width}: all/${screen}/${direction} geometry`);
       }
     }
   }
