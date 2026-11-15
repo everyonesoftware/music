@@ -31,6 +31,9 @@
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <EmbeddedResource Include="Shell.xaml" LogicalName="Music.App.Shell.xaml" />
+    <!-- WinUI and the SDK already include image content; keep one PRI entry per asset. -->
+    <Content Remove="Assets/Music.ico;Assets/Music.png" />
+    <None Remove="Assets/Music.ico;Assets/Music.png" />
     <Content Include="Assets/Music.ico" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="Assets/Music.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>

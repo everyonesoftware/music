@@ -4,6 +4,7 @@ import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { inflateSync } from 'node:zlib';
 
 const root = new URL('../', import.meta.url);
@@ -12,6 +13,9 @@ const sizes = [16, 20, 24, 32, 40, 48, 64, 96, 128, 256];
 test('executable and runtime branding assets are included in build and publish', () => {
   const project = readFileSync(new URL('apps/windows/Music.App/Music.App.csproj', root), 'utf8');
   assert.match(project, /<ApplicationIcon>Assets[\\/]Music\.ico<\/ApplicationIcon>/);
+  const removal = project.indexOf('<Content Remove="Assets/Music.ico;Assets/Music.png"');
+  assert.ok(removal >= 0, 'remove implicit WinUI/SDK icon content before adding publish metadata');
+  assert.ok(removal < project.indexOf('<Content Include="Assets/Music.ico"'));
   for (const asset of ['Music.ico', 'Music.png']) {
     const content = project.match(new RegExp(`<Content Include="Assets[\\\\/]${asset.replace('.', '\\.')}"[^>]+/>`))?.[0];
     assert.ok(content, `${asset} must be runtime content`);
@@ -50,7 +54,7 @@ test('generator creates a deterministic multi-size ICO from Android equalizer ar
   assert.ok(existsSync(generator), 'Android-to-Windows icon generator is missing');
   const output = mkdtempSync(join(tmpdir(), 'music-branding-'));
   try {
-    const run = spawnSync(process.execPath, [generator.pathname, '--output-directory', output], { encoding: 'utf8' });
+    const run = spawnSync(process.execPath, [fileURLToPath(generator), '--output-directory', output], { encoding: 'utf8' });
     assert.equal(run.status, 0, run.stderr);
     const ico = readFileSync(join(output, 'Music.ico'));
     assert.equal(ico.readUInt16LE(0), 0);
