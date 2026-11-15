@@ -31,4 +31,9 @@
     <PackageReference Include="Velopack" Version="1.2.161" />
     <EmbeddedResource Include="Shell.xaml" LogicalName="Music.App.Shell.xaml" />
   </ItemGroup>
+  <Target Name="PublishMergedWinUIResources" AfterTargets="Publish" Condition="'$(OS)' == 'Windows_NT'">
+    <!-- The PRI targets generate this after the SDK computes its publish inventory. -->
+    <Error Condition="!Exists('$(ProjectPriFullPath)')" Text="Native Windows publish requires the generated merged WinUI resource index." />
+    <Copy SourceFiles="$(ProjectPriFullPath)" DestinationFiles="$(PublishDir)resources.pri" />
+  </Target>
 </Project>

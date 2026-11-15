@@ -60,6 +60,8 @@ test('application resources initialize after WinUI core startup but before shell
 test('native Windows builds generate and install the merged WinUI resource index', () => {
   const project = readFileSync(new URL('../apps/windows/Music.App/Music.App.csproj', import.meta.url), 'utf8');
   assert.ok(project.includes('<AppxGeneratePriEnabled Condition="\'$(OS)\' == \'Windows_NT\'">true</AppxGeneratePriEnabled>'));
+  assert.ok(project.includes('AfterTargets="Publish"'));
+  assert.ok(project.includes('SourceFiles="$(ProjectPriFullPath)" DestinationFiles="$(PublishDir)resources.pri"'));
   assert.ok(source().includes("'current\\resources.pri'"));
 });
 
