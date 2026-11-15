@@ -37,6 +37,37 @@ public sealed class SessionTests : IDisposable
     }
 
     [Theory]
+    [InlineData("connection", "invalid-connection")]
+    [InlineData("queue", "invalid-queue")]
+    [InlineData("index", "invalid-queue-index")]
+    [InlineData("position", "invalid-playback-position")]
+    [InlineData("song", "invalid-song-id")]
+    [InlineData("artwork", "invalid-artwork-id")]
+    public void Session_validation_identifies_the_rejected_field_without_exposing_values(string field, string code)
+    {
+        const string signed = "https://private-server/rest/stream?id=private-song&t=private-token";
+        var snapshot = new PlaybackSnapshot("home", new[] { Expected }, 0, 1, false, false);
+        snapshot = field switch
+        {
+            "connection" => snapshot with { ConnectionId = " " },
+            "queue" => snapshot with { Queue = null! },
+            "index" => snapshot with { Index = 1 },
+            "position" => snapshot with { PositionSeconds = double.NaN },
+            "song" => snapshot with { Queue = new[] { Expected with { Id = signed } } },
+            "artwork" => snapshot with { Queue = new[] { Expected with { CoverArtId = signed } } },
+            _ => throw new InvalidOperationException()
+        };
+        using var store = new SessionStore(DatabasePath);
+        store.SavePlayback(new PlaybackSnapshot("home", new[] { Expected }, 0, 42, false, false));
+        var error = Assert.Throws<ArgumentException>(() => store.SavePlayback(snapshot));
+        Assert.Equal(code, SessionSaveFailure.Code(error));
+        Assert.Contains($"({code})", SessionSaveFailure.Message(error));
+        Assert.DoesNotContain("private-", SessionSaveFailure.Message(error));
+        Assert.DoesNotContain("private-", error.ToString());
+        Assert.Equal(42, store.LoadPlayback("home")!.PositionSeconds);
+    }
+
+    [Theory]
     [InlineData(-1, 0)] [InlineData(1, 0)] [InlineData(0, -1)] [InlineData(0, double.NaN)] [InlineData(0, double.PositiveInfinity)]
     public void Invalid_snapshot_is_rejected_without_replacing_previous_session(int index, double position)
     {

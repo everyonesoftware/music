@@ -19,7 +19,16 @@ public static class SessionSaveFailure
         },
         UnauthorizedAccessException => "storage-permission",
         IOException => "storage-io",
-        ArgumentException => "invalid-metadata",
+        ArgumentException argument => argument.ParamName switch
+        {
+            nameof(PlaybackSnapshot.ConnectionId) => "invalid-connection",
+            nameof(PlaybackSnapshot.Queue) => "invalid-queue",
+            nameof(PlaybackSnapshot.Index) => "invalid-queue-index",
+            nameof(PlaybackSnapshot.PositionSeconds) => "invalid-playback-position",
+            nameof(Song.Id) => "invalid-song-id",
+            nameof(Song.CoverArtId) => "invalid-artwork-id",
+            _ => "invalid-metadata"
+        },
         _ => "unexpected"
     };
 
@@ -32,6 +41,12 @@ public static class SessionSaveFailure
             "storage-read-only" or "storage-permission" => "Check write access to Music's local app data.",
             "storage-busy" => "Close other Music windows and try again.",
             "storage-damaged" => "The local session database needs repair; your server library is unaffected.",
+            "invalid-connection" => "The local session has no connection identifier. Report this error code.",
+            "invalid-queue" => "The local session has no queue. Report this error code.",
+            "invalid-queue-index" => "The selected track is outside the local session queue. Report this error code.",
+            "invalid-playback-position" => "The playback position cannot be saved. Report this error code.",
+            "invalid-song-id" => "A queued song has a missing identifier or one recognized as a URL. Report this error code.",
+            "invalid-artwork-id" => "Queued artwork has an identifier recognized as a URL. Report this error code.",
             "invalid-metadata" => "The queue contains metadata that cannot be safely saved.",
             _ => "Try again; if it persists, report this error code."
         };

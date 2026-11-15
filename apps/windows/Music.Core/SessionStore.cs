@@ -62,13 +62,23 @@ public sealed class SessionStore : IDisposable
 
     private static void Validate(PlaybackSnapshot snapshot)
     {
-        if (string.IsNullOrWhiteSpace(snapshot.ConnectionId) || snapshot.Queue is null ||
-            !double.IsFinite(snapshot.PositionSeconds) || snapshot.PositionSeconds < 0 ||
-            (snapshot.Queue.Count == 0 ? snapshot.Index != -1 || snapshot.PositionSeconds != 0 : snapshot.Index < 0 || snapshot.Index >= snapshot.Queue.Count) ||
-            snapshot.Queue.Any(song => song is null || string.IsNullOrWhiteSpace(song.Id) ||
-                Uri.TryCreate(song.Id, UriKind.Absolute, out _) ||
-                (song.CoverArtId is not null && Uri.TryCreate(song.CoverArtId, UriKind.Absolute, out _))))
-            throw new ArgumentException("Invalid playback snapshot. Store unsigned song identifiers and a valid queue position.");
+        // Parameter names are fixed field identifiers, never server values.
+        if (string.IsNullOrWhiteSpace(snapshot.ConnectionId))
+            throw new ArgumentException("Invalid session connection.", nameof(PlaybackSnapshot.ConnectionId));
+        if (snapshot.Queue is null)
+            throw new ArgumentException("Missing session queue.", nameof(PlaybackSnapshot.Queue));
+        if (!double.IsFinite(snapshot.PositionSeconds) || snapshot.PositionSeconds < 0 ||
+            (snapshot.Queue.Count == 0 && snapshot.PositionSeconds != 0))
+            throw new ArgumentException("Invalid session playback position.", nameof(PlaybackSnapshot.PositionSeconds));
+        if (snapshot.Queue.Count == 0 ? snapshot.Index != -1 : snapshot.Index < 0 || snapshot.Index >= snapshot.Queue.Count)
+            throw new ArgumentException("Invalid session queue index.", nameof(PlaybackSnapshot.Index));
+        foreach (var song in snapshot.Queue)
+        {
+            if (song is null || string.IsNullOrWhiteSpace(song.Id) || Uri.TryCreate(song.Id, UriKind.Absolute, out _))
+                throw new ArgumentException("Session requires unsigned song identifiers.", nameof(Song.Id));
+            if (song.CoverArtId is not null && Uri.TryCreate(song.CoverArtId, UriKind.Absolute, out _))
+                throw new ArgumentException("Session requires unsigned artwork identifiers.", nameof(Song.CoverArtId));
+        }
     }
 
     public void Dispose() => database.Dispose();
