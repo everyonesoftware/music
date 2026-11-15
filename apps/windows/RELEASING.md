@@ -5,7 +5,8 @@
 - `scripts/build-windows-installer.py`: Windows-only orchestration of tests, a real self-contained x64 publish, pinned Velopack packaging, and integrity metadata.
 - `scripts/windows-release.py`: commit-count versioning, package validation, checksum generation, and guarded GitHub publication.
 - `apps/windows/.config/dotnet-tools.json`: pins `vpk` to **1.2.161**, matching the app's Velopack NuGet package.
-- `.github/workflows/windows-release.yml`: build, smoke-test, and automatically publish an **unsigned Windows prerelease** on relevant `main` pushes; manual build-only runs remain available.
+- `.github/workflows/windows-release.yml`: build and smoke-test Windows on every `main` push, publish the Windows prerelease, then attach the verified unsigned installer to the matching main **Music** release; manual build-only runs remain available.
+- `scripts/attach-windows-installer.mjs`: add the installer and its dedicated checksum to the same-version, same-source `v0.1.<count>` release without replacing Android assets.
 - `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
 
 The app calls Velopack before WinUI initialization so installer lifecycle arguments can be handled without opening the window or session database. Automatic apply-on-startup is explicitly disabled. **In-app update checking/download/restart is not enabled by this tooling change.**
@@ -47,12 +48,14 @@ Only a Start menu shortcut is requested. No startup or launch-at-sign-in registr
 
 Commit and push the tooling and application only when ready and authorized. Nothing is published merely by adding these files locally.
 
-Relevant pushes to `main` now run **Package and release Windows installer** automatically and publish only after packaging, integrity validation, and install/launch/uninstall succeed. The trigger includes Windows application sources, release helpers, smoke-test scripts/tests, and this release workflow. Android's workflow and latest-release policy are unchanged.
+Every push to `main` now runs **Package and release Windows installer** automatically and publishes only after packaging, integrity validation, and install/launch/uninstall succeed. Running for every main push keeps Windows installers aligned with the Android versions, even when the change is outside the Windows paths. Android's workflow and latest-release policy are unchanged.
+
+The main release named **Music 0.1.&lt;count&gt;** (`v0.1.<count>`) receives `MusicWindows-win-x64-Setup.exe` and `MusicWindows-win-x64-Setup.exe.sha256` in its Assets alongside the APK. The full Windows feed/package/integrity inventory remains in the separate `windows-v0.1.<count>` prerelease. The attachment step waits up to ten minutes for Android's matching main release to become published, refuses a mismatched source/tag, and never creates or edits that release. Authentication/network failures are not treated as a release still being built.
 
 For an explicit manual run, choose **Package and release Windows installer**:
 
 1. Leave **publish_preview** off to build and retain a downloadable installer artifact only.
-2. Enable **publish_preview** to build, validate, and publish a Windows prerelease. Publication is restricted to `main`.
+2. Enable **publish_preview** to build, validate, publish the Windows prerelease, and attach its installer to the matching main Music release. Publication is restricted to `main`.
 
 Equivalent commands after the workflow exists on GitHub:
 
@@ -75,13 +78,15 @@ Run the workflow and smoke-script contract checks locally with `node --test test
 
 A full-history commit count determines `0.1.<count>`, with a Windows tag `windows-v0.1.<count>`. The count is restricted to **1–65534** because C# AssemblyVersion does not accept 65535 as a component. A shallow/unborn checkout is rejected. The app's published version and informational source SHA are set explicitly.
 
-Windows uses package ID `MusicWindows`, runtime/channel `win-x64`, and Windows-only filenames. Android tags and APK assets are untouched. Windows publication always sets `prerelease=true` and `latest=false`; it never promotes itself over Android's existing repository-wide latest release.
+Windows uses package ID `MusicWindows`, runtime/channel `win-x64`, and Windows-only filenames. Android tags and APK assets are untouched. The Windows-specific release sets `prerelease=true` and `latest=false`; attaching the installer to the main Music release does not change its title, notes, publication flags, or latest-release status.
 
 ## Publication safety
 
 The publisher validates package/channel/version identity, x64 PE headers, native Windows and .NET payload completeness, package/runtime JSON metadata, feed hashes/sizes, the legacy index, NuGet metadata, and the complete asset inventory. Unsafe zip paths, symlinks, duplicate names, extra assets, missing assets, and tampering are rejected.
 
 It creates or repairs only a matching unpublished draft, downloads and verifies the uploaded bytes, then publishes and reads back the exact release/tag/source SHA and bytes again. Published assets are immutable to this tool: reruns verify the retained original artifacts, never overwrite them. Use a new commit/version for changed binaries. Authentication/network errors do not count as a missing release.
+
+The main-release attachment helper adds only missing installer/checksum assets without `--clobber`. Matching existing bytes are verified, conflicting bytes are rejected, and a partial attachment can be resumed. It downloads the uploaded installer/checksum to verify their exact bytes and reads back the source identity and existing unrelated assets before reporting success. It does not rebuild an older version under a newer commit identity.
 
 For a previously built package, publication can be invoked separately from a clean checkout at the **same commit**:
 

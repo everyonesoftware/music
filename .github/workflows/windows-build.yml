@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/attach-windows-installer.mjs'
       - 'scripts/test-windows-installer.ps1'
       - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
@@ -14,6 +15,7 @@ on:
   pull_request:
     # Installer lifecycle contracts also run for pull requests.
     paths:
+      - 'scripts/attach-windows-installer.mjs'
       - 'scripts/test-windows-installer.ps1'
       - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
@@ -50,7 +52,7 @@ jobs:
       - name: Test installer and guarded release tooling
         run: python3 -m unittest discover -s ../../tests -p 'test_windows_*.py' -v
       - name: Test Windows workflow and smoke-test contracts
-        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs
+        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs ../../tests/windows-shared-release.test.mjs
 
   windows:
     name: Compile and publish native Windows app

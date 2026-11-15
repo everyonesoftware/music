@@ -3,17 +3,10 @@ name: Package and release Windows installer
 on:
   push:
     branches: [main]
-    paths:
-      - 'apps/windows/**'
-      - 'scripts/*windows*.py'
-      - 'scripts/test-windows-installer.ps1'
-      - 'tests/test_windows_*.py'
-      - 'tests/windows-*.test.mjs'
-      - '.github/workflows/windows-release.yml'
   workflow_dispatch:
     inputs:
       publish_preview:
-        description: 'Publish an unsigned Windows prerelease after package verification'
+        description: 'Publish unsigned Windows assets and attach the installer to the matching Music release'
         required: true
         type: boolean
         default: false
@@ -46,7 +39,7 @@ jobs:
           global-json-file: apps/windows/global.json
       - name: Test Windows workflow and smoke-test contracts
         shell: pwsh
-        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs
+        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs
       - name: Build real self-contained payload, installer and integrity manifest
         shell: pwsh
         run: python scripts/build-windows-installer.py --output-directory dist/windows-build --allow-unsigned
@@ -98,7 +91,7 @@ jobs:
           include-hidden-files: false
 
   publish:
-    name: Publish and read back Windows prerelease
+    name: Publish Windows assets and attach installer to Music release
     needs: package
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_preview)
     runs-on: ubuntu-24.04
@@ -125,3 +118,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/windows-release.py publish --directory dist/windows-release --repository "$GH_REPO"
+      - name: Attach verified installer to the matching Music release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/attach-windows-installer.mjs --directory dist/windows-release --repository "$GH_REPO"
