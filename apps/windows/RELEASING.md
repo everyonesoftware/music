@@ -5,13 +5,14 @@
 - `scripts/build-windows-installer.py`: Windows-only orchestration of tests, a real self-contained x64 publish, pinned Velopack packaging, and integrity metadata.
 - `scripts/windows-release.py`: commit-count versioning, package validation, checksum generation, and guarded GitHub publication.
 - `apps/windows/.config/dotnet-tools.json`: pins `vpk` to **1.2.161**, matching the app's Velopack NuGet package.
-- `.github/workflows/windows-release.yml`: manually build an installer artifact; optionally publish a verified **unsigned Windows prerelease**.
+- `.github/workflows/windows-release.yml`: build, smoke-test, and automatically publish an **unsigned Windows prerelease** on relevant `main` pushes; manual build-only runs remain available.
+- `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
 
 The app calls Velopack before WinUI initialization so installer lifecycle arguments can be handled without opening the window or session database. Automatic apply-on-startup is explicitly disabled. **In-app update checking/download/restart is not enabled by this tooling change.**
 
 ## First usable release gate
 
-Full package builds must run on Windows. The release builder refuses Linux and refuses uncommitted release source. It also rejects compile-only payloads that lack the self-contained .NET and native Windows App SDK files. The Windows application and installer still need real Windows smoke testing; packaging success alone is not proof of launch/audio/upgrade behavior.
+Full package builds must run on Windows. The release builder refuses Linux and refuses uncommitted release source. It also rejects compile-only payloads that lack the self-contained .NET and native Windows App SDK files. Publication requires the packaged installer to pass the Windows install/launch/uninstall smoke test. This is not proof of audio, hardware routing, authenticated use, or upgrade behavior; those still require separate acceptance testing.
 
 The current pipeline deliberately creates **unsigned previews only**. No code-signing certificate has been configured. Windows security tools may flag an unsigned installer. SHA-256 checks verify file integrity, not publisher identity. Signed/stable distribution remains a separate setup and verification step; the metadata tool refuses to claim signing has happened.
 
@@ -46,7 +47,9 @@ Only a Start menu shortcut is requested. No startup or launch-at-sign-in registr
 
 Commit and push the tooling and application only when ready and authorized. Nothing is published merely by adding these files locally.
 
-In GitHub Actions, choose **Package and release Windows installer**:
+Relevant pushes to `main` now run **Package and release Windows installer** automatically and publish only after packaging, integrity validation, and install/launch/uninstall succeed. The trigger includes Windows application sources, release helpers, smoke-test scripts/tests, and this release workflow. Android's workflow and latest-release policy are unchanged.
+
+For an explicit manual run, choose **Package and release Windows installer**:
 
 1. Leave **publish_preview** off to build and retain a downloadable installer artifact only.
 2. Enable **publish_preview** to build, validate, and publish a Windows prerelease. Publication is restricted to `main`.
@@ -59,6 +62,14 @@ gh workflow run windows-release.yml --ref main -f publish_preview=true
 ```
 
 Do not run both commands unless you intentionally want two builds. Monitor the selected run to completion and inspect its installer artifact and metadata. The general `windows-build.yml` workflow continues running code/tests on applicable pushes and pull requests; it does not automatically publish releases.
+
+The smoke test runs the actual setup executable, not the loose publish output, and fails closed when the native window cannot be verified. Its logs, screenshot, and structured result are retained in the `music-windows-smoke-<sha>` Actions artifact even when the test fails. Only a successful package job provides the installer artifact to the publish job. Do not bypass a failed smoke test to publish.
+
+Run the workflow and smoke-script contract checks locally with `node --test tests/windows-*.test.mjs`. These checks validate the automation wiring; they do not execute a Windows installation on Linux. To exercise an already-built installer on Windows, use:
+
+```powershell
+./scripts/test-windows-installer.ps1 -InstallerPath dist/windows/<version>/releases/MusicWindows-win-x64-Setup.exe -EvidenceDirectory dist/windows-smoke
+```
 
 ## Version and platform isolation
 
@@ -85,6 +96,6 @@ Replace `<version>` with the actual metadata value. A changed HEAD cannot publis
 
 Run the tooling tests with `python -m unittest discover -s tests -p 'test_windows_*.py' -v`. Test publication uses explicit injected GitHub fixtures; it does not publish a real release.
 
-Velopack's real Windows pack command was also exercised in Linux cross-pack mode against the actual compiled application and emitted a real Windows setup executable. That internal probe uses the compile-only Windows App SDK layout and is **not a distributable release**. Production validation correctly rejects it for missing native Windows App SDK payload files. Full Windows build, installation, uninstall, upgrade, credential/session survival and actual app runtime remain Windows acceptance gates. Signing and the in-app update UI remain unfinished.
+Velopack's real Windows pack command was also exercised in Linux cross-pack mode against the actual compiled application and emitted a real Windows setup executable. That internal probe uses the compile-only Windows App SDK layout and is **not a distributable release**. Production validation correctly rejects it for missing native Windows App SDK payload files. The workflow now gates publication on a native Windows build and install/launch/uninstall smoke test; consult the exact run and its evidence rather than treating local contract checks as a Windows pass. Upgrade, credential/session survival, playback, and physical device behavior remain acceptance gates. Signing and the in-app update UI remain unfinished.
 
 Primary references: Velopack's Getting Started (C#), Packaging Overview, Release Channels, Windows CLI reference and Integrating Overview documentation. CLI arguments and output formats were additionally checked against the installed pinned `vpk` tool, not inferred from another version.

@@ -1,6 +1,15 @@
 name: Package and release Windows installer
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/windows/**'
+      - 'scripts/*windows*.py'
+      - 'scripts/test-windows-installer.ps1'
+      - 'tests/test_windows_*.py'
+      - 'tests/windows-*.test.mjs'
+      - '.github/workflows/windows-release.yml'
   workflow_dispatch:
     inputs:
       publish_preview:
@@ -31,12 +40,27 @@ jobs:
         uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
         with:
           global-json-file: apps/windows/global.json
+      - name: Test Windows workflow and smoke-test contracts
+        shell: pwsh
+        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs
       - name: Build real self-contained payload, installer and integrity manifest
         shell: pwsh
         run: python scripts/build-windows-installer.py --output-directory dist/windows-build --allow-unsigned
       - name: Revalidate the packaged artifacts
         shell: pwsh
         run: python scripts/windows-release.py validate --directory dist/windows-build/releases
+      - name: Install, launch and uninstall the packaged Windows app
+        shell: pwsh
+        run: ./scripts/test-windows-installer.ps1 -InstallerPath dist/windows-build/releases/MusicWindows-win-x64-Setup.exe -EvidenceDirectory dist/windows-smoke
+      - name: Retain Windows smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-windows-smoke-${{ github.sha }}
+          path: dist/windows-smoke/
+          if-no-files-found: warn
+          retention-days: 30
+          include-hidden-files: false
       - name: Retain the installer and update packages
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -49,7 +73,7 @@ jobs:
   publish:
     name: Publish and read back Windows prerelease
     needs: package
-    if: inputs.publish_preview && github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_preview)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:

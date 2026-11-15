@@ -4,13 +4,18 @@ on:
   push:
     branches: [main]
     paths:
+      - 'scripts/test-windows-installer.ps1'
+      - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
       - '.github/workflows/windows-build.yml'
       - '.github/workflows/windows-release.yml'
       - 'scripts/*windows*.py'
       - 'tests/test_windows_*.py'
   pull_request:
+    # Installer lifecycle contracts also run for pull requests.
     paths:
+      - 'scripts/test-windows-installer.ps1'
+      - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
       - '.github/workflows/windows-build.yml'
       - '.github/workflows/windows-release.yml'
@@ -44,6 +49,8 @@ jobs:
         run: dotnet run --project validation/LogicChecks.csproj --configuration Release
       - name: Test installer and guarded release tooling
         run: python3 -m unittest discover -s ../../tests -p 'test_windows_*.py' -v
+      - name: Test Windows workflow and smoke-test contracts
+        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs
 
   windows:
     name: Compile and publish native Windows app

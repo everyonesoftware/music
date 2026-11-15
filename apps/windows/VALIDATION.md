@@ -47,6 +47,10 @@ The repository-wide `npm test` was executed with the installed Chromium selected
 
 ## Windows acceptance — not yet executed
 
+The installer release workflow now includes an automated install → responsive native-window launch with screenshot → uninstall gate before publication. Relevant `main` pushes publish an unsigned Windows prerelease only when that gate succeeds. Read the exact hosted run and its `music-windows-smoke-<sha>` evidence for results; the local contract suite is not a native acceptance pass.
+
+Local automation checks for this gate: **11 Node tests passed, 0 skipped**, including PowerShell syntax parsing, compilation of the Win32 interop helper, and real Linux fail-closed execution with diagnostic readback. Both Windows workflows pass `actionlint 1.7.12`. The existing **26 Windows tooling tests** and **19 Android tests matching `test_android_*.py`** pass. The browser suite still fails: using installed Chromium, `tests/playlist-workflow.mjs:122` returns null restored state; the identical assertion also fails on a scratch export of unchanged HEAD. This is a browser-prototype persistence failure, not a native Windows test. No browser assertions were weakened.
+
 - [ ] Default self-contained Windows build/publish succeeds without the Linux overrides.
 - [ ] Blank first launch creates a native window; all runtime XAML and default control templates load.
 - [ ] Connect to a trusted HTTPS Navidrome server using credentials typed locally; restart retrieves the password securely.
@@ -59,4 +63,4 @@ The repository-wide `npm test` was executed with the installed Chromium selected
 - [ ] Switching accounts during pending requests does not display old artwork or use old song IDs.
 - [ ] Minimize, resize, long labels, large libraries, unavailable streams, and shutdown during in-flight operations behave correctly.
 
-The push workflow runs these checks on Linux and Windows and publishes a self-contained native Windows build artifact; consult its run history for the latest result. The first Windows run caught a test-only SQLite file-sharing issue: raw database inspection must happen after disposing the store. The signed-media rejection test now closes the store before reading its file. Installer/release tooling is implemented, but installer packaging, installation, actual Windows release publication and upgrade/apply/restart behavior still require separate validation. Signing and in-app update checks are not enabled. Song rating API support exists in Core, but the native rating UI and a full dedicated Now Playing screen are not included yet.
+The build workflow runs code checks on Linux and Windows and publishes a self-contained native Windows build artifact; the release workflow additionally packages and smoke-tests the installer before publishing. Consult their exact run histories for verified outcomes. The first Windows run caught a test-only SQLite file-sharing issue: raw database inspection must happen after disposing the store. The signed-media rejection test now closes the store before reading its file. Upgrade/apply/restart behavior, authenticated use, playback and hardware behavior still require separate validation. Signing and in-app update checks are not enabled. Song rating API support exists in Core, but the native rating UI and a full dedicated Now Playing screen are not included yet.
