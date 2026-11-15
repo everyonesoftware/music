@@ -244,7 +244,9 @@ namespace MusicSmoke {
     if (-not (Test-Path -LiteralPath $registryPath)) { throw 'Installer did not register MusicWindows' }
     $registration = Get-ItemProperty -LiteralPath $registryPath
     if ($registration.InstallLocation.TrimEnd('\') -ine $installRoot.TrimEnd('\')) { throw 'Installer registered a different install location' }
-    Write-Json $registration 'registration.json'
+    # Registry provider metadata includes recursive PSDrive/PSProvider object graphs.
+    # Serializing that live object can hang despite the bounded installer process.
+    Write-Json ($registration | Select-Object DisplayName, DisplayVersion, InstallLocation, UninstallString) 'registration.json'
     $links = @(Get-StartMenuLinks)
     Write-Json $links 'installed-shortcuts.json'
     if (-not @($links | Where-Object { $_.target.StartsWith($installRoot + '\', [StringComparison]::OrdinalIgnoreCase) }).Count) {

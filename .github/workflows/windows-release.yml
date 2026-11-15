@@ -54,6 +54,7 @@ jobs:
         shell: pwsh
         run: python scripts/windows-release.py validate --directory dist/windows-build/releases
       - name: Install, launch and uninstall the packaged Windows app
+        timeout-minutes: 5
         shell: pwsh
         run: ./scripts/test-windows-installer.ps1 -InstallerPath dist/windows-build/releases/MusicWindows-win-x64-Setup.exe -EvidenceDirectory dist/windows-smoke
       - name: Retain Windows smoke diagnostics

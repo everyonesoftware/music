@@ -39,6 +39,11 @@ test('failure retains diagnostics and always attempts scoped cleanup, without ma
   assert.doesNotMatch(source(), /Stop-Process\s+-Name|Remove-Item[^\r\n]*\$env:LOCALAPPDATA/);
 });
 
+test('registry evidence serializes only scalar fields, never recursive provider metadata', () => {
+  assert.match(source(), /Write-Json \(\$registration \| Select-Object DisplayName, DisplayVersion, InstallLocation, UninstallString\) 'registration\.json'/);
+  assert.doesNotMatch(source(), /Write-Json \$registration 'registration\.json'/);
+});
+
 const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
 test('PowerShell parser accepts the complete script when pwsh is available', { skip: probe.error?.code === 'ENOENT' ? 'pwsh is not installed; native Windows acceptance still required' : false }, () => {
   assert.equal(probe.status, 0, probe.stderr);

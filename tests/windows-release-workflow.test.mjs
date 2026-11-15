@@ -30,6 +30,10 @@ test('real installer smoke test gates the exact artifacts used for publication',
   assert.ok(workflow.includes('node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs'));
 });
 
+test('native lifecycle gate has an independent hard step timeout', () => {
+  assert.match(workflow, /name: Install, launch and uninstall the packaged Windows app\s+timeout-minutes: 5/);
+});
+
 test('Windows publication stays unsigned and isolated from Android latest', () => {
   assert.ok(workflow.includes('--allow-unsigned'));
   assert.ok(workflow.includes('scripts/windows-release.py publish'));
