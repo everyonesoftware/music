@@ -65,6 +65,10 @@ test('native Windows builds generate and install the merged WinUI resource index
   assert.ok(source().includes("'current\\resources.pri'"));
 });
 
+test('screenshots maximize the real window and exclude invisible DWM resize borders', () => {
+  includes(source(), ['ShowWindow($Candidate.Handle, 3)', 'DwmGetWindowAttribute', 'DWMWA_EXTENDED_FRAME_BOUNDS']);
+});
+
 const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
 test('PowerShell parser accepts the complete script when pwsh is available', { skip: probe.error?.code === 'ENOENT' ? 'pwsh is not installed; native Windows acceptance still required' : false }, () => {
   assert.equal(probe.status, 0, probe.stderr);

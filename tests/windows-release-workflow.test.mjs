@@ -36,6 +36,7 @@ test('native lifecycle gate has an independent hard step timeout', () => {
 
 test('failed native launches get a bounded pinned debugger diagnostic before evidence upload', () => {
   assert.ok(workflow.includes("if: failure() && steps.smoke.outcome == 'failure'"));
+  assert.ok(workflow.includes("hashFiles('dist/windows-smoke/app-exit.json') != ''"));
   assert.ok(workflow.includes('67a8e1d39421a5ef5309c7017327c6a70ea6215a0e56e47ec22a7e9ec3b914e6'));
   assert.ok(workflow.includes('--no-build --configuration Release --debug-output --symbols'));
   assert.match(workflow, /name: Diagnose native startup failure\s+if:[^\n]+\s+timeout-minutes: 4/);

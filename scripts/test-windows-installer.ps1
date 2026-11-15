@@ -131,12 +131,16 @@ function Get-RemainingInstallation {
 }
 function Save-WindowScreenshot($Candidate) {
     # Refuse a background/occluded window: capture pixels from a foreground visible window.
-    $null = [MusicSmoke.Native]::ShowWindow($Candidate.Handle, 9)
+    $null = [MusicSmoke.Native]::ShowWindow($Candidate.Handle, 3) # maximize to fit the runner display
     $null = [MusicSmoke.Native]::SetForegroundWindow($Candidate.Handle)
     Start-Sleep -Milliseconds 750
     if ([MusicSmoke.Native]::GetForegroundWindow() -ne $Candidate.Handle) { throw 'Cannot bring Music window to foreground for screenshot' }
     $rect = [MusicSmoke.Native+RECT]::new()
-    if (-not [MusicSmoke.Native]::GetWindowRect($Candidate.Handle, [ref]$rect)) { throw 'Cannot read screenshot bounds' }
+    # GetWindowRect includes invisible resize borders outside the display when maximized.
+    # DWMWA_EXTENDED_FRAME_BOUNDS (9) gives the actual visible physical-pixel frame.
+    if ([MusicSmoke.Native]::DwmGetWindowAttribute($Candidate.Handle, 9, [ref]$rect, [Runtime.InteropServices.Marshal]::SizeOf($rect)) -ne 0) {
+        throw 'Cannot read visible screenshot bounds from DWM'
+    }
     $bounds = [Windows.Forms.SystemInformation]::VirtualScreen
     $width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
     if ($width -lt 100 -or $height -lt 100 -or $rect.Left -lt $bounds.Left -or $rect.Top -lt $bounds.Top -or
@@ -195,6 +199,7 @@ namespace MusicSmoke {
         [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hWnd);
         [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
         [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+        [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hWnd, int attribute, out RECT rect, int size);
         [DllImport("user32.dll")] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
         [DllImport("user32.dll")] public static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll")] public static extern bool SwitchDesktop(IntPtr desktop);
