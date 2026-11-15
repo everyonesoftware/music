@@ -4,6 +4,10 @@ import test from 'node:test';
 
 const workflow = readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
 
+test('native release subprocesses read UTF-8 source independently of the Windows locale', () => {
+  assert.match(workflow, /env:\s+(?:#[^\n]*\n\s+)?PYTHONUTF8: '1'/);
+});
+
 test('Windows releases run automatically on relevant main pushes, with build-only dispatch retained', () => {
   assert.match(workflow, /push:\s+branches: \[main\]/);
   for (const input of ['apps/windows/**', 'scripts/test-windows-installer.ps1', 'tests/windows-*.test.mjs']) {

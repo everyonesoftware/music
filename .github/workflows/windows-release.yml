@@ -21,6 +21,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # Existing source-contract tests must decode UTF-8 on Windows, not the host code page.
+  PYTHONUTF8: '1'
+
 jobs:
   package:
     name: Build and verify Windows installer
