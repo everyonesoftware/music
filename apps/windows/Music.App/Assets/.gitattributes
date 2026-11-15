@@ -1,0 +1,2 @@
+# The deterministic icon generator emits LF; preserve exact bytes on Windows.
+Music.svg text eol=lf
