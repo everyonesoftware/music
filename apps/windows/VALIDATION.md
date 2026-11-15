@@ -14,13 +14,13 @@ generated WinRT marshalling. Comparing clean outputs of the same source:
 This is an 84,255,817-byte reduction in the managed/.NET publish subset. Both
 outputs deliberately omit native WinUI payload and merged PRI processing; these
 figures are **not** an installer size, full application size, or installed footprint.
-No trimmed installer has been published or native trimmed UI exercised here.
+No trimmed installer has been publicly released. Native hosted evidence is below.
 
 Local checks:
 
 - Core: 100 tests passed with JSON reflection disabled, including legacy JSON
   compatibility and exact persistence shape. Update-source suite: 12 passed.
-- Windows Node/visual checks: 138 passed, 3 PowerShell-dependent tests skipped.
+- Windows Node/visual checks: 153 passed, 0 skipped, with real PowerShell available.
 - Actual self-contained trimmed Linux compatibility executable passed; it uses
   the real Core and pinned Velopack libraries with explicit HTTP fixtures.
 - Normal Windows-targeted C# compile check: 0 warnings, 0 errors.
@@ -32,10 +32,50 @@ Local checks:
   (library-setup vertical overflow), also reproduced on unchanged HEAD with the
   same Chromium and dependencies.
 
-Native acceptance remains required for runtime XAML/templates, authenticated
-connection and PasswordVault, browse/search, real media playback/device routing,
-profile/session restoration, and old-install → newer-trimmed-package upgrades.
-The manual build-only workflow input prepares a native artifact, not acceptance.
+### Native hosted evidence — November 15, 2026
+
+Run `43689468756` tested source `26cdee86e53ec20bc0ab68636212bc4c2e7217ca`
+on `windows-2025`, using internal fixture versions `0.1.32000` (untrimmed) and
+`0.1.32001` (trimmed). These are build-only fixtures, not public releases.
+Normal releases remain untrimmed.
+
+The full native builds used real Windows publish/PRI processing, self-contained
+.NET and WinUI, and strict trimming warnings. The uninstrumented builds measured:
+
+| Full native output | Untrimmed bytes | Trimmed bytes | Reduction |
+| --- | ---: | ---: | ---: |
+| Setup executable | 79,890,858 | 46,537,629 | 42% |
+| Publish directory | 174,700,277 | 90,443,858 | 48% |
+
+The actual fresh trimmed installation contained **135,113,984 bytes**:
+90,287,459 bytes in `current`, 39,019,421 bytes in retained package cache, and
+5,807,104 bytes in updater/stub/other files. Publish-directory size is not the
+same as the installed footprint; both were measured separately.
+
+Verified on Windows:
+
+- Exact uninstrumented trimmed setup installed, displayed a responsive rendered
+  native window with screenshot evidence, closed, and uninstalled cleanly.
+- Separately instrumented fixture builds used the real WinUI controls and
+  production client behind an explicit HTTP fixture handler. Library, search,
+  album/playlist detail, and queue checks passed, including realized fixture text.
+- Real PasswordVault storage/retrieval passed. A real installed untrimmed-to-trimmed
+  package upgrade retained the legacy-compatible profile, vault credential,
+  duplicate queue, logical saved position, shuffle/repeat, and view preferences.
+- The production restore path restored the saved state paused. Fixture credential
+  cleanup, upgraded-install uninstall, owned-shortcut removal, and directory
+  cleanup passed with no cleanup errors.
+- Core and update suites passed on Windows; the trimmed compatibility executable
+  and source/security contracts passed on Linux.
+
+**Acceptance is partial, not passed.** The runner had no enabled audio renderer.
+Both native media probes explicitly reported `renderer-unavailable`; actual
+source opening, decoder seek, playback-clock advancement, pause, audible output,
+and hardware routing were not verified. The workflow deliberately failed rather
+than approving incomplete acceptance. Logical position restoration is not proof
+of a native decoder seek. Real HTTPS/server authentication also remains outside
+the injected fixture transport. Audio-capable Windows acceptance is still needed
+before enabling trimming for normal releases.
 
 ## UI, branding, and user-initiated updater changes
 
