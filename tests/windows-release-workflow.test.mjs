@@ -31,7 +31,14 @@ test('real installer smoke test gates the exact artifacts used for publication',
 });
 
 test('native lifecycle gate has an independent hard step timeout', () => {
-  assert.match(workflow, /name: Install, launch and uninstall the packaged Windows app\s+timeout-minutes: 5/);
+  assert.match(workflow, /name: Install, launch and uninstall the packaged Windows app\s+id: smoke\s+timeout-minutes: 5/);
+});
+
+test('failed native launches get a bounded pinned debugger diagnostic before evidence upload', () => {
+  assert.ok(workflow.includes("if: failure() && steps.smoke.outcome == 'failure'"));
+  assert.ok(workflow.includes('67a8e1d39421a5ef5309c7017327c6a70ea6215a0e56e47ec22a7e9ec3b914e6'));
+  assert.ok(workflow.includes('--no-build --configuration Release --debug-output --symbols'));
+  assert.match(workflow, /name: Diagnose native startup failure\s+if:[^\n]+\s+timeout-minutes: 4/);
 });
 
 test('Windows publication stays unsigned and isolated from Android latest', () => {
