@@ -1,0 +1,78 @@
+name: Test and build Windows Music
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/windows/**'
+      - '.github/workflows/windows-build.yml'
+      - '.github/workflows/windows-release.yml'
+      - 'scripts/*windows*.py'
+      - 'tests/test_windows_*.py'
+  pull_request:
+    paths:
+      - 'apps/windows/**'
+      - '.github/workflows/windows-build.yml'
+      - '.github/workflows/windows-release.yml'
+      - 'scripts/*windows*.py'
+      - 'tests/test_windows_*.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Test protocol and persistence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Run real protocol and SQLite tests
+        run: dotnet test Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Check runtime XAML source contracts
+        run: python3 -m unittest discover -s validation -p 'test_source_contracts.py' -v
+      - name: Test request isolation and view policies
+        run: dotnet run --project validation/LogicChecks.csproj --configuration Release
+      - name: Test installer and guarded release tooling
+        run: python3 -m unittest discover -s ../../tests -p 'test_windows_*.py' -v
+
+  windows:
+    name: Compile and publish native Windows app
+    runs-on: windows-2025
+    needs: core
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: apps/windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Run tests on Windows
+        run: dotnet test Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Derive the Windows version from committed history
+        id: version
+        run: python ../../scripts/windows-release.py version --github-output "$env:GITHUB_OUTPUT"
+      - name: Publish self-contained x64 app
+        run: dotnet publish Music.App/Music.App.csproj --configuration Release --runtime win-x64 --self-contained true -p:Version=${{ steps.version.outputs.version }} -p:InformationalVersion=${{ steps.version.outputs.version }}+${{ github.sha }} --output artifacts/windows/win-x64
+      - name: Retain the Windows build for manual testing
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-windows-x64-${{ github.sha }}
+          path: apps/windows/artifacts/windows/win-x64/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false

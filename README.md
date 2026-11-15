@@ -1,6 +1,12 @@
-# Music — playlist-first Android music player
+# Music — native music players for Navidrome
 
-A native Android alpha for Navidrome, plus the preserved interactive design studies that informed its layout. Native behavior is verified against isolated local protocol/audio fixtures; compatibility with a personal live Navidrome server and physical-device audio behavior remain to be tested.
+A native Android alpha for Navidrome, an initial Windows implementation, and the preserved interactive design studies that informed their layouts. See each platform's verification notes; compile checks and isolated fixtures are not substitutes for device/runtime and personal-server testing.
+
+## Windows — first implementation checkpoint
+
+The native C#/WinUI 3 client is in `apps/windows/`, following the approved Familiar sage desktop design. It has a separate .NET protocol/SQLite core and tests, native XAML shell, connection settings backed by Windows Credential Locker, collection browsing, and Windows MediaPlayer integration. There is no embedded browser or production demo library.
+
+Build commands, architecture, and explicit limitations are in [`apps/windows/README.md`](apps/windows/README.md). [Windows installer/release tooling](apps/windows/RELEASING.md) uses Velopack and a guarded, separate GitHub prerelease workflow; it does not change Android's release pipeline. Signing, in-app update controls, installation/upgrade testing, and Windows runtime verification remain separate work. Existing mockups are preserved at `mockups/windows-native-v3.html`.
 
 ## Native Android alpha
 

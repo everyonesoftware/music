@@ -1,0 +1,25 @@
+using Music.App;
+int assertions = 0;
+void Check(bool value, string message) { assertions++; if (!value) throw new Exception(message); }
+using var gate = new RequestGate();
+var first = gate.Begin();
+var second = gate.Begin();
+Check(first.Token.IsCancellationRequested, "superseded work must cancel");
+Check(!gate.IsCurrent(first), "stale request cannot publish");
+Check(gate.IsCurrent(second), "latest request may publish");
+gate.Cancel();
+Check(!gate.IsCurrent(second) && second.Token.IsCancellationRequested, "navigation invalidates active work");
+Check(BrowsePolicy.DefaultMode("songs") == "list", "songs start in list mode");
+Check(BrowsePolicy.DefaultMode("albums") == "grid", "albums start in grid mode");
+Check(BrowsePolicy.DefaultMode("playlists") == "grid", "playlists start in grid mode");
+Check(BrowsePolicy.ShowSection("library", "albums", 2), "library groups albums first");
+Check(!BrowsePolicy.ShowSection("library", "albums", 0), "zero match sections hidden");
+Check(!BrowsePolicy.ShowSection("songs", "albums", 2), "dedicated page isolates collection");
+Check(BrowsePolicy.ShowViewAll("library") && !BrowsePolicy.ShowViewAll("albums"), "view all links only in library");
+Check(ConnectionIdentity.SameAccount("https://EXAMPLE.test/music", "dan", "https://example.test:443/music/", "dan"), "same normalized account keeps its session");
+Check(!ConnectionIdentity.SameAccount("https://example.test/music", "dan", "https://other.test/music/", "dan"), "different host never receives another server's queue");
+Check(!ConnectionIdentity.SameAccount("https://example.test/music", "dan", "https://example.test/other/", "dan"), "server path isolates accounts");
+Check(!ConnectionIdentity.SameAccount("https://example.test/music", "dan", "https://example.test/music/", "Dan"), "username comparison preserves server-defined case");
+Check(!ConnectionIdentity.SameAccount("https://example.test/Music", "dan", "https://example.test/music/", "dan"), "server path case is significant");
+Check(!ConnectionIdentity.SameAccount("not a URL", "dan", "https://example.test/music/", "dan"), "invalid stored URL cannot inherit a session");
+Console.WriteLine($"PASS: cancellation/version isolation, browsing policy, and connection identity ({assertions} assertions)");
