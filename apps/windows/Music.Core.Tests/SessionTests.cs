@@ -28,9 +28,11 @@ public sealed class SessionTests : IDisposable
     {
         const string signed = "https://server/rest/stream.view?id=s&t=private-token&s=private-salt";
         var song = songId ? Expected with { Id = signed } : Expected with { CoverArtId = signed };
-        using var store = new SessionStore(DatabasePath);
-        Assert.Throws<ArgumentException>(() => store.SavePlayback(new PlaybackSnapshot("home", new[] { song }, 0, 0, false, false)));
-        Assert.Null(store.LoadPlayback("home"));
+        using (var store = new SessionStore(DatabasePath))
+        {
+            Assert.Throws<ArgumentException>(() => store.SavePlayback(new PlaybackSnapshot("home", new[] { song }, 0, 0, false, false)));
+            Assert.Null(store.LoadPlayback("home"));
+        }
         Assert.DoesNotContain("private-token", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(DatabasePath)));
     }
 
