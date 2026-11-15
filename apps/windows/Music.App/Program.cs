@@ -41,11 +41,13 @@ public sealed class MusicApplication : Application, Microsoft.UI.Xaml.Markup.IXa
     public MusicApplication()
     {
         UnhandledException += (_, args) => StartupDiagnostics.Write(args.Exception, Environment.GetEnvironmentVariable("MUSIC_STARTUP_DIAGNOSTICS"));
-        Resources.MergedDictionaries.Add(new XamlControlsResources());
-        Resources["SystemAccentColor"] = Windows.UI.Color.FromArgb(255, 192, 215, 174);
     }
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {
+        // Application.Start invokes the constructor before the internal core application
+        // exists. Runtime-XAML resources must wait until launch, before loading the shell.
+        Resources.MergedDictionaries.Add(new XamlControlsResources());
+        Resources["SystemAccentColor"] = Windows.UI.Color.FromArgb(255, 192, 215, 174);
         window = new MainWindow();
         window.Activate();
     }

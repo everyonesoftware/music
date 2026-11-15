@@ -48,6 +48,15 @@ test('launch failures retain process exit details and opt-in startup diagnostics
   includes(source(), ['MUSIC_STARTUP_DIAGNOSTICS', 'app-exit.json', '$app.HasExited', '$app.ExitCode']);
 });
 
+test('application resources initialize after WinUI core startup but before shell construction', () => {
+  const program = readFileSync(new URL('../apps/windows/Music.App/Program.cs', import.meta.url), 'utf8');
+  const constructor = program.split('public MusicApplication()')[1].split('protected override void OnLaunched')[0];
+  assert.doesNotMatch(constructor, /Resources\[|Resources\.MergedDictionaries/);
+  const launch = program.split('protected override void OnLaunched')[1];
+  assert.ok(launch.indexOf('Resources.MergedDictionaries.Add(new XamlControlsResources())') >= 0);
+  assert.ok(launch.indexOf('Resources.MergedDictionaries') < launch.indexOf('new MainWindow()'));
+});
+
 const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
 test('PowerShell parser accepts the complete script when pwsh is available', { skip: probe.error?.code === 'ENOENT' ? 'pwsh is not installed; native Windows acceptance still required' : false }, () => {
   assert.equal(probe.status, 0, probe.stderr);
