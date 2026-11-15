@@ -9,7 +9,15 @@
 - `scripts/attach-windows-installer.mjs`: add the installer and its dedicated checksum to the same-version, same-source `v0.1.<count>` release without replacing Android assets.
 - `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
 
-The app calls Velopack before WinUI initialization so installer lifecycle arguments can be handled without opening the window or session database. Automatic apply-on-startup is explicitly disabled. **In-app update checking/download/restart is not enabled by this tooling change.**
+The app calls Velopack before WinUI initialization so installer lifecycle arguments can be handled without opening the window or session database. Automatic checking and apply-on-startup remain disabled. Settings now offers explicit **Check for updates → Download update → Restart and install** actions. This implementation still requires native installed-app upgrade acceptance; a successful cross-build is not that acceptance.
+
+### User-initiated updates
+
+The updater reads the public `everyonesoftware/music` repository without a credential. It pages releases (up to ten pages of 100), selects the highest numeric `windows-v0.1.<count>` release, and uses only its `releases.win-x64.json` feed and matching `MusicWindows` full package. It rejects other repositories, mismatched versions/architectures, missing or ambiguous packages, and downgrades. A truncated inventory is an error, not an up-to-date result. GitHub rate limits and connectivity failures are retryable errors.
+
+Downloading does not install or restart. The explicit restart action must save the current queue and playback position successfully before invoking Velopack. Save failure blocks installation; credentials and connection files are not replaced by the updater. Loose development builds explain that installation is required. Window shutdown cancels active downloading and detaches panel handlers.
+
+Run `dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj -c Release` as well as the Core tests. The workflow runs these before packaging. Validate a real old-install → newer-package upgrade on Windows, including paused restoration, credentials, layout settings, interruption/retry, and installed icon rendering, before claiming the upgrade path is proven.
 
 ## First usable release gate
 
@@ -30,6 +38,8 @@ From the repository root:
 python scripts/build-windows-installer.py --plan
 
 # Explicitly acknowledge unsigned-preview packaging.
+# vpk 1.2.161 reads VPK_ICON as its --icon option; inherited by the Python runner.
+$env:VPK_ICON = (Resolve-Path apps/windows/Music.App/Assets/Music.ico).Path
 python scripts/build-windows-installer.py --allow-unsigned
 ```
 
@@ -43,6 +53,12 @@ The default output is `dist/windows/<version>/`. Nonempty output directories are
 - `SHA256SUMS` — checksums for the five Velopack artifacts.
 
 Only a Start menu shortcut is requested. No startup or launch-at-sign-in registration is requested. Packaging includes the supported Visual C++ x64 runtime prerequisite; .NET and the Windows App SDK are bundled in the published application.
+
+### Shared Android/Windows branding
+
+`node scripts/generate-windows-icons.mjs` regenerates `Music.App/Assets/Music.ico`, `Music.png`, and `Music.svg` directly from Android's `ic_audio_foreground.xml` and `icon_colors.xml`. The ICO contains 16/20/24/32/40/48/64/96/128/256px 32-bit PNG frames. The app embeds the ICO into its executable and copies ICO/PNG to build and publish output. The release workflow sets the pinned Velopack `VPK_ICON` environment option so setup, uninstaller, and shortcut branding use the same icon without changing the Python orchestration. Local builders must set it as shown above; omitting it leaves Velopack's package icon unspecified.
+
+Run `node --test tests/windows-branding.test.mjs` after changing Android icon resources or regenerating assets. Native Windows acceptance must still check the installed shortcut, taskbar, and setup/uninstall icons; source contracts and Linux cross-pack probes cannot establish shell rendering.
 
 ## GitHub Actions
 
@@ -101,6 +117,6 @@ Replace `<version>` with the actual metadata value. A changed HEAD cannot publis
 
 Run the tooling tests with `python -m unittest discover -s tests -p 'test_windows_*.py' -v`. Test publication uses explicit injected GitHub fixtures; it does not publish a real release.
 
-Velopack's real Windows pack command was also exercised in Linux cross-pack mode against the actual compiled application and emitted a real Windows setup executable. That internal probe uses the compile-only Windows App SDK layout and is **not a distributable release**. Production validation correctly rejects it for missing native Windows App SDK payload files. The workflow now gates publication on a native Windows build and install/launch/uninstall smoke test; consult the exact run and its evidence rather than treating local contract checks as a Windows pass. Upgrade, credential/session survival, playback, and physical device behavior remain acceptance gates. Signing and the in-app update UI remain unfinished.
+Velopack's real Windows pack command was also exercised in Linux cross-pack mode against the actual compiled application and emitted a real Windows setup executable. That internal probe uses the compile-only Windows App SDK layout and is **not a distributable release**. Production validation correctly rejects it for missing native Windows App SDK payload files. The workflow now gates publication on a native Windows build and install/launch/uninstall smoke test; consult the exact run and its evidence rather than treating local contract checks as a Windows pass. Upgrade/apply/restart, credential/session survival, playback, and physical device behavior remain acceptance gates. The user-initiated update UI is implemented; signing remains unconfigured.
 
 Primary references: Velopack's Getting Started (C#), Packaging Overview, Release Channels, Windows CLI reference and Integrating Overview documentation. CLI arguments and output formats were additionally checked against the installed pinned `vpk` tool, not inferred from another version.

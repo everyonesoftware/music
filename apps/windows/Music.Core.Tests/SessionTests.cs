@@ -13,6 +13,30 @@ public sealed class SessionTests : IDisposable
     public void Dispose() => Directory.Delete(directory, true);
 
     [Theory]
+    [InlineData(13, "storage-full")]
+    [InlineData(8, "storage-read-only")]
+    [InlineData(5, "storage-busy")]
+    [InlineData(6, "storage-busy")]
+    [InlineData(11, "storage-damaged")]
+    [InlineData(10, "storage-io")]
+    public void Session_save_failure_reports_safe_actionable_codes(int sqliteCode, string expected)
+    {
+        var failure = new Microsoft.Data.Sqlite.SqliteException("private-token server-url username", sqliteCode);
+        Assert.Equal(expected, SessionSaveFailure.Code(failure));
+        Assert.DoesNotContain("private-token", SessionSaveFailure.Message(failure));
+    }
+
+    [Fact]
+    public void Session_save_failure_does_not_expose_metadata_or_exception_details()
+    {
+        Assert.Equal("invalid-metadata", SessionSaveFailure.Code(new ArgumentException("signed-url private-token")));
+        Assert.Equal("storage-permission", SessionSaveFailure.Code(new UnauthorizedAccessException("private-path")));
+        Assert.Equal("storage-io", SessionSaveFailure.Code(new IOException("private-path")));
+        Assert.Equal("unexpected", SessionSaveFailure.Code(new InvalidOperationException("private-token")));
+        Assert.DoesNotContain("private-token", SessionSaveFailure.Message(new Exception("private-token")));
+    }
+
+    [Theory]
     [InlineData(-1, 0)] [InlineData(1, 0)] [InlineData(0, -1)] [InlineData(0, double.NaN)] [InlineData(0, double.PositiveInfinity)]
     public void Invalid_snapshot_is_rejected_without_replacing_previous_session(int index, double position)
     {
@@ -99,5 +123,22 @@ public sealed class SessionTests : IDisposable
         Assert.True(loaded.Shuffle);
         Assert.False(loaded.Repeat);
         Assert.Null(reopened.LoadPlayback("different-server"));
+    }
+
+    [Fact]
+    public void Large_playlist_session_survives_periodic_saves_and_reopen()
+    {
+        var queue = Enumerable.Range(0, 602)
+            .Select(i => Expected with { Id = $"song-{i}", Title = $"Bauklötze 雪 {i}", CoverArtId = $"mf-art-{i}" }).ToArray();
+        using (var store = new SessionStore(DatabasePath))
+        {
+            for (int tick = 0; tick < 20; tick++)
+                store.SavePlayback(new PlaybackSnapshot("home", queue, 601, tick * 5, false, true));
+        }
+        using var reopened = new SessionStore(DatabasePath);
+        var loaded = Assert.IsType<PlaybackSnapshot>(reopened.LoadPlayback("home"));
+        Assert.Equal(queue, loaded.Queue);
+        Assert.Equal(601, loaded.Index);
+        Assert.Equal(95, loaded.PositionSeconds);
     }
 }

@@ -18,6 +18,7 @@ namespace Music.App;
 public sealed class MainWindow : Window
 {
     private readonly Grid root;
+    private readonly WindowsUpdatesPanel updatesPanel;
     private readonly RequestGate browseGate = new(), connectGate = new(), testGate = new(), artworkGate = new(), playingArtGate = new(), connectionGate = new();
     private RequestGate.Lease connectionLease;
     private readonly ArtworkLoader artwork = new();
@@ -36,6 +37,7 @@ public sealed class MainWindow : Window
     private long browseResultsVersion;
     private long playbackVersion;
     private double restoredPosition;
+    private string? sessionSaveWarning;
     private MediaSource? mediaSource;
     private Windows.Foundation.TypedEventHandler<MediaPlayer, object>? openedHandler;
     private T C<T>(string name) where T : class => (T)root.FindName(name);
@@ -49,6 +51,13 @@ public sealed class MainWindow : Window
         root = (Grid)XamlReader.Load(reader.ReadToEnd());
         Content = root;
         Title = "Music";
+        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Music.ico"));
+        C<Image>("AppIcon").Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
+            new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "Music.png")));
+        updatesPanel = new WindowsUpdatesPanel(root, DispatcherQueue, () =>
+            TrySavePlayback()
+                ? Task.CompletedTask
+                : Task.FromException(new IOException("Session could not be saved.")));
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(C<Border>("TitleBar"));
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1240, 850));
@@ -242,7 +251,7 @@ public sealed class MainWindow : Window
         C<ScrollViewer>("MainScroll").ChangeView(null, 0, null);
         if (target == "settings") C<Border>("QueuePane").Visibility = Visibility.Collapsed;
         mode = ReadMode(target);
-        C<Button>("LayoutButton").Content = mode == "grid" ? "▦  ⌄" : "☷  ⌄";
+        C<SymbolIcon>("LayoutIcon").Symbol = mode == "grid" ? Symbol.ViewAll : Symbol.List;
         SetNavigation();
         if (target != "settings" && client is not null) await LoadBrowseAsync();
     }
@@ -266,7 +275,7 @@ public sealed class MainWindow : Window
     {
         mode = value;
         try { sessions?.SaveView(page, value); } catch { ShowError("Could not save this view preference."); }
-        C<Button>("LayoutButton").Content = mode == "grid" ? "▦  ⌄" : "☷  ⌄";
+        C<SymbolIcon>("LayoutIcon").Symbol = mode == "grid" ? Symbol.ViewAll : Symbol.List;
         if (page != "detail") RenderBrowse();
         else RenderDetail();
     }
@@ -308,7 +317,7 @@ public sealed class MainWindow : Window
     {
         if (client is null || page is "settings" or "detail") return;
         var artLease = artworkGate.Begin();
-        var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear();
+        var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear(); panel.Spacing = 24;
         bool Match(string text) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
         var foundAlbums = albums.Where(a => Match(a.Name + " " + a.Artist)).ToList();
         var foundPlaylists = playlists.Where(p => Match(p.Name)).ToList();
@@ -390,6 +399,26 @@ public sealed class MainWindow : Window
         var owner = connectionLease;
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
         view.SelectionMode = ListViewSelectionMode.None; view.IsItemClickEnabled = true;
+        view.HorizontalAlignment = HorizontalAlignment.Stretch;
+        view.Padding = new Thickness(0);
+        if (layout == "list")
+        {
+            // Stretch the container itself so star columns receive the viewport.
+            var itemStyle = new Style(typeof(ListViewItem));
+            itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+            itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
+            itemStyle.Setters.Add(new Setter(FrameworkElement.MinHeightProperty, 0d));
+            view.ItemContainerStyle = itemStyle;
+            var header = SongGrid(); header.MinHeight = 32;
+            string[] headings = { "#", "Title / artist", "Album", "Time" };
+            for (int column = 0; column < headings.Length; column++)
+            {
+                var heading = Text(headings[column], 12, true);
+                if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
+                Grid.SetColumn(heading, column); header.Children.Add(heading);
+            }
+            section.Children.Add(header);
+        }
         ScrollViewer.SetVerticalScrollMode(view, ScrollMode.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(view, ScrollBarVisibility.Disabled);
         var playQueue = tracks.ToList();
@@ -400,21 +429,35 @@ public sealed class MainWindow : Window
             if (layout == "grid") row = CardElement(new Card(song.Title, song.Artist, song.CoverArtId, index), layout, token);
             else
             {
-                var grid = new Grid { Tag = index, MinHeight = 62, Padding = new Thickness(6, 8, 6, 8), HorizontalAlignment = HorizontalAlignment.Stretch };
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(35) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(160) });
-                grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(48) });
+                var grid = SongGrid(); grid.Tag = index;
                 grid.Children.Add(Text((index + 1).ToString(), 12, true));
-                var copy = new StackPanel { Spacing = 4 }; copy.Children.Add(Text(song.Title, 14)); copy.Children.Add(Text(song.Artist, 12, true)); Grid.SetColumn(copy, 1); grid.Children.Add(copy);
-                var album = Text(song.Album, 12, true); Grid.SetColumn(album, 2); grid.Children.Add(album);
-                var duration = Text(Clock(song.DurationSeconds), 12, true); Grid.SetColumn(duration, 3); grid.Children.Add(duration);
+                var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+                copy.Children.Add(Text(song.Title, 14)); copy.Children.Add(Text(song.Artist, 12, true));
+                ToolTipService.SetToolTip(copy, song.Title + "\n" + song.Artist);
+                Grid.SetColumn(copy, 1); grid.Children.Add(copy);
+                var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
+                var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
                 AutomationProperties.SetName(grid, song.Title + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
             }
             view.Items.Add(row);
         }
         view.ItemClick += (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement { Tag: int index }) StartQueue(playQueue, index); };
         section.Children.Add(view);
+    }
+
+    private static Grid SongGrid()
+    {
+        var grid = new Grid
+        {
+            MinHeight = 56, Padding = new Thickness(6, 8, 6, 8), ColumnSpacing = 12,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 57, 69, 61)), BorderThickness = new Thickness(0, 0, 0, 1)
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.8, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+        return grid;
     }
 
     private void AddLoadMore(StackPanel section)
@@ -471,11 +514,15 @@ public sealed class MainWindow : Window
     private void RenderDetail()
     {
         var lease = artworkGate.Begin();
-        var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear();
-        var back = new Button { Content = "←  Library" }; back.Click += async (_, _) => await NavigateAsync("library"); panel.Children.Add(back);
-        var play = new Button { Content = "Play " + detailTitle, IsEnabled = detailSongs.Count > 0, Background = Sage, Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 36, 52, 31)) };
-        play.Click += (_, _) => StartQueue(detailSongs, 0); panel.Children.Add(play);
-        panel.Children.Add(Text($"{detailSongs.Count} songs", 13, true));
+        var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear(); panel.Spacing = 12;
+        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
+        var back = new Button { Content = "←  Library", Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), Padding = new Thickness(0, 8, 12, 8) };
+        back.Click += async (_, _) => await NavigateAsync("library"); actions.Children.Add(back);
+        var play = new Button { Content = "Play", IsEnabled = detailSongs.Count > 0, Background = Sage, Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 36, 52, 31)), Padding = new Thickness(20, 8, 20, 8) };
+        AutomationProperties.SetName(play, "Play " + detailTitle);
+        play.Click += (_, _) => StartQueue(detailSongs, 0); actions.Children.Add(play);
+        actions.Children.Add(Text($"{detailSongs.Count} songs", 13, true));
+        panel.Children.Add(actions);
         AddSongs(panel, detailSongs, "list", lease.Token);
         C<ScrollViewer>("MainScroll").ChangeView(null, 0, null);
     }
@@ -605,13 +652,31 @@ public sealed class MainWindow : Window
         catch { /* Media sessions can transition while a timer tick is queued. */ }
     }
     private void SavePlayback()
+        => TrySavePlayback();
+
+    private bool TrySavePlayback()
     {
-        if (connection is null || sessions is null || queueIndex < 0) return;
+        if (connection is null || queueIndex < 0) return true;
+        if (sessions is null) return false;
         try
         {
             sessions.SavePlayback(new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true));
+            if (sessionSaveWarning is not null)
+            {
+                var notice = C<InfoBar>("Notice");
+                if (notice.Message == sessionSaveWarning) notice.IsOpen = false;
+                sessionSaveWarning = null;
+            }
+            return true;
         }
-        catch { if (!closed) ShowError("Playback continues, but the local session could not be saved."); }
+        catch (Exception error)
+        {
+            string message = SessionSaveFailure.Message(error);
+            // A dismissed warning stays dismissed while periodic retries continue.
+            if (sessionSaveWarning != message && !closed) ShowError(message);
+            sessionSaveWarning = message;
+            return false;
+        }
     }
     private void RestorePlayback()
     {
@@ -665,7 +730,7 @@ public sealed class MainWindow : Window
             }
             player.AudioDevice = target;
             if (player.AudioDevice?.Id != target?.Id) { ShowError("Windows did not confirm the selected output."); return; }
-            button.Content = "◖  " + (target?.Name ?? "System default output") + "  ⌃";
+            C<TextBlock>("OutputName").Text = target?.Name ?? "System default output";
         }
         catch { if (!closed) ShowError("Audio output selection is unavailable. Windows system output remains in control; no switch was reported."); }
         finally { if (!closed) button.IsEnabled = true; }
@@ -674,6 +739,7 @@ public sealed class MainWindow : Window
     private void Shutdown()
     {
         if (closed) return;
+        updatesPanel.Dispose();
         SavePlayback(); closed = true;
         timer.Stop(); browseGate.Dispose(); connectGate.Dispose(); testGate.Dispose(); artworkGate.Dispose(); playingArtGate.Dispose(); connectionGate.Dispose();
         if (openedHandler is not null) player.MediaOpened -= openedHandler;

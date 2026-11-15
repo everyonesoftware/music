@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'scripts/attach-windows-installer.mjs'
+      - 'scripts/generate-windows-icons.mjs'
       - 'scripts/test-windows-installer.ps1'
       - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
@@ -16,6 +17,7 @@ on:
     # Installer lifecycle contracts also run for pull requests.
     paths:
       - 'scripts/attach-windows-installer.mjs'
+      - 'scripts/generate-windows-icons.mjs'
       - 'scripts/test-windows-installer.ps1'
       - 'tests/windows-*.test.mjs'
       - 'apps/windows/**'
@@ -45,6 +47,10 @@ jobs:
           global-json-file: apps/windows/global.json
       - name: Run real protocol and SQLite tests
         run: dotnet test Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Test Windows update source and controls
+        run: dotnet test Music.Update.Tests/Music.Update.Tests.csproj --configuration Release --logger trx
+      - name: Test Familiar sage visual contracts
+        run: node --test validation/visual-contracts.test.mjs
       - name: Check runtime XAML source contracts
         run: python3 -m unittest discover -s validation -p 'test_source_contracts.py' -v
       - name: Test request isolation and view policies
@@ -52,7 +58,7 @@ jobs:
       - name: Test installer and guarded release tooling
         run: python3 -m unittest discover -s ../../tests -p 'test_windows_*.py' -v
       - name: Test Windows workflow and smoke-test contracts
-        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs ../../tests/windows-shared-release.test.mjs
+        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs ../../tests/windows-shared-release.test.mjs ../../tests/windows-branding.test.mjs ../../tests/windows-window-integration.test.mjs
 
   windows:
     name: Compile and publish native Windows app
@@ -72,6 +78,8 @@ jobs:
           global-json-file: apps/windows/global.json
       - name: Run tests on Windows
         run: dotnet test Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Test Windows update source on Windows
+        run: dotnet test Music.Update.Tests/Music.Update.Tests.csproj --configuration Release --logger trx
       - name: Derive the Windows version from committed history
         id: version
         run: python ../../scripts/windows-release.py version --github-output "$env:GITHUB_OUTPUT"

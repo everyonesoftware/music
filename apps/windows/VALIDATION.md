@@ -1,5 +1,32 @@
 # Windows implementation checkpoint — validation
 
+## UI, branding, and user-initiated updater changes
+
+Executed locally for this change (not native Windows acceptance):
+
+- Core protocol/persistence/updater tests: **95 passed**. Includes a 602-song queue with repeated saves and reopen, safe session-save failure codes, explicit updater actions, error/retry, downgrade refusal, and save-before-restart gating.
+- Update-source/XAML tests: **12 passed**, using the real pinned Velopack library with injected HTTP fixtures. Covers mixed Windows/Android releases, pagination, numeric selection, wrong origins/versions/architectures, missing packages, and empty/unrelated feeds.
+- Windows Node suites plus visual-source contracts: **131 passed, 3 skipped**. Skips require PowerShell, which is unavailable locally. These are source, asset, and automation checks, not rendered WinUI geometry checks.
+- Existing runtime-XAML source contracts: **10 passed**. Executable logic harness: **17 assertions passed**.
+- Integrated Windows-targeted C# cross-build: **0 warnings, 0 errors**. Both workflow YAMLs passed actionlint 1.7.12; the configured NuGet audit reported no known vulnerable packages for Music.App.
+- Existing release regressions: **28 Windows and 19 Android tests passed**. No Python source was added or modified.
+- `npm run test`, with the installed Chromium selected using an external preload, passes mockup/workflow/onboarding/phone-size stages but fails `tests/readable-player.mjs:93`: the phone library-setup screen reports vertical overflow. The identical command fails at the identical assertion in an isolated `git archive HEAD` baseline with the same browser and dependencies. This prototype failure is not introduced by the Windows changes; the whole browser suite is not green.
+
+The reported session-save failure has **not been reproduced**. Its cause is not claimed fixed: errors now expose only safe category codes, dismissed identical warnings stay dismissed while retries continue, and a later successful save clears the corresponding notice. No credentials, exception messages, or signed media URLs enter those diagnostics.
+
+Native acceptance still required:
+
+- [ ] Inspect playlist columns, compact header, navigation, transport icons, and sage sliders at normal and maximized sizes, including the supplied screenshot's DPI and long labels.
+- [ ] Verify the shared Android equalizer artwork in the titlebar, taskbar, installed shortcut, setup, and uninstaller.
+- [ ] Install this updater-enabled build manually first; 0.1.27 cannot update itself from its placeholder panel.
+- [ ] Exercise Check → Download → Restart and install to a newer real package; verify credentials, per-collection layout, queue occurrence/position, and paused restoration survive.
+- [ ] Test network failure/retry, download interruption, and session-save failure blocking restart.
+- [ ] Reproduce the original save warning and use its safe category code to isolate the actual cause.
+
+No updated distributable was published or hosted workflow triggered during these local changes.
+
+## Prior implementation-checkpoint evidence
+
 ## Executed in the development container
 
 - `dotnet test Music.Core.Tests/Music.Core.Tests.csproj -c Release`: **73 passed, 0 failed, 0 skipped**. The TRX is generated at `artifacts/test-results/windows-core.trx` when using the results-directory arguments below.
@@ -49,7 +76,7 @@ The repository-wide `npm test` was executed with the installed Chromium selected
 
 The installer release workflow now includes an automated install → responsive native-window launch with screenshot → uninstall gate before publication. Relevant `main` pushes publish an unsigned Windows prerelease only when that gate succeeds. Read the exact hosted run and its `music-windows-smoke-<sha>` evidence for results; the local contract suite is not a native acceptance pass.
 
-Local automation checks for this gate: **11 Node tests passed, 0 skipped**, including PowerShell syntax parsing, compilation of the Win32 interop helper, and real Linux fail-closed execution with diagnostic readback. Both Windows workflows pass `actionlint 1.7.12`. The existing **26 Windows tooling tests** and **19 Android tests matching `test_android_*.py`** pass. The browser suite still fails: using installed Chromium, `tests/playlist-workflow.mjs:122` returns null restored state; the identical assertion also fails on a scratch export of unchanged HEAD. This is a browser-prototype persistence failure, not a native Windows test. No browser assertions were weakened.
+Prior automation checks for this gate included **11 Node tests passed, 0 skipped** with PowerShell available, plus Windows/Android tooling tests. Those historical results are not the current run. See the UI/branding/updater section above for current results, skips, and the exact independently reproduced browser failure. No browser assertions were weakened.
 
 - [ ] Default self-contained Windows build/publish succeeds without the Linux overrides.
 - [ ] Blank first launch creates a native window; all runtime XAML and default control templates load.
@@ -63,4 +90,4 @@ Local automation checks for this gate: **11 Node tests passed, 0 skipped**, incl
 - [ ] Switching accounts during pending requests does not display old artwork or use old song IDs.
 - [ ] Minimize, resize, long labels, large libraries, unavailable streams, and shutdown during in-flight operations behave correctly.
 
-The build workflow runs code checks on Linux and Windows and publishes a self-contained native Windows build artifact; the release workflow additionally packages and smoke-tests the installer before publishing. Consult their exact run histories for verified outcomes. The first Windows run caught a test-only SQLite file-sharing issue: raw database inspection must happen after disposing the store. The signed-media rejection test now closes the store before reading its file. Upgrade/apply/restart behavior, authenticated use, playback and hardware behavior still require separate validation. Signing and in-app update checks are not enabled. Song rating API support exists in Core, but the native rating UI and a full dedicated Now Playing screen are not included yet.
+The build workflow runs code checks on Linux and Windows and publishes a self-contained native Windows build artifact; the release workflow additionally packages and smoke-tests the installer before publishing. Consult their exact run histories for verified outcomes. The first Windows run caught a test-only SQLite file-sharing issue: raw database inspection must happen after disposing the store. The signed-media rejection test now closes the store before reading its file. Upgrade/apply/restart behavior, authenticated use, playback and hardware behavior still require separate validation. Signing is not configured; explicit in-app update actions are implemented but have not passed native upgrade acceptance. Song rating API support exists in Core, but the native rating UI and a full dedicated Now Playing screen are not included yet.
