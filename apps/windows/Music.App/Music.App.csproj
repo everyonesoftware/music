@@ -11,7 +11,9 @@
     <SelfContained>true</SelfContained>
     <EnableDefaultPageItems>false</EnableDefaultPageItems>
     <EnableDefaultApplicationDefinition>false</EnableDefaultApplicationDefinition>
-    <AppxGeneratePriEnabled>false</AppxGeneratePriEnabled>
+    <!-- Runtime XAML still needs the merged WinUI theme PRI in native releases. -->
+    <AppxGeneratePriEnabled Condition="'$(OS)' == 'Windows_NT'">true</AppxGeneratePriEnabled>
+    <AppxGeneratePriEnabled Condition="'$(OS)' != 'Windows_NT'">false</AppxGeneratePriEnabled>
     <AppxGeneratePrisForPortableLibrariesEnabled>false</AppxGeneratePrisForPortableLibrariesEnabled>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>

@@ -57,6 +57,12 @@ test('application resources initialize after WinUI core startup but before shell
   assert.ok(launch.indexOf('Resources.MergedDictionaries') < launch.indexOf('new MainWindow()'));
 });
 
+test('native Windows builds generate and install the merged WinUI resource index', () => {
+  const project = readFileSync(new URL('../apps/windows/Music.App/Music.App.csproj', import.meta.url), 'utf8');
+  assert.ok(project.includes('<AppxGeneratePriEnabled Condition="\'$(OS)\' == \'Windows_NT\'">true</AppxGeneratePriEnabled>'));
+  assert.ok(source().includes("'current\\resources.pri'"));
+});
+
 const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
 test('PowerShell parser accepts the complete script when pwsh is available', { skip: probe.error?.code === 'ENOENT' ? 'pwsh is not installed; native Windows acceptance still required' : false }, () => {
   assert.equal(probe.status, 0, probe.stderr);

@@ -236,7 +236,7 @@ namespace MusicSmoke {
     $appExe = Join-Path $installRoot 'current\Music.exe'
     $updateExe = Join-Path $installRoot 'Update.exe'
     foreach ($relative in @('Update.exe', 'current\Music.exe', 'current\Music.dll', 'current\Music.runtimeconfig.json',
-        'current\Microsoft.UI.Xaml.dll', 'current\Microsoft.WindowsAppRuntime.dll', 'current\coreclr.dll', 'current\hostfxr.dll')) {
+        'current\Microsoft.UI.Xaml.dll', 'current\Microsoft.WindowsAppRuntime.dll', 'current\coreclr.dll', 'current\hostfxr.dll', 'current\resources.pri')) {
         $file = Get-Item -LiteralPath (Join-Path $installRoot $relative)
         if ($file.Length -le 0) { throw "Empty installed file: $relative" }
     }
