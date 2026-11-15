@@ -1,0 +1,42 @@
+name: Refresh current platform downloads
+
+on:
+  workflow_run:
+    workflows: [Build and release Android APK, Package and release Windows installer, Recover Windows release attachment]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+  # Repair a missed event or a failed refresh without rebuilding any platform.
+  schedule:
+    - cron: '23 */6 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: music-current-downloads
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      # Never execute code/artifacts from the triggering run with a write token.
+      - name: Check out trusted default-branch tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - name: Test download discovery and publication
+        run: node --test tests/current-downloads.test.mjs
+      - name: Refresh README and latest release download table
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        # GITHUB_TOKEN-authored README commits do not trigger another push build.
+        run: node scripts/current-downloads.mjs --repository "$GH_REPO" --publish

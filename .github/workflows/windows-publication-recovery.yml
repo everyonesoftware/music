@@ -1,0 +1,48 @@
+name: Recover Windows release attachment
+
+on:
+  push:
+    branches: [main]
+  workflow_run:
+    workflows: [Build and release Android APK, Package and release Windows installer]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '11 */6 * * *'
+
+permissions:
+  contents: read
+
+# Hold the Windows publisher lock for the workflow, and Android's stable-release
+# lock for the job. Neither original publisher can race recovery writes.
+concurrency:
+  group: music-windows-release-publication
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  recover:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: audio-apk-publication
+      cancel-in-progress: false
+      queue: max
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test immutable publication recovery
+        run: node --test tests/windows-publication-recovery.test.mjs
+      - name: Repair from original published Windows inventory without rebuilding
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/recover-windows-publication.mjs --repository "$GH_REPO"

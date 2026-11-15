@@ -4,7 +4,7 @@ Workflow: `.github/workflows/android-release.yml`.
 
 ## What runs
 
-A push to `main` builds and publishes a signed Android release. You can also select **Actions → Build and release Android APK → Run workflow**, choosing `main`. Other branches and pull requests cannot run the signing/publication jobs.
+A push to `main` first compares Android inputs against the last successfully published APK source; only affected Android changes build and publish a signed release. Docs-only, Windows-only, and browser-study-only changes skip Android unless an earlier Android change is still unpublished. You can also select **Actions → Build and release Android APK → Run workflow**, choosing `main`, to force a build. Other branches and pull requests cannot run the signing/publication jobs. See [selective builds](../docs/SELECTIVE-BUILDS.md) for shared inputs, failed-publication recovery, and version behavior.
 
 The workflow checks out full history, derives the version, installs Java 21 and the pinned Android SDK packages, runs release-tool tests plus native JVM tests/lint, and builds/verifies `assembleRelease`. It does not run Android emulator instrumentation in CI; that suite remains a separate local verification step.
 

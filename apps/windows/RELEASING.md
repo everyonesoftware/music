@@ -5,7 +5,7 @@
 - `scripts/build-windows-installer.py`: Windows-only orchestration of tests, a real self-contained x64 publish, pinned Velopack packaging, and integrity metadata.
 - `scripts/windows-release.py`: commit-count versioning, package validation, checksum generation, and guarded GitHub publication.
 - `apps/windows/.config/dotnet-tools.json`: pins `vpk` to **1.2.161**, matching the app's Velopack NuGet package.
-- `.github/workflows/windows-release.yml`: build and smoke-test Windows on every `main` push, publish the Windows prerelease, then attach the verified unsigned installer to the matching main **Music** release; manual build-only runs remain available.
+- `.github/workflows/windows-release.yml`: detect affected Windows inputs on every `main` push, selectively build/smoke-test and publish the Windows prerelease, then attach the verified unsigned installer to the matching main **Music** release; manual force build-only runs remain available.
 - `scripts/attach-windows-installer.mjs`: add the installer and its dedicated checksum to the same-version, same-source `v0.1.<count>` release without replacing Android assets.
 - `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
 
@@ -144,9 +144,9 @@ even when a gate fails; no result authorizes publishing a trimmed release.
 
 Commit and push the tooling and application only when ready and authorized. Nothing is published merely by adding these files locally.
 
-Every push to `main` now runs **Package and release Windows installer** automatically and publishes only after packaging, integrity validation, and install/launch/uninstall succeed. Running for every main push keeps Windows installers aligned with the Android versions, even when the change is outside the Windows paths. Android's workflow and latest-release policy are unchanged.
+Every push to `main` starts **Package and release Windows installer** with a lightweight comparison against the last published Windows package's source. Expensive tests, packaging and publication are skipped when Windows inputs are unchanged, while previously unpublished Windows changes are retried. Unknown/shared inputs conservatively select both native platforms. Publication still requires packaging, integrity validation, and install/launch/uninstall success. See [selective builds](../../docs/SELECTIVE-BUILDS.md).
 
-The main release named **Music 0.1.&lt;count&gt;** (`v0.1.<count>`) receives `MusicWindows-win-x64-Setup.exe` and `MusicWindows-win-x64-Setup.exe.sha256` in its Assets alongside the APK. The full Windows feed/package/integrity inventory remains in the separate `windows-v0.1.<count>` prerelease. The attachment step waits up to ten minutes for Android's matching main release to become published, refuses a mismatched source/tag, and never creates or edits that release. Authentication/network failures are not treated as a release still being built.
+The main release named **Music 0.1.&lt;count&gt;** (`v0.1.<count>`) receives `MusicWindows-win-x64-Setup.exe` and `MusicWindows-win-x64-Setup.exe.sha256`. If both native components changed, these sit alongside the new APK; if only Windows changed, `scripts/ensure-windows-main-release.mjs` creates the exact-source main release with `latest=false`, without copying or rebuilding Android. This preserves the Latest endpoint required by existing Android updaters. The full Windows feed/package/integrity inventory remains in the separate `windows-v0.1.<count>` prerelease. When Android changed, the attachment step waits up to ten minutes for Android's matching main release to become published. The attachment itself refuses mismatched source/tags and never edits release metadata. Authentication/network failures are not treated as a release still being built.
 
 For an explicit manual run, choose **Package and release Windows installer**:
 

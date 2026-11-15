@@ -6,7 +6,9 @@
   "scripts": {
     "preview": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/build-readable.mjs && node scripts/serve.mjs",
     "build:mockups": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/build-readable.mjs",
-    "test": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/build-readable.mjs && node tests/mockups.mjs && node tests/playlist-workflow.mjs && node tests/first-install.mjs && node tests/phone-size.mjs && node tests/readable-player.mjs",
+    "test": "node --test tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs && node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/build-readable.mjs && node tests/mockups.mjs && node tests/playlist-workflow.mjs && node tests/first-install.mjs && node tests/phone-size.mjs && node tests/readable-player.mjs",
+    "test:downloads": "node --test tests/current-downloads.test.mjs",
+    "test:release-selection": "node --test tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs",
     "test:readable": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/build-readable.mjs && node tests/readable-player.mjs",
     "test:phone-size": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node tests/phone-size.mjs",
     "test:onboarding": "node scripts/build-onboarding.mjs && node tests/first-install.mjs",

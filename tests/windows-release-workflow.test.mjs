@@ -8,10 +8,12 @@ test('native release subprocesses read UTF-8 source independently of the Windows
   assert.match(workflow, /env:\s+(?:#[^\n]*\n\s+)?PYTHONUTF8: '1'/);
 });
 
-test('Windows installers build for every main release, with build-only dispatch retained', () => {
+test('Windows installers build only when selected, with force build-only dispatch retained', () => {
   assert.match(workflow, /push:\s+branches: \[main\]/);
   assert.doesNotMatch(workflow.split('workflow_dispatch:')[0], /paths:/);
   assert.match(workflow, /publish_preview:[\s\S]*?default: false/);
+  assert.match(workflow, /needs: changes\s+if: needs.changes.outputs.windows == 'true'/);
+  assert.match(workflow, /--component windows --force "\$FORCE_COMPONENT"/);
   assert.match(workflow, /if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| inputs\.publish_preview\)/);
 });
 
@@ -23,7 +25,7 @@ test('real installer smoke test gates the exact artifacts used for publication',
   assert.match(workflow, /-InstallerPath dist\/windows-build\/releases\/MusicWindows-win-x64-Setup\.exe/);
   assert.match(workflow, /-EvidenceDirectory dist\/windows-smoke/);
   assert.match(workflow, /name: Retain Windows smoke diagnostics\s+if: always\(\)/);
-  assert.match(workflow, /needs: package/);
+  assert.match(workflow, /needs: \[changes, package\]/);
   assert.match(workflow, /path: dist\/windows-smoke\//);
   assert.ok(workflow.includes('node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs'));
 });

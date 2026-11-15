@@ -1,6 +1,24 @@
 # Music — native music players for Navidrome
 
+<!-- current-downloads:start -->
+## Current downloads
+
+Choose your platform. Each link points to its latest published installer, which may come from a different release.
+
+| Platform | Version | Download | Status |
+| --- | --- | --- | --- |
+| Windows x64 | 0.1.36 | [Download installer (.exe)](https://github.com/everyonesoftware/music/releases/download/v0.1.36/MusicWindows-win-x64-Setup.exe) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.36/MusicWindows-win-x64-Setup.exe.sha256) | Unsigned preview; Windows may display a security warning. |
+| Android | 0.1.36 | [Download APK](https://github.com/everyonesoftware/music/releases/download/v0.1.36/Music-0.1.36.apk) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.36/Music-0.1.36.apk.sha256) | Signed alpha; install manually on your device. |
+| Web | — | No released web app | Browser design studies only; not a working web player. |
+
+Unchanged platforms keep their existing installers; a new project release does not necessarily mean a new version for every platform.
+<!-- current-downloads:end -->
+
 A native Android alpha for Navidrome, an initial Windows implementation, and the preserved interactive design studies that informed their layouts. See each platform's verification notes; compile checks and isolated fixtures are not substitutes for device/runtime and personal-server testing.
+
+The download tables are refreshed automatically after platform publication. See [download discovery and release-note automation](docs/CURRENT-DOWNLOADS.md) for preview commands and behavior.
+
+[Selective component builds](docs/SELECTIVE-BUILDS.md) compare each platform against its last successful publication: unchanged apps are not rebuilt, and their existing installers stay linked above. Manual workflow runs can force a component build.
 
 ## Windows — first implementation checkpoint
 
@@ -28,7 +46,7 @@ The integration is tested through real Media3 and legacy platform browsers on an
 
 ## Automated APK releases
 
-`.github/workflows/android-release.yml` builds on pushes to `main` or manual dispatch, tests/lints the app, signs a non-debuggable APK, and publishes it with a SHA-256 checksum and source metadata to GitHub Releases. Both jobs check out complete Git history. Android's version code is the Git commit count, with version name/tag/asset such as `0.1.42`, `v0.1.42`, and `Music-0.1.42.apk`.
+`.github/workflows/android-release.yml` checks every push to `main`, builds only when Android inputs changed since its last published source (or on forced manual dispatch), tests/lints the app, signs a non-debuggable APK, and publishes it with a SHA-256 checksum and source metadata to GitHub Releases. Release jobs check out complete Git history. Android's version code is the Git commit count, with version name/tag/asset such as `0.1.42`, `v0.1.42`, and `Music-0.1.42.apk`. Windows follows its own affected-input decision; unchanged components retain their previously published versions and installers.
 
 One-time persistent signing secrets are required before publication. See [`android/RELEASING.md`](android/RELEASING.md) for the four secret names, key backup, upgrade implications, reruns and verification. Configure those secrets and push the project to `main` to activate publishing; local tests are separate from hosted release verification.
 

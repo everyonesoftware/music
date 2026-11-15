@@ -3,28 +3,7 @@ name: Test and build Windows Music
 on:
   push:
     branches: [main]
-    paths:
-      - 'scripts/attach-windows-installer.mjs'
-      - 'scripts/generate-windows-icons.mjs'
-      - 'scripts/test-windows-installer.ps1'
-      - 'tests/windows-*.test.mjs'
-      - 'apps/windows/**'
-      - '.github/workflows/windows-build.yml'
-      - '.github/workflows/windows-release.yml'
-      - 'scripts/*windows*.py'
-      - 'tests/test_windows_*.py'
   pull_request:
-    # Installer lifecycle contracts also run for pull requests.
-    paths:
-      - 'scripts/attach-windows-installer.mjs'
-      - 'scripts/generate-windows-icons.mjs'
-      - 'scripts/test-windows-installer.ps1'
-      - 'tests/windows-*.test.mjs'
-      - 'apps/windows/**'
-      - '.github/workflows/windows-build.yml'
-      - '.github/workflows/windows-release.yml'
-      - 'scripts/*windows*.py'
-      - 'tests/test_windows_*.py'
   workflow_dispatch:
     inputs:
       trimmed_experiment:
@@ -37,8 +16,31 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect affected Windows inputs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      windows: ${{ steps.detect.outputs.windows }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test selective-build decisions
+        run: node --test tests/selective-builds.test.mjs
+      - name: Compare Windows inputs with the last published package
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORCE_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && 'windows' || 'none' }}
+        run: node scripts/selective-builds.mjs --repository "$GH_REPO" --component windows --force "$FORCE_COMPONENT" --github-output "$GITHUB_OUTPUT"
+
   core:
     name: Test protocol and persistence
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     defaults:

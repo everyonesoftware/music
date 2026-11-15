@@ -19,8 +19,32 @@ env:
   PYTHONUTF8: '1'
 
 jobs:
+  changes:
+    name: Detect affected components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      windows: ${{ steps.detect.outputs.windows }}
+      android: ${{ steps.detect.outputs.android }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test selective-build decisions
+        run: node --test tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs
+      - name: Compare native inputs with their last published packages
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORCE_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && 'windows' || 'none' }}
+        run: node scripts/selective-builds.mjs --repository "$GH_REPO" --component windows --force "$FORCE_COMPONENT" --github-output "$GITHUB_OUTPUT"
+
   package:
     name: Build and verify Windows installer
+    needs: changes
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
@@ -98,7 +122,7 @@ jobs:
 
   publish:
     name: Publish Windows assets and attach installer to Music release
-    needs: package
+    needs: [changes, package]
     if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.publish_preview)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -107,6 +131,7 @@ jobs:
     concurrency:
       group: music-windows-release-publication
       cancel-in-progress: false
+      queue: max
     steps:
       - name: Check out the exact packaged source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -124,6 +149,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: python3 scripts/windows-release.py publish --directory dist/windows-release --repository "$GH_REPO"
+      - name: Create the Music release when Android is unchanged
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ANDROID_CHANGED: ${{ needs.changes.outputs.android }}
+        run: node scripts/ensure-windows-main-release.mjs --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED"
       - name: Attach verified installer to the matching Music release
         env:
           GH_TOKEN: ${{ github.token }}
