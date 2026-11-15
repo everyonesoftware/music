@@ -253,8 +253,12 @@ namespace MusicSmoke {
         throw 'No installed Music Start menu shortcut targets the isolated installation'
     }
     $summary.installVerified = $true
-    $app = Start-Process -FilePath $appExe -WorkingDirectory (Split-Path $appExe) -PassThru `
-        -RedirectStandardOutput (Join-Path $evidence 'app-stdout.txt') -RedirectStandardError (Join-Path $evidence 'app-stderr.txt')
+    $previousDiagnostics = $env:MUSIC_STARTUP_DIAGNOSTICS
+    try {
+        $env:MUSIC_STARTUP_DIAGNOSTICS = $evidence
+        $app = Start-Process -FilePath $appExe -WorkingDirectory (Split-Path $appExe) -PassThru `
+            -RedirectStandardOutput (Join-Path $evidence 'app-stdout.txt') -RedirectStandardError (Join-Path $evidence 'app-stderr.txt')
+    } finally { $env:MUSIC_STARTUP_DIAGNOSTICS = $previousDiagnostics }
     $appPid = $app.Id
     $deadline = [DateTime]::UtcNow.AddSeconds($WindowTimeoutSeconds)
     $stableSamples = 0
@@ -262,7 +266,12 @@ namespace MusicSmoke {
     $observations = [Collections.Generic.List[object]]::new()
     while ([DateTime]::UtcNow -lt $deadline) {
         $ownedApp = @(Get-OwnedProcesses | Where-Object { $_.ProcessId -eq $appPid -and $_.ExecutablePath -ieq $appExe })
-        if (-not $ownedApp.Count) { throw 'Installed Music.exe exited before responsive-window acceptance' }
+        if (-not $ownedApp.Count) {
+            $app.Refresh()
+            $exitCode = if ($app.HasExited) { $app.ExitCode } else { $null }
+            Write-Json @{ pid = $appPid; hasExited = $app.HasExited; exitCode = $exitCode; executable = $appExe } 'app-exit.json'
+            throw "Installed Music.exe unavailable before responsive-window acceptance (exit code: $exitCode)"
+        }
         $candidates = @([MusicSmoke.Native]::Find($appPid))
         $candidate = $null
         foreach ($item in $candidates) {
@@ -312,6 +321,8 @@ namespace MusicSmoke {
     ($_ | Format-List * -Force | Out-String) | Set-Content -LiteralPath (Join-Path $evidence 'failure.txt')
 } finally {
     if ($IsWindows) {
+        # Windows Error Reporting can publish events shortly after the failing process exits.
+        if ($summary.installVerified -and -not $summary.windowVerified) { Start-Sleep -Seconds 5 }
         try {
             Write-Json @(Get-WinEvent -FilterHashtable @{ LogName = 'Application'; StartTime = $started.ToLocalTime() } -ErrorAction Stop |
                 Where-Object { $_.ProviderName -in @('Application Error', '.NET Runtime', 'Windows Error Reporting') } |

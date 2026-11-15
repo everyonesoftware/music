@@ -44,6 +44,10 @@ test('registry evidence serializes only scalar fields, never recursive provider 
   assert.doesNotMatch(source(), /Write-Json \$registration 'registration\.json'/);
 });
 
+test('launch failures retain process exit details and opt-in startup diagnostics', () => {
+  includes(source(), ['MUSIC_STARTUP_DIAGNOSTICS', 'app-exit.json', '$app.HasExited', '$app.ExitCode']);
+});
+
 const probe = spawnSync('pwsh', ['-NoLogo', '-NoProfile', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8' });
 test('PowerShell parser accepts the complete script when pwsh is available', { skip: probe.error?.code === 'ENOENT' ? 'pwsh is not installed; native Windows acceptance still required' : false }, () => {
   assert.equal(probe.status, 0, probe.stderr);

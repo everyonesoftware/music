@@ -12,12 +12,20 @@ internal static class Program
         // Install/uninstall hooks must exit before WinUI or application data opens.
         // Applying downloaded updates remains an explicit user action.
         VelopackApp.Build().SetAutoApplyOnStartup(false).Run();
-        WinRT.ComWrappersSupport.InitializeComWrappers();
-        Application.Start(callback =>
+        try
         {
-            SynchronizationContext.SetSynchronizationContext(new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread()));
-            _ = new MusicApplication();
-        });
+            WinRT.ComWrappersSupport.InitializeComWrappers();
+            Application.Start(callback =>
+            {
+                SynchronizationContext.SetSynchronizationContext(new DispatcherQueueSynchronizationContext(DispatcherQueue.GetForCurrentThread()));
+                _ = new MusicApplication();
+            });
+        }
+        catch (Exception exception)
+        {
+            StartupDiagnostics.Write(exception, Environment.GetEnvironmentVariable("MUSIC_STARTUP_DIAGNOSTICS"));
+            throw;
+        }
     }
 }
 
@@ -32,6 +40,7 @@ public sealed class MusicApplication : Application, Microsoft.UI.Xaml.Markup.IXa
     private MainWindow? window;
     public MusicApplication()
     {
+        UnhandledException += (_, args) => StartupDiagnostics.Write(args.Exception, Environment.GetEnvironmentVariable("MUSIC_STARTUP_DIAGNOSTICS"));
         Resources.MergedDictionaries.Add(new XamlControlsResources());
         Resources["SystemAccentColor"] = Windows.UI.Color.FromArgb(255, 192, 215, 174);
     }
