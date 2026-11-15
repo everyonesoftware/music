@@ -711,36 +711,123 @@ public sealed partial class MainWindow : Window
     private async Task ChooseOutputAsync()
     {
         var button = C<Button>("OutputButton"); button.IsEnabled = false;
+        bool active = true, busy = false, syncing = false;
+        var routes = new List<RadioButton>();
+        var devicesPanel = new StackPanel { Spacing = 8 };
+        var status = new TextBlock { TextWrapping = TextWrapping.Wrap, Foreground = Muted };
+        AutomationProperties.SetLiveSetting(status, Microsoft.UI.Xaml.Automation.Peers.AutomationLiveSetting.Polite);
+        var refresh = new Button { Content = "Refresh", Foreground = Sage, Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), MinHeight = 48 };
+        var settings = new Button { Content = "Device settings", Foreground = Sage, Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), MinHeight = 48 };
+        var dialog = new ContentDialog { XamlRoot = root.XamlRoot, RequestedTheme = ElementTheme.Dark, Background = new SolidColorBrush(ColorHelper.FromArgb(255, 36, 47, 40)), CornerRadius = new CornerRadius(24) };
+        AutomationProperties.SetName(dialog, "Media output");
+        dialog.Closing += (_, _) => active = false;
+        void SetBusy(bool value)
+        {
+            busy = value;
+            refresh.IsEnabled = settings.IsEnabled = !value;
+            foreach (var route in routes) route.IsEnabled = !value;
+        }
+        void ConfirmSelection()
+        {
+            syncing = true;
+            try { foreach (var route in routes) route.IsChecked = (route.Tag as string) == player.AudioDevice?.Id; }
+            finally { syncing = false; }
+        }
+        async Task SelectAsync(DeviceInformation? target)
+        {
+            if (!active || closed || busy || syncing) return;
+            SetBusy(true);
+            // Never display a requested route as selected before MediaPlayer confirms it.
+            ConfirmSelection();
+            status.Text = "Switching audio output…";
+            try
+            {
+                // Re-query before assigning: a device may disappear while the chooser is open.
+                if (target is not null)
+                {
+                    var currentDevices = await DeviceInformation.FindAllAsync(MediaDevice.GetAudioRenderSelector());
+                    if (!active || closed) return;
+                    target = currentDevices.FirstOrDefault(d => d.Id == target.Id && d.IsEnabled);
+                    if (target is null) { status.Text = "That output is no longer available. The current output was kept."; return; }
+                }
+                if (!active || closed) return;
+                player.AudioDevice = target;
+                if (player.AudioDevice?.Id != target?.Id) { status.Text = "Windows did not confirm the selected output."; return; }
+                C<TextBlock>("OutputName").Text = target?.Name ?? "System default output";
+                AutomationProperties.SetName(button, "Choose audio output, " + C<TextBlock>("OutputName").Text);
+                ConfirmSelection();
+                dialog.Hide();
+            }
+            catch { if (active && !closed) status.Text = "Audio output selection is unavailable. Refresh or try device settings."; }
+            finally { if (active && !closed) { ConfirmSelection(); SetBusy(false); } }
+        }
+        void AddRoute(DeviceInformation? device)
+        {
+            string name = device?.Name ?? "System default output";
+            var labels = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+            labels.Children.Add(new TextBlock { Text = name, FontSize = 14, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, TextWrapping = TextWrapping.Wrap, MaxLines = 2, TextTrimming = TextTrimming.CharacterEllipsis });
+            labels.Children.Add(new TextBlock { Text = device is null ? "Follow Windows sound settings" : "Audio device", FontSize = 13, Foreground = Muted });
+            var row = new Grid { ColumnSpacing = 12 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.Children.Add(new FontIcon { Glyph = "\uE7F4", FontSize = 22, Foreground = Sage, VerticalAlignment = VerticalAlignment.Center });
+            Grid.SetColumn(labels, 1); row.Children.Add(labels);
+            var route = new RadioButton { Content = row, Tag = device?.Id, GroupName = "MediaOutput", Style = (Style)root.Resources["OutputRouteStyle"], IsChecked = device?.Id == player.AudioDevice?.Id };
+            AutomationProperties.SetName(route, name);
+            ToolTipService.SetToolTip(route, name);
+            routes.Add(route); devicesPanel.Children.Add(route);
+            route.Checked += async (_, _) => await SelectAsync(device);
+            route.Click += (_, _) => { if (active && !closed && !busy && device?.Id == player.AudioDevice?.Id) dialog.Hide(); };
+        }
+        async Task RefreshAsync()
+        {
+            if (!active || closed || busy) return;
+            SetBusy(true); status.Text = "Looking for audio outputs…";
+            try
+            {
+                var devices = await DeviceInformation.FindAllAsync(MediaDevice.GetAudioRenderSelector());
+                if (!active || closed) return;
+                routes.Clear(); devicesPanel.Children.Clear();
+                AddRoute(null);
+                foreach (var device in devices.Where(d => d.IsEnabled)) AddRoute(device);
+                status.Text = devices.Any(d => d.IsEnabled) ? "" : "Windows returned no audio output devices. Connect an output and refresh.";
+            }
+            catch { if (active && !closed) status.Text = "Couldn't read audio outputs. Try Refresh or device settings."; }
+            finally { if (active && !closed) SetBusy(false); }
+        }
         try
         {
-            var devices = await DeviceInformation.FindAllAsync(MediaDevice.GetAudioRenderSelector());
-            if (closed) return;
-            var choices = new ComboBox { Header = "Audio output", HorizontalAlignment = HorizontalAlignment.Stretch };
-            choices.Items.Add(new ComboBoxItem { Content = "System default output", Tag = null });
-            foreach (var device in devices.Where(d => d.IsEnabled)) choices.Items.Add(new ComboBoxItem { Content = device.Name, Tag = device });
-            var selectedId = player.AudioDevice?.Id;
-            choices.SelectedIndex = 0;
-            for (int i = 1; i < choices.Items.Count; i++) if (((ComboBoxItem)choices.Items[i]).Tag is DeviceInformation device && device.Id == selectedId) choices.SelectedIndex = i;
-            var content = new StackPanel { Spacing = 12 }; content.Children.Add(choices);
-            if (devices.Count == 0) content.Children.Add(new TextBlock { Text = "Windows returned no audio output devices. Connect an output and try again.", TextWrapping = TextWrapping.Wrap });
-            var dialog = new ContentDialog { Title = "Media output", Content = content, PrimaryButtonText = "Apply", CloseButtonText = "Cancel", XamlRoot = root.XamlRoot, RequestedTheme = ElementTheme.Dark };
-            if (await dialog.ShowAsync() != ContentDialogResult.Primary || closed) return;
-            var selected = (ComboBoxItem)choices.SelectedItem;
-            var target = selected.Tag as DeviceInformation;
-            // Re-query before assigning: a device may disappear while the dialog is open.
-            if (target is not null)
+            var content = new StackPanel { Spacing = 12, Width = Math.Min(380, Math.Max(0, root.XamlRoot.Size.Width - 96)) };
+            var header = new Grid();
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            header.Children.Add(new TextBlock { Text = "Media output", FontSize = 24, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold, VerticalAlignment = VerticalAlignment.Center });
+            var close = new Button { Content = "\uE8BB", Style = (Style)root.Resources["TransportButtonStyle"], MinWidth = 48, MinHeight = 48, Width = 48, Height = 48 };
+            AutomationProperties.SetName(close, "Close media output");
+            close.Click += (_, _) => dialog.Hide();
+            Grid.SetColumn(close, 1); header.Children.Add(close); content.Children.Add(header);
+            content.Children.Add(new TextBlock { Text = "Choose where to play your music.", Foreground = Muted, TextWrapping = TextWrapping.Wrap });
+            content.Children.Add(new ScrollViewer { Content = devicesPanel, MaxHeight = Math.Min(420, root.XamlRoot.Size.Height * .5), HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
+            content.Children.Add(status);
+            var footer = new Grid();
+            footer.Children.Add(settings); settings.HorizontalAlignment = HorizontalAlignment.Left;
+            footer.Children.Add(refresh); refresh.HorizontalAlignment = HorizontalAlignment.Right;
+            content.Children.Add(footer); dialog.Content = content;
+            refresh.Click += async (_, _) => await RefreshAsync();
+            settings.Click += async (_, _) =>
             {
-                var currentDevices = await DeviceInformation.FindAllAsync(MediaDevice.GetAudioRenderSelector());
-                if (closed) return;
-                target = currentDevices.FirstOrDefault(d => d.Id == target.Id && d.IsEnabled);
-                if (target is null) { ShowError("That output is no longer available. The current output was kept."); return; }
-            }
-            player.AudioDevice = target;
-            if (player.AudioDevice?.Id != target?.Id) { ShowError("Windows did not confirm the selected output."); return; }
-            C<TextBlock>("OutputName").Text = target?.Name ?? "System default output";
+                try { if (!await Windows.System.Launcher.LaunchUriAsync(new Uri("ms-settings:sound")) && active && !closed) status.Text = "Windows sound settings are unavailable."; }
+                catch { if (active && !closed) status.Text = "Windows sound settings are unavailable."; }
+            };
+            dialog.Opened += async (_, _) => await RefreshAsync();
+            await dialog.ShowAsync();
         }
         catch { if (!closed) ShowError("Audio output selection is unavailable. Windows system output remains in control; no switch was reported."); }
-        finally { if (!closed) button.IsEnabled = true; }
+        finally
+        {
+            active = false;
+            if (!closed) { button.IsEnabled = true; button.Focus(FocusState.Programmatic); }
+        }
     }
 
     private void Shutdown()

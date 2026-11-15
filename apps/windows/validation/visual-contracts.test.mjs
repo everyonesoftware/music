@@ -101,3 +101,33 @@ test('collection title reclaims the hidden search width instead of leaving a hea
   assert.match(header, /x:Name="SearchBox"[^>]*Width="260"/);
   assert.match(header, /x:Name="PageTitle"[^>]*TextTrimming="CharacterEllipsis"/);
 });
+
+test('output trigger matches the compact Android two-line control without a chevron', () => {
+  const trigger = shell.match(/<Button x:Name="OutputButton"[\s\S]*?<\/Button>/)?.[0] ?? '';
+  assert.match(trigger, /HorizontalAlignment="Left"/);
+  assert.match(trigger, /MinHeight="48"/);
+  assert.match(trigger, /Text="Media output"/);
+  assert.match(trigger, /x:Name="OutputName"[^>]*TextTrimming="CharacterEllipsis"/);
+  assert.match(trigger, /Foreground="\{StaticResource Sage\}"/);
+  assert.doesNotMatch(trigger, /E70E|E70D|HorizontalAlignment="Stretch"/);
+});
+
+test('output chooser uses Android-style device cards instead of a dropdown and Apply', () => {
+  const chooser = method('ChooseOutputAsync');
+  assert.doesNotMatch(chooser, /ComboBox|PrimaryButtonText = "Apply"/);
+  for (const text of ['Choose where to play your music.', 'Close media output', 'Device settings', 'ms-settings:sound', 'Refresh']) {
+    assert.ok(chooser.includes(text), `Missing chooser control/copy: ${text}`);
+  }
+  assert.match(chooser, /new RadioButton/);
+  assert.match(chooser, /OutputRouteStyle/);
+  assert.match(chooser, /FindAllAsync\(MediaDevice.GetAudioRenderSelector\(\)\)/);
+  assert.match(chooser, /currentDevices.FirstOrDefault/);
+  assert.match(chooser, /player.AudioDevice\?\.Id != target\?\.Id/);
+  assert.match(chooser, /if \(!active \|\| closed\) return/);
+  assert.match(chooser, /button.Focus\(FocusState.Programmatic\)/);
+  const style = shell.match(/<Style x:Key="OutputRouteStyle"[\s\S]*?<\/Style>/)?.[0] ?? '';
+  assert.match(style, /CornerRadius="14"/);
+  assert.match(style, /MinHeight="76"/);
+  assert.match(style, /VisualState x:Name="Checked"/);
+  assert.match(style, /Grid.Column="1"[^>]*Width="20"/);
+});

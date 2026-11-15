@@ -86,6 +86,28 @@ class AudioScreensTest {
         }
     }
 
+    @Test fun mediaOutputTriggerWrapsShortNamesAndBoundsLongNames() {
+        val phone = OutputDevice("phone", "Phone", "This phone", OutputDeviceKind.PHONE)
+        val state = mutableStateOf(playerState().copy(mediaOutput = MediaOutputState(listOf(phone), phone.id)))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val output = compose.onNodeWithTag("player-output").assertIsDisplayed().assertHeightIsAtLeast(48.dp)
+        val shortBounds = output.fetchSemanticsNode().boundsInRoot
+        val labelBounds = compose.onNodeWithText("Media output", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val allowance = with(InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics) { 56 * density }
+        assertTrue("Short output trigger should hug its icon and two-line label", shortBounds.width <= labelBounds.width + allowance)
+        captureOutputEvidence("output-compact-trigger", compose.onRoot())
+        val longName = "Wireless headphones with a very long audio output device name"
+        compose.runOnIdle { state.value = state.value.copy(mediaOutput = MediaOutputState(listOf(phone.copy(name = longName)), phone.id)) }
+        val longBounds = output.fetchSemanticsNode().boundsInRoot
+        val queueBounds = compose.onNodeWithTag("player-queue").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("Long output names must not displace Queue", longBounds.right <= queueBounds.left)
+        assertTrue(longBounds.width > shortBounds.width)
+        output.performClick()
+        compose.onNodeWithTag("output-sheet-content").assertIsDisplayed()
+        compose.onNodeWithTag("output-close").performClick()
+        captureOutputEvidence("output-long-trigger", compose.onRoot())
+    }
+
     @Test fun outputPickerWaitsForConfirmationAndKeepsFailuresVisible() {
         val phone = OutputDevice("phone", "This phone", "Built-in speaker", OutputDeviceKind.PHONE)
         val headphones = OutputDevice("headphones", "Wireless headphones", "Bluetooth", OutputDeviceKind.HEADPHONES)

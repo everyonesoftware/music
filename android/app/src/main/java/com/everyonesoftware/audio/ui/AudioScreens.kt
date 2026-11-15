@@ -484,14 +484,15 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
             Row(Modifier.fillMaxWidth().heightIn(min = 64.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val device = state.mediaOutput.selected
                 val label = device?.name ?: "Choose device"
-                TextButton({ actions.refreshMediaOutputs(); showOutput = true }, Modifier.weight(1f).heightIn(min = 52.dp).testTag("player-output").semantics { contentDescription = "Choose output, $label" }, contentPadding = PaddingValues(horizontal = 4.dp)) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Icon(outputDeviceIcon(device?.kind), null)
-                        Column(Modifier.weight(1f)) {
-                            Text("Media output", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Text(label, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Box(Modifier.weight(1f)) {
+                    TextButton({ actions.refreshMediaOutputs(); showOutput = true }, Modifier.heightIn(min = 52.dp).testTag("player-output").semantics { contentDescription = "Choose output, $label" }, contentPadding = PaddingValues(horizontal = 4.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(outputDeviceIcon(device?.kind), null)
+                            Column(Modifier.weight(1f, fill = false)) {
+                                Text("Media output", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Text(label, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            }
                         }
-                        Icon(Icons.Default.ExpandMore, null, Modifier.size(18.dp))
                     }
                 }
                 TextButton({ actions.showScreen(Screen.QUEUE) }, Modifier.heightIn(min = 52.dp).testTag("player-queue")) {
