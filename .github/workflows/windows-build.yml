@@ -58,7 +58,7 @@ jobs:
       - name: Test installer and guarded release tooling
         run: python3 -m unittest discover -s ../../tests -p 'test_windows_*.py' -v
       - name: Test Windows workflow and smoke-test contracts
-        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs ../../tests/windows-shared-release.test.mjs ../../tests/windows-branding.test.mjs ../../tests/windows-window-integration.test.mjs
+        run: node --test ../../tests/windows-installer-smoke.test.mjs ../../tests/windows-release-workflow.test.mjs ../../tests/windows-shared-release.test.mjs ../../tests/windows-branding.test.mjs ../../tests/windows-window-integration.test.mjs ../../tests/windows-package-size.test.mjs
 
   windows:
     name: Compile and publish native Windows app

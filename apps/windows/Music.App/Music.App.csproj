@@ -27,7 +27,9 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../Music.Core/Music.Core.csproj" />
-    <PackageReference Include="Microsoft.WindowsAppSDK" Version="1.8.260921001" />
+    <!-- Keep the same WinUI version as the former umbrella package, but do not
+         deploy its unused AI, ML, widgets, DWrite or full-runtime payloads. -->
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="1.8.260803003" />
     <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <EmbeddedResource Include="Shell.xaml" LogicalName="Music.App.Shell.xaml" />

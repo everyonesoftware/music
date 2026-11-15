@@ -42,12 +42,12 @@ Commands from `apps/windows/`:
 dotnet test Music.Core.Tests/Music.Core.Tests.csproj -c Release --logger 'trx;LogFileName=windows-core.trx' --results-directory artifacts/test-results
 dotnet run --project validation/LogicChecks.csproj -c Release
 python3 -m unittest discover -s validation -p test_source_contracts.py -v
-dotnet build Music.App/Music.App.csproj -c Release -p:WindowsAppSDKSelfContained=false -p:PrepareForRunDependsOn=CopyFilesToOutputDirectory
+dotnet build Music.App/Music.App.csproj -c Release -p:OutputType=Library -p:WindowsAppSDKSelfContained=false -p:PrepareForRunDependsOn=CopyFilesToOutputDirectory
 dotnet list Music.App/Music.App.csproj package --vulnerable --include-transitive
 dotnet list Music.Core/Music.Core.csproj package --vulnerable --include-transitive
 ```
 
-The compile-only properties deliberately bypass Windows manifest/resource processing. Do not pass them to a real Windows release build. Linux cannot execute the Windows app or validate WinUI object creation just by parsing the XML.
+The compile-only properties deliberately bypass Windows manifest/resource processing. With component-only SDK dependencies, compile as a library on Linux to avoid requiring the full runtime package and its executable bootstrapper; this checks C# integration, not an executable or deployable payload. Do not pass these properties to a real Windows release build. Linux cannot execute the Windows app or validate WinUI object creation just by parsing the XML.
 
 ## Review corrections included
 

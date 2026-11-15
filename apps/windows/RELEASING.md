@@ -60,6 +60,28 @@ Only a Start menu shortcut is requested. No startup or launch-at-sign-in registr
 
 Run `node --test tests/windows-branding.test.mjs` after changing Android icon resources or regenerating assets. Native Windows acceptance must still check the installed shortcut, taskbar, and setup/uninstall icons; source contracts and Linux cross-pack probes cannot establish shell rendering.
 
+## Package footprint
+
+Music references `Microsoft.WindowsAppSDK.WinUI` and its transitive Foundation and
+InteractiveExperiences dependencies instead of the full Windows App SDK umbrella
+package. The WinUI version is unchanged from the former umbrella dependency.
+This avoids deploying unused AI, machine-learning (including ONNX), Widgets, and
+DWrite components. Both .NET and the required native Windows App SDK components
+remain self-contained; users do not need to install those runtimes separately.
+Keep trimming disabled while the app uses runtime-loaded XAML.
+
+Run `node --test tests/windows-package-size.test.mjs` from the repository root
+with the pinned .NET SDK available. It restores the real dependencies and checks
+the SDK's resolved native-file inventory, including required DLLs and PRI inputs,
+and rejects the optional components and full-runtime package. Both Windows
+workflows run these checks. The native installer lifecycle gate still verifies
+the generated merged PRI, actual launch, and uninstall before publication.
+
+File-inventory size comparisons are not installer measurements. Measure the
+actual setup executable and installed directory on Windows before reporting
+download/installed savings; installer compression and its retained files affect
+those totals.
+
 ## GitHub Actions
 
 Commit and push the tooling and application only when ready and authorized. Nothing is published merely by adding these files locally.

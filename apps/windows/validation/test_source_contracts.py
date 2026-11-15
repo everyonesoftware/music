@@ -91,7 +91,7 @@ class SourceContracts(unittest.TestCase):
             self.assertEqual(props[name], value)
         self.assertTrue(any(e.get('Include') == '../Music.Core/Music.Core.csproj' for e in root.iter('ProjectReference')))
         packages = {e.get('Include'): e.get('Version') for e in root.iter('PackageReference')}
-        self.assertEqual(packages['Microsoft.WindowsAppSDK'], '1.8.260921001')
+        self.assertEqual(packages['Microsoft.WindowsAppSDK.WinUI'], '1.8.260803003')
         self.assertEqual(packages['CommunityToolkit.Mvvm'], '8.4.2')
 
     def test_artwork_uses_bounded_bytes_not_signed_ui_urls(self):
