@@ -43,20 +43,24 @@ def validate_package_payload(archive, expected, values):
         path = PurePosixPath(entry.filename)
         if path.is_absolute() or '..' in path.parts or '\\' in entry.filename or ':' in entry.filename or stat.S_ISLNK(entry.external_attr >> 16):
             raise ValueError('Unsafe path in Windows payload.')
+    # Windows file lookup is case-insensitive; native publish emits Microsoft.ui.xaml.dll.
+    # The duplicate-path check above rejects ambiguous case aliases before lookup.
+    paths = {name.casefold(): name for name in names}
     required = ['Music.exe', 'Music.dll', 'Music.deps.json', 'Music.runtimeconfig.json',
                 'coreclr.dll', 'hostfxr.dll', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll']
     for name in required:
-        if 'lib/app/' + name not in names or archive.getinfo('lib/app/' + name).file_size == 0:
+        actual = paths.get(('lib/app/' + name).casefold())
+        if actual is None or archive.getinfo(actual).file_size == 0:
             raise ValueError('Incomplete self-contained Windows payload: missing ' + name)
-    with archive.open('lib/app/Music.exe') as stream:
+    with archive.open(paths['lib/app/music.exe']) as stream:
         require_x64_pe(stream)
     for filename in ['Music.runtimeconfig.json', 'Music.deps.json']:
-        if archive.getinfo('lib/app/' + filename).file_size > 8 * 1024 * 1024:
+        if archive.getinfo(paths[('lib/app/' + filename).casefold()]).file_size > 8 * 1024 * 1024:
             raise ValueError('Unexpectedly large runtime metadata.')
-    runtime = json.loads(archive.read('lib/app/Music.runtimeconfig.json'))['runtimeOptions']
+    runtime = json.loads(archive.read(paths['lib/app/music.runtimeconfig.json']))['runtimeOptions']
     if 'framework' in runtime or 'frameworks' in runtime or not runtime.get('includedFrameworks'):
         raise ValueError('The .NET runtime must be self-contained.')
-    dependencies = json.loads(archive.read('lib/app/Music.deps.json'))
+    dependencies = json.loads(archive.read(paths['lib/app/music.deps.json']))
     if 'win-x64' not in dependencies['runtimeTarget']['name'] or 'Music/' + expected['version'] not in dependencies['libraries']:
         raise ValueError('Windows payload runtime/version mismatch.')
 

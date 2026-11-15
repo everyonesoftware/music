@@ -61,6 +61,27 @@ class Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'payload|runtime|Xaml'):
             release.manifest(self.output,self.info)
 
+    def test_native_windows_payload_paths_are_case_insensitive(self):
+        self.fixture()
+        path = self.output / 'MusicWindows-0.1.1-win-x64-full.nupkg'
+        # Native Windows publish actually emits Microsoft.ui.xaml.dll.
+        for original, actual in [
+            ('Microsoft.UI.Xaml.dll', 'Microsoft.ui.xaml.dll'),
+            ('Music.exe', 'music.exe'),
+            ('Music.runtimeconfig.json', 'music.runtimeconfig.json'),
+            ('Music.deps.json', 'music.deps.json'),
+        ]:
+            with zipfile.ZipFile(path) as archive:
+                value = archive.read('lib/app/' + original)
+            self.rewrite_package(remove='lib/app/' + original, updates={'lib/app/' + actual: value})
+        self.assertEqual('unsigned-preview', release.manifest(self.output, self.info)['signing'])
+
+    def test_native_payload_rejects_ambiguous_case_aliases(self):
+        self.fixture()
+        self.rewrite_package(updates={'lib/app/Microsoft.ui.xaml.dll': b'ambiguous alias'})
+        with self.assertRaisesRegex(ValueError, 'Duplicate paths'):
+            release.manifest(self.output, self.info)
+
     def test_real_vpk_utf8_bom_in_legacy_feed_is_supported(self):
         output = self.fixture()
         legacy = output / 'RELEASES-win-x64'
