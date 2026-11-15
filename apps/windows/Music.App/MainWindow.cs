@@ -15,7 +15,7 @@ using Windows.Media.Playback;
 
 namespace Music.App;
 
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private readonly Grid root;
     private readonly WindowsUpdatesPanel updatesPanel;
@@ -120,6 +120,9 @@ public sealed class MainWindow : Window
 
     private async Task InitializeAsync()
     {
+#if MUSIC_NATIVE_ACCEPTANCE
+        if (NativeAcceptance.IsRequested) return;
+#endif
         var lease = connectGate.Begin();
         NavidromeClient? candidate = null;
         try
@@ -551,7 +554,11 @@ public sealed class MainWindow : Window
             player.Source = null; mediaSource?.Dispose(); mediaSource = null;
             queueIndex = index; restoredPosition = Math.Max(0, position);
             Song song = queue[index];
+#if MUSIC_NATIVE_ACCEPTANCE
+            mediaSource = MediaSource.CreateFromUri(NativeAcceptance.IsRequested ? NativeAcceptance.MediaUri : client.GetStreamUri(song.Id));
+#else
             mediaSource = MediaSource.CreateFromUri(client.GetStreamUri(song.Id));
+#endif
             var item = new MediaPlaybackItem(mediaSource);
             var metadata = item.GetDisplayProperties(); metadata.Type = MediaPlaybackType.Music;
             metadata.MusicProperties.Title = song.Title; metadata.MusicProperties.Artist = song.Artist; metadata.MusicProperties.AlbumTitle = song.Album;

@@ -10,7 +10,7 @@ internal sealed class ProfileStore
     public string DirectoryPath { get; } = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "EveryoneSoftware", "Music");
     private string ProfilePath => Path.Combine(DirectoryPath, "connection.json");
     public ProfileStore() => Directory.CreateDirectory(DirectoryPath);
-    public ConnectionProfile? ReadProfile() => File.Exists(ProfilePath) ? JsonSerializer.Deserialize<ConnectionProfile>(File.ReadAllText(ProfilePath)) : null;
+    public ConnectionProfile? ReadProfile() => File.Exists(ProfilePath) ? JsonSerializer.Deserialize(File.ReadAllText(ProfilePath), PersistenceJsonContext.Default.ConnectionProfile) : null;
     public string ReadPassword(ConnectionProfile profile)
     {
         var credential = new PasswordVault().Retrieve(Resource, profile.Id);
@@ -28,7 +28,7 @@ internal sealed class ProfileStore
         string temp = ProfilePath + ".new";
         try
         {
-            File.WriteAllText(temp, JsonSerializer.Serialize(profile));
+            File.WriteAllText(temp, JsonSerializer.Serialize(profile, PersistenceJsonContext.Default.ConnectionProfile));
             File.Move(temp, ProfilePath, true);
         }
         catch

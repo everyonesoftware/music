@@ -1,7 +1,7 @@
 namespace Music.App;
 
 // Every asynchronous UI operation must hold a current lease before publishing.
-public sealed class RequestGate : IDisposable
+public sealed partial class RequestGate : IDisposable
 {
     private CancellationTokenSource? source;
     private long version;

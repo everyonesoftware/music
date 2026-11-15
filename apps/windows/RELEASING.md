@@ -68,7 +68,8 @@ package. The WinUI version is unchanged from the former umbrella dependency.
 This avoids deploying unused AI, machine-learning (including ONNX), Widgets, and
 DWrite components. Both .NET and the required native Windows App SDK components
 remain self-contained; users do not need to install those runtimes separately.
-Keep trimming disabled while the app uses runtime-loaded XAML.
+Normal releases remain untrimmed. The opt-in experiment below preserves the
+runtime-loaded WinUI metadata and uses generated WinRT/JSON support.
 
 Run `node --test tests/windows-package-size.test.mjs` from the repository root
 with the pinned .NET SDK available. It restores the real dependencies and checks
@@ -81,6 +82,63 @@ File-inventory size comparisons are not installer measurements. Measure the
 actual setup executable and installed directory on Windows before reporting
 download/installed savings; installer compression and its retained files affect
 those totals.
+
+### Experimental trimming (build-only)
+
+`-p:MusicTrimmed=true` enables partial trimming, generated C#/WinRT marshalling,
+and reflection-free JSON. Dynamic code generation is disabled so the linker can
+remove unsupported generic marshalling fallbacks. The application and helper
+types used by that generator are partial; unsafe blocks are enabled for its
+generated vtables. The complete managed WinUI metadata provider is rooted for
+`XamlReader.Load`. Trim warnings remain errors; they are not suppressed.
+
+Profiles and playback snapshots use generated JSON metadata while retaining the
+existing stored format. The Windows release parser also uses generated metadata.
+Core compatibility tests read legacy JSON and verify the persisted shape.
+
+From the repository root, on Windows, publish to a new/empty output directory:
+
+```powershell
+dotnet publish apps/windows/Music.App/Music.App.csproj -c Release -r win-x64 --self-contained true -p:MusicTrimmed=true -o dist/windows-trim-experiment
+```
+
+The build workflow's manual `trimmed_experiment` input defaults to false and can
+produce this native build-only artifact after the workflow changes are deployed.
+The installer/release workflow does not opt into trimming. Neither a loose native
+publish nor the Linux compile-only measurements establish install/upgrade safety.
+Keep the normal release untrimmed until native launch, XAML/templates, playback,
+PasswordVault/profile restoration and installed-app upgrade have passed.
+
+The executable compatibility harness uses the real Core and Velopack libraries
+with explicitly injected HTTP fixtures, JSON reflection and dynamic code disabled.
+On Linux, publish and execute the trimmed harness:
+
+```sh
+dotnet publish apps/windows/Music.TrimChecks/Music.TrimChecks.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=true -o apps/windows/artifacts/trim-checks
+./apps/windows/artifacts/trim-checks/Music.TrimChecks
+node --test tests/windows-trimming.test.mjs
+```
+
+This checks persisted-profile compatibility, SQLite reopen with a duplicate-heavy
+queue, view persistence, signed-media rejection, and real Windows-feed parsing;
+it is not WinUI, PasswordVault, audible playback, or native upgrade acceptance.
+
+The isolated `windows-native-validation.yml` workflow runs on
+`validation/windows-trimming`, with read-only repository permissions and no
+release publication. `scripts/test-windows-trimmed-native.ps1` first packages and
+tests the exact uninstrumented trimmed installer using the existing native-window
+screenshot/uninstall gate. It separately builds test-only instrumented fixture
+versions `0.1.32000` (untrimmed) and `0.1.32001` (trimmed) to exercise actual
+PasswordVault/session state across an installed Velopack full-package upgrade.
+These fixture versions are never public Music releases. Conditional native
+acceptance code is not included in normal builds.
+
+The integration transport uses explicit in-process HTTP fixtures rather than a
+real Navidrome deployment. Media uses a generated PCM WAV through the native
+player, not a claim that an observer heard sound. Missing hosted audio-renderer
+support must be retained as a blocker/partial result, not converted into playback
+success. The workflow retains detailed native results and build-size evidence
+even when a gate fails; no result authorizes publishing a trimmed release.
 
 ## GitHub Actions
 

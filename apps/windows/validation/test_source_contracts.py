@@ -81,7 +81,7 @@ class SourceContracts(unittest.TestCase):
         profile = (BASE / 'ProfileStore.cs').read_text()
         self.assertIn('EveryoneSoftware.Music', profile)
         self.assertIn('new PasswordVault()', profile)
-        self.assertIn('JsonSerializer.Serialize(profile)', profile)
+        self.assertIn('JsonSerializer.Serialize(profile, PersistenceJsonContext.Default.ConnectionProfile)', profile)
         self.assertNotIn('Serialize(password)', profile)
 
     def test_project_preserves_native_windows_release_defaults(self):

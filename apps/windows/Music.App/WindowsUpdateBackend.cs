@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Music.Core;
 using Velopack;
 using Velopack.Logging;
@@ -32,7 +33,7 @@ public sealed class WindowsGithubSource : GithubSource
                 if (tag is null || !tag.StartsWith("windows-v", StringComparison.Ordinal)) continue;
                 string version = tag[9..];
                 if (!Version.TryParse(version, out var parsed) || parsed.Major != 0 || parsed.Minor != 1 || parsed.Build is < 1 or > 65534 || parsed.Revision != -1 || version != parsed.ToString()) continue;
-                var release = item.Deserialize<GithubRelease>() ?? throw new InvalidDataException("Missing Windows release.");
+                var release = item.Deserialize(WindowsUpdateJsonContext.Default.GithubRelease) ?? throw new InvalidDataException("Missing Windows release.");
                 if (!release.Assets.Any(a => a.Name == $"releases.{Channel}.json")) continue;
                 // A release's metadata must not redirect us to another tag, repository, or platform.
                 string prefix = $"{Repository}/releases/download/{tag}/";
@@ -69,6 +70,9 @@ public sealed class WindowsGithubSource : GithubSource
         return new VelopackAssetFeed { Assets = safe.ToArray() };
     }
 }
+
+[JsonSerializable(typeof(GithubRelease))]
+internal partial class WindowsUpdateJsonContext : JsonSerializerContext { }
 
 /// <summary>Lazy construction keeps native locator work out of startup. Download never implies apply.</summary>
 public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
