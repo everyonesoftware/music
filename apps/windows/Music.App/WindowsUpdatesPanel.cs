@@ -6,7 +6,7 @@ using Music.Core;
 namespace Music.App;
 
 /// <summary>Bind once after Shell.xaml is loaded; dispose when its window closes. No startup network or apply.</summary>
-public sealed class WindowsUpdatesPanel : IDisposable
+public sealed partial class WindowsUpdatesPanel : IDisposable
 {
     private readonly WindowsUpdateController controller;
     private readonly DispatcherQueue dispatcher;

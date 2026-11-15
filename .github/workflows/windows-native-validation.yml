@@ -1,0 +1,91 @@
+name: Validate experimental Windows trimming
+
+on:
+  push:
+    branches: [validation/windows-trimming]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  contracts:
+    name: Test trim compatibility and source contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Core compatibility with JSON reflection disabled
+        run: dotnet test apps/windows/Music.Core.Tests/Music.Core.Tests.csproj -c Release -p:JsonSerializerIsReflectionEnabledByDefault=false
+      - name: Updater compatibility
+        run: dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj -c Release
+      - name: Runtime XAML and credential source safeguards
+        run: python3 -m unittest discover -s apps/windows/validation -p test_source_contracts.py -v
+      - name: Native validation and trimming contracts
+        run: node --test tests/windows-trimming.test.mjs tests/windows-native-acceptance.test.mjs tests/windows-native-upgrade.test.mjs
+      - name: Publish and execute the actual trimmed compatibility binary
+        run: |
+          dotnet publish apps/windows/Music.TrimChecks/Music.TrimChecks.csproj -c Release -r linux-x64 --self-contained true -p:PublishTrimmed=true -o apps/windows/artifacts/trim-checks
+          ./apps/windows/artifacts/trim-checks/Music.TrimChecks
+
+  native:
+    name: Native install, vault, media, restoration and upgrade
+    needs: contracts
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Native Core and update tests
+        shell: pwsh
+        run: |
+          dotnet test apps/windows/Music.Core.Tests/Music.Core.Tests.csproj -c Release -p:JsonSerializerIsReflectionEnabledByDefault=false
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Parse native acceptance orchestration
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [Management.Automation.Language.Parser]::ParseFile((Resolve-Path scripts/test-windows-trimmed-native.ps1), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { throw ($errors | Out-String) }
+      - name: Exercise the exact trimmed installer and installed upgrade
+        timeout-minutes: 25
+        shell: pwsh
+        run: ./scripts/test-windows-trimmed-native.ps1 -EvidenceDirectory dist/native-trim-validation
+      - name: Retain native validation evidence, even on failure
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-native-trim-validation-${{ github.sha }}
+          path: |
+            dist/native-trim-validation/*.json
+            dist/native-trim-validation/*.txt
+            dist/native-trim-validation/*.log
+            dist/native-trim-validation/shipping-smoke/
+          if-no-files-found: warn
+          retention-days: 30
+          include-hidden-files: false
+      - name: Retain build-only unsigned fixture installers
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-native-trim-builds-${{ github.sha }}
+          path: dist/native-trim-validation/*/releases/*
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: false

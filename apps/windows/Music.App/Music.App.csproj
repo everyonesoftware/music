@@ -24,7 +24,32 @@
     <AssemblyName>Music</AssemblyName>
     <Version>0.1.0</Version>
     <PublishTrimmed>false</PublishTrimmed>
+    <MusicTrimmed Condition="'$(MusicTrimmed)' == ''">false</MusicTrimmed>
   </PropertyGroup>
+  <!-- Experimental until a native installed-app/upgrade acceptance run passes.
+       Partial mode trims opt-in/framework assemblies, not arbitrary dependencies. -->
+  <PropertyGroup Condition="'$(MusicTrimmed)' == 'true'">
+    <PublishTrimmed>true</PublishTrimmed>
+    <TrimMode>partial</TrimMode>
+    <ILLinkTreatWarningsAsErrors>true</ILLinkTreatWarningsAsErrors>
+    <JsonSerializerIsReflectionEnabledByDefault>false</JsonSerializerIsReflectionEnabledByDefault>
+    <DynamicCodeSupport>false</DynamicCodeSupport>
+    <CsWinRTAotOptimizerEnabled>true</CsWinRTAotOptimizerEnabled>
+    <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(MusicTrimmed)' == 'true'">
+    <!-- XamlReader resolves controls/properties by name at runtime. Keep the
+         complete WinUI metadata provider; generate application WinRT marshalling
+         instead of retaining unsupported reflection-based generic fallbacks. -->
+    <TrimmerRootAssembly Include="Microsoft.WinUI" />
+  </ItemGroup>
+  <PropertyGroup Condition="'$(MusicNativeAcceptance)' == 'true'">
+    <DefineConstants>$(DefineConstants);MUSIC_NATIVE_ACCEPTANCE</DefineConstants>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(MusicNativeAcceptance)' == 'true'">
+    <Compile Include="../validation/native/*.cs" Link="NativeAcceptance/%(Filename)%(Extension)" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="../Music.Core/Music.Core.csproj" />
     <!-- Keep the same WinUI version as the former umbrella package, but do not

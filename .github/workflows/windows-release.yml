@@ -39,7 +39,7 @@ jobs:
           global-json-file: apps/windows/global.json
       - name: Test Windows workflow and smoke-test contracts
         shell: pwsh
-        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs tests/windows-branding.test.mjs tests/windows-window-integration.test.mjs tests/windows-package-size.test.mjs apps/windows/validation/visual-contracts.test.mjs
+        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs tests/windows-branding.test.mjs tests/windows-window-integration.test.mjs tests/windows-package-size.test.mjs tests/windows-trimming.test.mjs apps/windows/validation/visual-contracts.test.mjs
       - name: Test Windows update source and controls
         shell: pwsh
         run: dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj --configuration Release --logger trx

@@ -1,5 +1,42 @@
 # Windows implementation checkpoint — validation
 
+## Opt-in trimming experiment
+
+The normal build/release remains untrimmed; `MusicTrimmed=true` is experimental.
+The local Windows compile-only publish completed with strict trim warnings and
+generated WinRT marshalling. Comparing clean outputs of the same source:
+
+| Compile-only publish files | Untrimmed | Trimmed |
+| --- | ---: | ---: |
+| Total bytes | 120,934,287 | 36,678,470 |
+| File count | 231 | 90 |
+
+This is an 84,255,817-byte reduction in the managed/.NET publish subset. Both
+outputs deliberately omit native WinUI payload and merged PRI processing; these
+figures are **not** an installer size, full application size, or installed footprint.
+No trimmed installer has been published or native trimmed UI exercised here.
+
+Local checks:
+
+- Core: 100 tests passed with JSON reflection disabled, including legacy JSON
+  compatibility and exact persistence shape. Update-source suite: 12 passed.
+- Windows Node/visual checks: 138 passed, 3 PowerShell-dependent tests skipped.
+- Actual self-contained trimmed Linux compatibility executable passed; it uses
+  the real Core and pinned Velopack libraries with explicit HTTP fixtures.
+- Normal Windows-targeted C# compile check: 0 warnings, 0 errors.
+- Existing release regressions: 28 Windows and 19 Android tests passed.
+- The approved existing Python assertion now checks the generated-metadata
+  serialization call while retaining its PasswordVault/password-persistence
+  safeguards. All 10 runtime-XAML/source checks pass; that CI blocker is removed.
+- The browser prototype suite still fails at `tests/readable-player.mjs:93`
+  (library-setup vertical overflow), also reproduced on unchanged HEAD with the
+  same Chromium and dependencies.
+
+Native acceptance remains required for runtime XAML/templates, authenticated
+connection and PasswordVault, browse/search, real media playback/device routing,
+profile/session restoration, and old-install → newer-trimmed-package upgrades.
+The manual build-only workflow input prepares a native artifact, not acceptance.
+
 ## UI, branding, and user-initiated updater changes
 
 Executed locally for this change (not native Windows acceptance):

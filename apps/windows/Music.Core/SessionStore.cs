@@ -23,7 +23,7 @@ public sealed class SessionStore : IDisposable
         using var command = database.CreateCommand();
         command.CommandText = "INSERT INTO playback (connection_id, snapshot) VALUES ($id, $snapshot) ON CONFLICT(connection_id) DO UPDATE SET snapshot = excluded.snapshot;";
         command.Parameters.AddWithValue("$id", snapshot.ConnectionId);
-        command.Parameters.AddWithValue("$snapshot", JsonSerializer.Serialize(snapshot));
+        command.Parameters.AddWithValue("$snapshot", JsonSerializer.Serialize(snapshot, PersistenceJsonContext.Default.PlaybackSnapshot));
         command.ExecuteNonQuery();
     }
 
@@ -35,7 +35,7 @@ public sealed class SessionStore : IDisposable
         if (command.ExecuteScalar() is not string json) return null;
         try
         {
-            var snapshot = JsonSerializer.Deserialize<PlaybackSnapshot>(json);
+            var snapshot = JsonSerializer.Deserialize(json, PersistenceJsonContext.Default.PlaybackSnapshot);
             if (snapshot is null || snapshot.ConnectionId != connectionId) return null;
             Validate(snapshot);
             return snapshot;
