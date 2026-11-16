@@ -1,6 +1,6 @@
 # In-app updates
 
-Music checks the public `everyonesoftware/music` GitHub repository for the latest published stable release. This is separate from Navidrome: no music-server URL, username, password or token enters the updater's HTTP client.
+Music checks the public `everyonesoftware/music` GitHub release list for the highest numeric published stable `v0.1.<count>` Android release, independent of GitHub's Latest designation and publication order. Windows-only/no-APK releases are skipped. This is separate from Navidrome: no music-server URL, username, password or token enters the updater's HTTP client.
 
 ## Phone flow
 
@@ -15,7 +15,11 @@ Music checks the public `everyonesoftware/music` GitHub repository for the lates
 
 ## Trust and limits
 
-The client is isolated and unauthenticated, disables cookies/cache/authenticators, and uses a fixed HTTPS GitHub API endpoint. It rejects draft/prerelease metadata, inconsistent versions/tags/filenames, downgrades, malformed manifests and assets outside the exact repository release path. Release notes are bounded plain text. JSON and APK sizes are bounded; APKs are limited to 150 MiB. Downloads follow only a bounded number of HTTPS redirects to GitHub's allowlisted asset hosts. Transport/parser failures expose a fixed safe message, not request URLs or exception causes. Cancellation closes the actual network call and removes the partial file.
+The client is isolated and unauthenticated, disables cookies/cache/authenticators, and requests only the fixed HTTPS GitHub release-list path with `per_page=100&page=N`. It scans sequentially through at most 10 pages before selecting a candidate; a short page establishes exhaustion unless it advertises another page. A full tenth page, failed/truncated inventory, malformed JSON or HTTP error is an error, never a successful up-to-date result or permission to use a partial inventory. API redirects cannot change the requested page, query or repository.
+
+Drafts, prereleases and unpublished entries are ignored. Stable Android candidates must have canonical positive numeric tags (no leading zeroes, maximum count 2,100,000,000); duplicate Android versions fail closed. The highest candidate newer than the installed build must have exactly one APK, named `Music-0.1.<count>.apk`, and exactly one `release.json`. Invalid/ambiguous Android candidates, missing manifests or inconsistent metadata fail closed instead of silently falling back to an older release. Equal/older versions are never offered.
+
+The client rejects inconsistent versions/tags/filenames, malformed manifests and assets outside the exact repository release path. Release notes are bounded plain text. Each release-list page is limited to 1 MiB and manifests to 64 KiB; APKs are limited to 150 MiB. Downloads follow only a bounded number of HTTPS redirects to GitHub's allowlisted asset hosts. Transport/parser failures expose a fixed safe message, not request URLs or exception causes. Cancellation closes the actual network call and removes the partial file.
 
 The expected release files already produced by the workflow are:
 
@@ -30,7 +34,7 @@ The application ID remains `com.everyonesoftware.audio`; existing signing keys a
 
 ## Verification
 
-- JVM `UpdateClientTest`: real MockWebServer requests using a loopback-only transport seam, stable release/manifest validation, URL and redirect policy, bounded reads, size/checksum failure, safe errors and cancellation.
+- JVM `UpdateClientTest`: real MockWebServer requests using a loopback-only transport seam, mixed-platform numeric selection, pagination/exhaustion/bounds, fail-closed ambiguous candidates and incomplete inventories, stable release/manifest validation, URL and redirect policy, bounded reads, size/checksum failure, safe errors and cancellation.
 - JVM `UpdateCoordinatorTest`: daily throttling, manual checks, disabled-check behavior, restart throttling, coalescing, explicit downloads, verification failure/retry, cancellation and cached-file revalidation. These tests do not claim real playback or installation.
 - Android `UpdateScreensTest`: native notification icons, existing Queue/chrome preservation, Updates routing/back behavior, preferences, pending/error/progress states, pause gate, permission explanation and consent invalidation if playback resumes.
 - Android `UpdateInstallerTest`: real package parsing of the installed signed APK and policy-seam rejection tests, fixed-path/size/hash/current-signer checks, rechecks before preparing the installer, permission intent and read-only FileProvider grant.

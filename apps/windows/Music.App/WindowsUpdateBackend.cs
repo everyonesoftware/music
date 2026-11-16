@@ -19,7 +19,7 @@ public sealed class WindowsGithubSource : GithubSource
     protected override async Task<GithubRelease[]> GetReleases(bool includePrereleases)
     {
         versions.Clear();
-        var result = new List<GithubRelease>();
+        var result = new List<(GithubRelease Release, Version Version, bool MainRelease)>();
         // Bound API use; never silently call a truncated inventory "up to date".
         for (int page = 1; page <= 10; page++)
         {
@@ -30,8 +30,10 @@ public sealed class WindowsGithubSource : GithubSource
             {
                 if (item.GetProperty("draft").GetBoolean()) continue;
                 string? tag = item.GetProperty("tag_name").GetString();
-                if (tag is null || !tag.StartsWith("windows-v", StringComparison.Ordinal)) continue;
-                string version = tag[9..];
+                bool mainRelease = tag is not null && tag.StartsWith("v", StringComparison.Ordinal) && !item.GetProperty("prerelease").GetBoolean();
+                bool legacyRelease = tag is not null && tag.StartsWith("windows-v", StringComparison.Ordinal);
+                if (!mainRelease && !legacyRelease) continue;
+                string version = tag![(mainRelease ? 1 : 9)..];
                 if (!Version.TryParse(version, out var parsed) || parsed.Major != 0 || parsed.Minor != 1 || parsed.Build is < 1 or > 65534 || parsed.Revision != -1 || version != parsed.ToString()) continue;
                 var release = item.Deserialize(WindowsUpdateJsonContext.Default.GithubRelease) ?? throw new InvalidDataException("Missing Windows release.");
                 if (!release.Assets.Any(a => a.Name == $"releases.{Channel}.json")) continue;
@@ -40,12 +42,17 @@ public sealed class WindowsGithubSource : GithubSource
                 if (release.Assets.Any(a => a.BrowserDownloadUrl != prefix + a.Name))
                     throw new InvalidDataException("Unexpected Windows release asset origin.");
                 versions.Add(release, version);
-                result.Add(release);
+                result.Add((release, parsed, mainRelease));
             }
             // Releases are not guaranteed to be published in numeric version order. Deltas are disabled,
             // so only the highest Windows full-package feed is needed, not every historical feed.
             if (releases.Length < 100)
-                return result.OrderByDescending(r => Version.Parse(versions[r])).Take(1).ToArray();
+            {
+                var selected = result.OrderByDescending(r => r.Version).ThenByDescending(r => r.MainRelease).Take(1).Select(r => r.Release).ToArray();
+                if (selected.Any(r => r.Assets.GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() != 1)))
+                    throw new InvalidDataException("Ambiguous Windows release assets.");
+                return selected;
+            }
         }
         throw new InvalidDataException("GitHub release inventory exceeded the safe paging limit.");
     }

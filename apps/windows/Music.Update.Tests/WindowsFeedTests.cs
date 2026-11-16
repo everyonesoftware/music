@@ -11,6 +11,19 @@ namespace Music.Update.Tests;
 public sealed class WindowsFeedTests
 {
     [Fact]
+    public async Task Stable_main_release_with_windows_feed_is_an_in_app_update()
+    {
+        var downloader = new Downloader { MainRelease = true };
+        var source = new WindowsGithubSource(downloader);
+        var feed = await source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
+        var asset = Assert.Single(feed.Assets);
+        Assert.Equal("0.1.20", asset.Version.ToString());
+        await source.DownloadReleaseEntry(NullVelopackLogger.Instance, asset, "unused", _ => {}, CancellationToken.None);
+        Assert.EndsWith("/v0.1.20/MusicWindows-0.1.20-win-x64-full.nupkg", downloader.Requests.Last());
+        Assert.DoesNotContain(downloader.Requests, u => u.Contains("/latest"));
+    }
+
+    [Fact]
     public async Task Windows_prerelease_feed_is_read_instead_of_android_latest()
     {
         var downloader = new Downloader();
@@ -69,22 +82,133 @@ public sealed class WindowsFeedTests
         Assert.DoesNotContain(downloader.Requests, u => u.Contains("/windows-v0.1.19/"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Stable_main_feed_wins_equal_version_tie_regardless_of_inventory_order(bool mainFirst)
+    {
+        object main = Release("v0.1.20");
+        object legacy = Release("windows-v0.1.20", prerelease: true);
+        var downloader = new Downloader { Pages = new() { [1] = mainFirst ? [main, legacy] : [legacy, main] } };
+        var source = new WindowsGithubSource(downloader);
+        var feed = await source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
+        await source.DownloadReleaseEntry(NullVelopackLogger.Instance, Assert.Single(feed.Assets), "unused", _ => {}, CancellationToken.None);
+        Assert.EndsWith("/v0.1.20/MusicWindows-0.1.20-win-x64-full.nupkg", downloader.Requests.Last());
+        Assert.DoesNotContain(downloader.Requests, u => u.Contains("/windows-v0.1.20/"));
+    }
+
+    [Theory]
+    [InlineData("releases.win-x64.json")]
+    [InlineData("RELEASES.WIN-X64.JSON")]
+    [InlineData("MusicWindows-0.1.20-win-x64-full.nupkg")]
+    [InlineData("MUSICWINDOWS-0.1.20-WIN-X64-FULL.NUPKG")]
+    public async Task Ambiguous_selected_windows_asset_is_rejected_without_falling_back(string duplicate)
+    {
+        var downloader = new Downloader { Pages = new() { [1] = [
+            Release("v0.1.20", assetNames: ["releases.win-x64.json", "MusicWindows-0.1.20-win-x64-full.nupkg", duplicate]),
+            Release("windows-v0.1.19", prerelease: true)
+        ] } };
+        await Assert.ThrowsAsync<InvalidDataException>(() => new WindowsGithubSource(downloader)
+            .GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64"));
+        Assert.DoesNotContain(downloader.Requests, u => u.Contains("/windows-v0.1.19/"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Highest_numeric_windows_version_wins_across_out_of_order_mixed_pages(bool mainTarget)
+    {
+        string target = mainTarget ? "v0.1.20" : "windows-v0.1.20";
+        var firstPage = Enumerable.Repeat(Release("v0.1.99", assetNames: ["music.apk"]), 99)
+            .Prepend(Release("windows-v0.1.9", prerelease: true)).ToArray();
+        var downloader = new Downloader { Pages = new() {
+            [1] = firstPage,
+            [2] = [Release("v0.1.19"), Release(target, prerelease: !mainTarget),
+                Release("v0.1.98", assetNames: ["MusicWindows-win-x64-Setup.exe"]),
+                Release("v0.1.97", draft: true), Release("v0.1.96", prerelease: true)]
+        } };
+        var feed = await new WindowsGithubSource(downloader).GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
+        Assert.Equal("0.1.20", Assert.Single(feed.Assets).Version.ToString());
+        Assert.Equal(3, downloader.Requests.Count);
+        Assert.EndsWith("page=2", downloader.Requests[1]);
+        Assert.EndsWith($"/{target}/releases.win-x64.json", downloader.Requests[2]);
+    }
+
+    [Fact]
+    public async Task Android_or_installer_only_releases_are_not_in_app_updates()
+    {
+        var downloader = new Downloader { Pages = new() { [1] = [
+            Release("v0.1.30", assetNames: ["music.apk"]),
+            Release("v0.1.31", assetNames: ["MusicWindows-win-x64-Setup.exe"])
+        ] } };
+        var feed = await new WindowsGithubSource(downloader).GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
+        Assert.Empty(feed.Assets);
+        Assert.Single(downloader.Requests);
+    }
+
+    [Fact]
+    public async Task Full_tenth_inventory_page_is_an_error_even_if_a_windows_feed_was_found()
+    {
+        object[] page = Enumerable.Repeat(Release("v0.1.21", assetNames: ["music.apk"]), 99)
+            .Prepend(Release("v0.1.20")).ToArray();
+        var downloader = new Downloader { Pages = Enumerable.Range(1, 10).ToDictionary(n => n, _ => page) };
+        var error = await Assert.ThrowsAsync<InvalidDataException>(() => new WindowsGithubSource(downloader)
+            .GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64"));
+        Assert.Contains("paging limit", error.Message);
+        Assert.Equal(10, downloader.Requests.Count);
+        Assert.EndsWith("page=10", downloader.Requests.Last());
+    }
+
+    [Theory]
+    [InlineData("empty-feed")]
+    [InlineData("wrong-version")]
+    [InlineData("wrong-package")]
+    [InlineData("wrong-architecture")]
+    [InlineData("malformed-feed")]
+    [InlineData("duplicate-entry")]
+    [InlineData("missing-package")]
+    [InlineData("wrong-origin")]
+    public async Task Invalid_highest_main_feed_never_falls_back_to_older_legacy_feed(string fault)
+    {
+        var downloader = new Downloader { MainRelease = true, OlderWindowsRelease = true, Fault = fault };
+        var source = new WindowsGithubSource(downloader);
+        if (fault == "malformed-feed")
+            await Assert.ThrowsAsync<JsonException>(() => source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64"));
+        else
+            await Assert.ThrowsAsync<InvalidDataException>(() => source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64"));
+        Assert.DoesNotContain(downloader.Requests, u => u.Contains("/windows-v0.1.19/"));
+    }
+
+    private static object Release(string tag, bool prerelease = false, bool draft = false, string[]? assetNames = null)
+    {
+        string version = tag.StartsWith("windows-v", StringComparison.Ordinal) ? tag[9..] : tag[1..];
+        return new {
+            tag_name = tag, prerelease, draft,
+            assets = (assetNames ?? ["releases.win-x64.json", $"MusicWindows-{version}-win-x64-full.nupkg"])
+                .Select(name => new { name, browser_download_url = $"{WindowsGithubSource.Repository}/releases/download/{tag}/{name}" }).ToArray()
+        };
+    }
+
     private sealed class Downloader : IFileDownloader
     {
-        public bool FullFirstPage, OlderWindowsRelease;
+        public bool FullFirstPage, OlderWindowsRelease, MainRelease;
         public string? Fault;
+        public Dictionary<int, object[]>? Pages;
         public readonly List<string> Requests = new();
         private const string Root = "https://github.com/everyonesoftware/music/releases/download/";
         public Task<string> DownloadString(string url, IDictionary<string, string>? headers = null, double timeout = 30)
         {
             Requests.Add(url);
+            if (Pages is not null)
+                return Task.FromResult(JsonSerializer.Serialize(Pages.GetValueOrDefault(int.Parse(url.Split("&page=")[1]), [])));
             if (FullFirstPage && url.EndsWith("page=1"))
                 return Task.FromResult(JsonSerializer.Serialize(Enumerable.Repeat(new { tag_name = "v0.1.50", draft = false, prerelease = false }, 100)));
             string package = Fault == "missing-package" ? "missing.nupkg" : "MusicWindows-0.1.20-win-x64-full.nupkg";
-            string feedUrl = Fault == "wrong-origin" ? "https://example.com/releases.win-x64.json" : Root + "windows-v0.1.20/releases.win-x64.json";
+            string tag = MainRelease ? "v0.1.20" : "windows-v0.1.20";
+            string feedUrl = Fault == "wrong-origin" ? "https://example.com/releases.win-x64.json" : Root + tag + "/releases.win-x64.json";
             var releases = new List<object> {
-                new { tag_name = "v0.1.21", draft = false, prerelease = false, assets = new[] { new { name = "releases.win-x64.json", browser_download_url = Root + "v0.1.21/releases.win-x64.json" } } },
-                new { tag_name = "windows-v0.1.20", draft = false, prerelease = true, assets = new[] { new { name = "releases.win-x64.json", browser_download_url = feedUrl }, new { name = package, browser_download_url = Root + "windows-v0.1.20/" + package } } }
+                new { tag_name = "v0.1.21", draft = false, prerelease = false, assets = new[] { new { name = "music.apk", browser_download_url = Root + "v0.1.21/music.apk" } } },
+                new { tag_name = tag, draft = false, prerelease = !MainRelease, assets = new[] { new { name = "releases.win-x64.json", browser_download_url = feedUrl }, new { name = package, browser_download_url = Root + tag + "/" + package } } }
             };
             if (OlderWindowsRelease) releases.Add(new { tag_name = "windows-v0.1.19", draft = false, prerelease = true, assets = new[] { new { name = "releases.win-x64.json", browser_download_url = Root + "windows-v0.1.19/releases.win-x64.json" } } });
             return Task.FromResult(JsonSerializer.Serialize(releases));
@@ -99,6 +223,13 @@ public sealed class WindowsFeedTests
             if (Fault == "wrong-architecture") feed = feed.Replace("win-x64", "win-arm64", StringComparison.Ordinal);
             if (Fault == "empty-feed") feed = "{\"Assets\":[]}";
             if (Fault == "wrong-package") feed = feed.Replace("MusicWindows", "UnrelatedApp", StringComparison.Ordinal);
+            if (Fault == "malformed-feed") feed = "not JSON";
+            if (Fault == "duplicate-entry")
+            {
+                using var document = JsonDocument.Parse(feed);
+                string entry = document.RootElement.GetProperty("Assets")[0].GetRawText();
+                feed = "{\"Assets\":[" + entry + "," + entry + "]}";
+            }
             return Task.FromResult(Encoding.UTF8.GetBytes(feed));
         }
         public Task DownloadFile(string url, string targetFile, Action<int>? progress = null, IDictionary<string, string>? headers = null, double timeout = 30, CancellationToken cancelToken = default)

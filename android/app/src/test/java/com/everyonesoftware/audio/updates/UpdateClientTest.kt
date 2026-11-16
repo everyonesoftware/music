@@ -15,7 +15,9 @@ class UpdateClientTest {
     private val hash = MessageDigest.getInstance("SHA-256").digest(payload).joinToString("") { "%02x".format(it) }
     private val base = "https://github.com/everyonesoftware/music/releases/download/v0.1.42/"
     private fun manifest() = """{"count":42,"version":"0.1.42","tag":"v0.1.42","sha":"${"a".repeat(40)}","apk":"Music-0.1.42.apk","bytes":${payload.size},"sha256":"$hash"}"""
-    private fun metadata(draft: Boolean = false, prerelease: Boolean = false) = """{"tag_name":"v0.1.42","draft":$draft,"prerelease":$prerelease,"published_at":"2026-01-01T00:00:00Z","body":"Release notes","assets":[{"name":"release.json","browser_download_url":"${base}release.json"},{"name":"Music-0.1.42.apk","browser_download_url":"${base}Music-0.1.42.apk","size":${payload.size}}]}"""
+    private fun metadata(draft: Boolean = false, prerelease: Boolean = false) = """[{"tag_name":"v0.1.42","draft":$draft,"prerelease":$prerelease,"published_at":"2026-01-01T00:00:00Z","body":"Release notes","assets":[{"name":"release.json","browser_download_url":"${base}release.json"},{"name":"Music-0.1.42.apk","browser_download_url":"${base}Music-0.1.42.apk","size":${payload.size}}]}]"""
+    private fun item(count: Int = 42) = metadata().removeSurrounding("[", "]").replace("0.1.42", "0.1.$count")
+    private fun inventory(vararg releases: String) = releases.joinToString(",", "[", "]")
     private fun client(server: MockWebServer) = UpdateClient(UpdateTestConfig(server.url("/")))
     private fun response(body: String) = MockResponse().setBody(body)
     private suspend fun failure(block: suspend () -> Unit): UpdateException {
@@ -36,11 +38,146 @@ class UpdateClientTest {
     }
     private fun temporary() = File.createTempFile("music-update-", ".apk").also { it.delete() }
 
+    @Test fun selectsHighestAndroidVersionNotPublicationOrderOrOtherPlatform() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val windows = item(80).replace("Music-0.1.80.apk", "Music-0.1.80.zip")
+            server.enqueue(response(inventory(item(9), windows, item(), item(41))))
+            server.enqueue(response(manifest()))
+            assertEquals(42, client(server).latest(1)!!.count)
+            assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=1", server.takeRequest().path)
+        }
+    }
+
+    @Test fun scansBeyondFullFirstPageBeforeChoosingHighestVersion() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(response(inventory(*Array(100) { item(it + 1).replace(".apk", ".zip") })))
+            server.enqueue(response(metadata()))
+            server.enqueue(response(manifest()))
+            assertEquals(42, client(server).latest(1)!!.count)
+            assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=1", server.takeRequest().path)
+            assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=2", server.takeRequest().path)
+        }
+    }
+
+    @Test fun ambiguousAndroidCandidatesFailClosedInsteadOfOfferingOlderVersion() = runBlocking<Unit> {
+        val extraApk = item().replace("\"assets\":[", "\"assets\":[{\"name\":\"other.apk\",\"browser_download_url\":\"${base}other.apk\"},")
+        val duplicateManifest = item().replace("\"assets\":[", "\"assets\":[{\"name\":\"release.json\",\"browser_download_url\":\"${base}release.json\"},")
+        for (body in listOf(inventory(item(), item(), item(41)), inventory(extraApk, item(41)), inventory(duplicateManifest, item(41)))) {
+            MockWebServer().use { server ->
+                server.enqueue(response(body)); server.enqueue(response(manifest()))
+                failure { client(server).latest(1) }
+                assertEquals(1, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun rejectsShortInventoryThatAdvertisesMorePages() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(response("[]").setHeader("Link", "<https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page=2>; rel=\"next\""))
+            failure { client(server).latest(1) }
+        }
+    }
+
+    @Test fun apiRedirectCannotSkipInventoryPagesOrChangeQuery() = runBlocking<Unit> {
+        for (location in listOf("?per_page=100&page=2", "?per_page=100&page=11", "?per_page=100&page=1&token=secret", "/repos/other/music/releases?per_page=100&page=1")) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", location))
+                server.enqueue(response("[]"))
+                failure { client(server).latest(1) }
+                assertEquals(1, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun highestVersionCanPrecedeLaterPagesAndIgnoredReleases() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            val ignored = item(900).replace("\"prerelease\":false", "\"prerelease\":true")
+            server.enqueue(response(inventory(item(), *Array(99) { ignored })))
+            server.enqueue(response(inventory(item(9), item(100).replace("\"draft\":false", "\"draft\":true"), item(800).replace("\"2026-01-01T00:00:00Z\"", "null"))))
+            server.enqueue(response(manifest()))
+            assertEquals(42, client(server).latest(1)!!.count)
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun fullTenthPageIsAnErrorNotPartialSuccessOrUpToDate() = runBlocking<Unit> {
+        for (installed in listOf(1L, 999L)) {
+            MockWebServer().use { server ->
+                repeat(10) { server.enqueue(response(inventory(*Array(100) { item().replace(".apk", ".zip") }))) }
+                failure { client(server).latest(installed) }
+                assertEquals(10, server.requestCount)
+                repeat(10) { page -> assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=${page + 1}", server.takeRequest().path) }
+            }
+        }
+    }
+
+    @Test fun shortTenthPageEstablishesExhaustion() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            repeat(9) { server.enqueue(response(inventory(*Array(100) { item().replace(".apk", ".zip") }))) }
+            server.enqueue(response(metadata())); server.enqueue(response(manifest()))
+            assertEquals(42, client(server).latest(1)!!.count)
+            assertEquals(11, server.requestCount)
+        }
+    }
+
+    @Test fun laterPageErrorsNeverReturnPartialCandidate() = runBlocking<Unit> {
+        val full = inventory(item(), *Array(99) { item().replace(".apk", ".zip") })
+        for (bad in listOf(response("["), response("{}"), MockResponse().setResponseCode(404), MockResponse().setResponseCode(500), response("[]").setHeader("Content-Length", 10).setSocketPolicy(SocketPolicy.DISCONNECT_AT_END))) {
+            MockWebServer().use { server ->
+                server.enqueue(response(full)); server.enqueue(bad)
+                failure { client(server).latest(1) }
+                assertEquals(2, server.requestCount)
+            }
+        }
+    }
+
+    @Test fun invalidNewestAndroidReleaseNeverFallsBack() = runBlocking<Unit> {
+        for (bad in listOf(
+            item().replace("release.json", "other.json"),
+            item().replace("Music-0.1.42.apk", "wrong.apk"),
+            item().replace("v0.1.42", "v0.1.042"),
+            item().replace("v0.1.42", "v0.1.2100000001"),
+            item().replace("v0.1.42", "v0.1.999999999999999999"))) {
+            MockWebServer().use { server ->
+                server.enqueue(response(inventory(item(41), bad)))
+                failure { client(server).latest(1) }
+                assertEquals(1, server.requestCount)
+            }
+        }
+        MockWebServer().use { server ->
+            server.enqueue(response(inventory(item(41), item())))
+            server.enqueue(response(manifest().replace(hash, "bad")))
+            failure { client(server).latest(1) }
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun oversizedPageCannotBeTreatedAsCompleteInventory() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(response(inventory(*Array(101) { item().replace(".apk", ".zip") })))
+            failure { client(server).latest(1) }
+        }
+    }
+
+    @Test fun cancellationDuringLaterInventoryPageIsPrompt() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(response(inventory(*Array(100) { item().replace(".apk", ".zip") })))
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+            val job = launch(Dispatchers.IO) { client(server).latest(1) }
+            withContext(Dispatchers.IO) {
+                assertNotNull(server.takeRequest(3, TimeUnit.SECONDS))
+                assertNotNull(server.takeRequest(3, TimeUnit.SECONDS))
+            }
+            withTimeout(3000) { job.cancelAndJoin() }
+            assertTrue(job.isCancelled)
+        }
+    }
+
     @Test fun discoversExactPublishedReleaseAndSendsNoCredentials() = runBlocking<Unit> {
         MockWebServer().use { server ->
             val found = release(server)
             assertEquals(UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", payload.size.toLong(), hash, "${base}Music-0.1.42.apk", "Release notes"), found)
-            assertEquals("/repos/everyonesoftware/music/releases/latest", server.takeRequest().path)
+            assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=1", server.takeRequest().path)
             val manifestRequest = server.takeRequest()
             assertEquals("/everyonesoftware/music/releases/download/v0.1.42/release.json", manifestRequest.path)
             assertNull(manifestRequest.getHeader("Authorization")); assertNull(manifestRequest.getHeader("Cookie"))
@@ -54,17 +191,17 @@ class UpdateClientTest {
             assertEquals(2, server.requestCount)
         }
     }
-    @Test fun rejectsDraftPrereleaseAndUnpublishedRelease() = runBlocking<Unit> {
+    @Test fun ignoresDraftPrereleaseAndUnpublishedRelease() = runBlocking<Unit> {
         MockWebServer().use { server ->
             for (body in listOf(metadata(draft = true), metadata(prerelease = true), metadata().replace("\"2026-01-01T00:00:00Z\"", "null"))) {
-                server.enqueue(response(body)); failure { client(server).latest(1) }
+                server.enqueue(response(body)); assertNull(client(server).latest(1))
             }
         }
     }
-    @Test fun missingReleaseIsNotAnErrorButOtherStatusesAreSafe() = runBlocking<Unit> {
+    @Test fun emptyInventoryIsNotAnErrorButHttpErrorsAreSafe() = runBlocking<Unit> {
         MockWebServer().use { server ->
-            server.enqueue(MockResponse().setResponseCode(404)); assertNull(client(server).latest(1))
-            for (status in listOf(204, 206, 401, 403, 429, 500)) {
+            server.enqueue(response("[]")); assertNull(client(server).latest(1))
+            for (status in listOf(204, 206, 401, 403, 404, 429, 500)) {
                 server.enqueue(MockResponse().setResponseCode(status).setBody("secret https://private.invalid/token"))
                 failure { client(server).latest(1) }
             }
@@ -150,7 +287,7 @@ class UpdateClientTest {
                 server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", location))
                 failure { client(server).latest(1) }
             }
-            repeat(6) { server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/repos/everyonesoftware/music/releases/latest")) }
+            repeat(6) { server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", "/repos/everyonesoftware/music/releases?per_page=100&page=1")) }
             failure { client(server).latest(1) }
         }
     }

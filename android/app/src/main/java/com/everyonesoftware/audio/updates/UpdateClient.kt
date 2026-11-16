@@ -68,10 +68,11 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = false }
 
     suspend fun latest(installedCode: Long): UpdateRelease? = safe {
-        val document = fetch(LATEST, api = true, missingAllowed = true) { readBounded(it, MAX_RELEASE_JSON) }
-            ?: return@safe null
-        val published = json.decodeFromString<PublishedRelease>(document.toString(Charsets.UTF_8))
-        check(!published.draft && !published.prerelease && !published.publishedAt.isNullOrBlank())
+        val candidates = inventory()
+            .filter { !it.draft && !it.prerelease && !it.publishedAt.isNullOrBlank() }
+            .filter { it.assets.any { asset -> asset.name.endsWith(".apk", ignoreCase = true) } }
+        check(candidates.map { tagCount(it.tag) }.distinct().size == candidates.size)
+        val published = candidates.maxByOrNull { tagCount(it.tag) } ?: return@safe null
         val count = tagCount(published.tag)
         // A valid older stable tag cannot become an available downgrade.
         if (count.toLong() <= installedCode) return@safe null
@@ -79,6 +80,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         val manifestAsset = published.assets.single { it.name == "release.json" }
         check(manifestAsset.url == prefix + "release.json")
         val apkName = "Music-0.1.$count.apk"
+        check(published.assets.count { it.name.endsWith(".apk", ignoreCase = true) } == 1)
         val apkAsset = published.assets.single { it.name == apkName }
         check(apkAsset.url == prefix + apkName)
         val manifestBytes = requireNotNull(fetch(manifestAsset.url, api = false) { readBounded(it, MAX_MANIFEST_JSON) })
@@ -96,6 +98,25 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         validate(release)
         check(apkAsset.size == release.bytes)
         release
+    }
+
+    private suspend fun inventory(): List<PublishedRelease> {
+        val releases = mutableListOf<PublishedRelease>()
+        for (page in 1..MAX_RELEASE_PAGES) {
+            currentCoroutineContext().ensureActive()
+            val entries = requireNotNull(fetch(releasesUrl(page), api = true) {
+                val entries = json.decodeFromString<List<PublishedRelease>>(readBounded(it, MAX_RELEASE_JSON).toString(Charsets.UTF_8))
+                // A short page is exhaustion only when GitHub does not advertise a continuation.
+                check(entries.size == 100 || it.headers.values("Link").none { link ->
+                    Regex("""rel\s*=\s*"?next\b""", RegexOption.IGNORE_CASE).containsMatchIn(link)
+                })
+                entries
+            })
+            check(entries.size <= 100)
+            releases.addAll(entries)
+            if (entries.size < 100) return releases
+        }
+        error("Release inventory limit")
     }
 
     /** Writes only to a new coordinator-owned temporary file; never replaces an existing file. */
@@ -176,7 +197,6 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     private suspend fun <T : Any> fetch(
         initial: String,
         api: Boolean,
-        missingAllowed: Boolean = false,
         consume: (Response) -> T,
     ): T? {
         var url = initial.toHttpUrl()
@@ -195,9 +215,9 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                         check(hop < MAX_REDIRECTS)
                         val next = requireNotNull(url.resolve(requireNotNull(response.header("Location"))))
                         checkAllowed(next, api)
+                        if (api) check(next.toString() == initial)
                         FetchResult<T>(next = next)
                     }
-                    missingAllowed && hop == 0 && response.code == 404 -> FetchResult<T>(missing = true)
                     else -> {
                         check(response.code == 200)
                         check(response.header("Content-Encoding").let { it == null || it.equals("identity", true) })
@@ -205,7 +225,6 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                     }
                 }
             }
-            if (result.missing) return null
             result.value?.let { return it }
             url = requireNotNull(result.next)
         }
@@ -216,8 +235,8 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         check(url.scheme == "https" && url.port == 443 && url.username.isEmpty() &&
             url.password.isEmpty() && url.fragment == null)
         if (api) {
-            // The fixed /latest endpoint must never turn into a different repo/API request.
-            check(url.toString() == LATEST)
+            // Only fixed, bounded inventory requests; never follow arbitrary API links.
+            check((1..MAX_RELEASE_PAGES).any { url.toString() == releasesUrl(it) })
         } else {
             check(url.host in ASSET_HOSTS)
             if (url.host == "github.com") {
@@ -252,7 +271,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         throw UpdateException()
     }
 
-    private data class FetchResult<T>(val value: T? = null, val next: HttpUrl? = null, val missing: Boolean = false)
+    private data class FetchResult<T>(val value: T? = null, val next: HttpUrl? = null)
     @Serializable private data class PublishedRelease(
         @kotlinx.serialization.SerialName("tag_name") val tag: String,
         val draft: Boolean,
@@ -272,7 +291,8 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     )
 
     private companion object {
-        const val LATEST = "https://api.github.com/repos/everyonesoftware/music/releases/latest"
+        const val MAX_RELEASE_PAGES = 10
+        fun releasesUrl(page: Int) = "https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page=$page"
         const val MAX_RELEASE_JSON = 1024 * 1024
         const val MAX_MANIFEST_JSON = 64 * 1024
         const val MAX_NOTES = 16000

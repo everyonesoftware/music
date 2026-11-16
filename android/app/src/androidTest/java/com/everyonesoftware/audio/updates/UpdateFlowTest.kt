@@ -94,7 +94,10 @@ class UpdateFlowTest {
                 return when (request.requestUrl?.encodedPath) {
                     API_PATH -> {
                         releaseGate?.await(15, TimeUnit.SECONDS)
-                        json(publishedRelease())
+                        // A newer Windows-only release precedes Android, as it can on GitHub.
+                        val windows = publishedRelease().replace("0.1.$count", "0.1.${count + 1}")
+                            .replace(".apk", ".zip")
+                        json("[$windows,${publishedRelease()}]")
                     }
                     "$ASSET_PATH/v0.1.$count/release.json" -> json(manifest())
                     "$ASSET_PATH/v0.1.$count/Music-0.1.$count.apk" ->
@@ -309,7 +312,11 @@ class UpdateFlowTest {
             assertNull(request.getHeader("Authorization"))
             assertNull(request.getHeader("Proxy-Authorization"))
             assertNull(request.getHeader("Cookie"))
-            assertNull(request.requestUrl!!.query)
+            if (request.requestUrl!!.encodedPath == API_PATH) {
+                assertEquals("per_page=100&page=1", request.requestUrl!!.encodedQuery)
+            } else {
+                assertNull(request.requestUrl!!.query)
+            }
             assertEquals("Music-Android-Updater", request.getHeader("User-Agent"))
             assertFalse(request.path.orEmpty().contains("/rest/"))
             assertFalse(request.toString().contains(credentials.password))
@@ -360,7 +367,7 @@ class UpdateFlowTest {
 
     private val snapshot = PlaybackSnapshot(playing = true, positionMs = 34_567L, durationMs = 180_000L)
     private companion object {
-        const val API_PATH = "/repos/everyonesoftware/music/releases/latest"
+        const val API_PATH = "/repos/everyonesoftware/music/releases"
         const val ASSET_PATH = "/everyonesoftware/music/releases/download"
     }
 }
