@@ -40,10 +40,18 @@ class NavidromeClient(
                 it.text("coverArt"), it.number("duration"), it.number("userRating"))
         }
 
-    suspend fun albums(size: Int = 100, offset: Int = 0): List<Album> {
-        require(size in 1..500 && offset >= 0) { "Album page is out of range." }
-        return api("getAlbumList2", "type" to "alphabeticalByName", "size" to size.toString(), "offset" to offset.toString())
-            .obj("albumList2").items("album").map(::parseAlbum)
+    suspend fun albums(): List<Album> {
+        val albums = mutableListOf<Album>()
+        val seen = mutableSetOf<String>()
+        val size = 100
+        do {
+            val page = api("getAlbumList2", "type" to "alphabeticalByName", "size" to size.toString(), "offset" to albums.size.toString())
+                .obj("albumList2").items("album").map(::parseAlbum)
+            // Fail rather than loop forever if a server ignores the offset or repeats albums.
+            if (page.size > size || page.any { !seen.add(it.id) }) throw invalidResponse()
+            albums.addAll(page)
+        } while (page.size == size)
+        return albums
     }
     suspend fun album(id: String): AlbumContents {
         val result = api("getAlbum", "id" to id).obj("album")

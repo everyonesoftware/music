@@ -104,6 +104,71 @@ class NavidromeClientTest {
         }
     }
 
+    @Test fun albumsIncludesLaterPagesInServerOrder() = runBlocking {
+        MockWebServer().use { server ->
+            val expected = (1..201).map { index ->
+                Album("album-$index", if (index == 100) "Moonlighter" else "Album $index", "Artist", null, 0, 0)
+            }
+            expected.chunked(100).forEach { page ->
+                server.enqueue(ok(",\"albumList2\":{\"album\":[" + page.joinToString(",") {
+                    """{"id":"${it.id}","name":"${it.name}","artist":"${it.artist}"}"""
+                } + "]}"))
+            }
+            assertEquals(expected, client(server).albums())
+            assertEquals(3, server.requestCount)
+            listOf(0, 100, 200).forEach { offset ->
+                val url = server.takeRequest(2, TimeUnit.SECONDS)!!.requestUrl!!
+                assertEquals("/music/rest/getAlbumList2.view", url.encodedPath)
+                assertEquals("alphabeticalByName", url.queryParameter("type"))
+                assertEquals("100", url.queryParameter("size"))
+                assertEquals(offset.toString(), url.queryParameter("offset"))
+            }
+        }
+    }
+
+    private fun albumPage(first: Int, count: Int) = ok(",\"albumList2\":{\"album\":[" +
+        (first until first + count).joinToString(",") { """{"id":"album-$it","name":"Album $it"}""" } + "]}")
+
+    @Test fun albumsStopsAfterEmptyPageForExactPageMultiple() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(albumPage(1, 100))
+            server.enqueue(albumPage(101, 100))
+            server.enqueue(albumPage(201, 0))
+            assertEquals((1..200).map { "album-$it" }, client(server).albums().map { it.id })
+            assertEquals(3, server.requestCount)
+            listOf(0, 100, 200).forEach { offset ->
+                assertEquals(offset.toString(), server.takeRequest(2, TimeUnit.SECONDS)!!.requestUrl!!.queryParameter("offset"))
+            }
+        }
+    }
+
+    @Test fun albumsSupportsEmptyLibrary() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(albumPage(1, 0))
+            assertTrue(client(server).albums().isEmpty())
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun albumsDoesNotReturnPartialLibraryWhenLaterPageFails() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(albumPage(1, 100))
+            server.enqueue(MockResponse().setResponseCode(503))
+            rejects<NavidromeException> { runBlocking { client(server).albums() } }
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun albumsRejectsRepeatedPageInsteadOfLoopingOrDuplicatingCards() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(albumPage(1, 100))
+            server.enqueue(albumPage(1, 100))
+            server.enqueue(albumPage(201, 0))
+            rejects<NavidromeException> { runBlocking { client(server).albums() } }
+            assertEquals(2, server.requestCount)
+        }
+    }
+
     @Test fun parsesAlbumListAndAlbumTracks() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(ok(",\"albumList2\":{\"album\":[{\"id\":\"a1\",\"name\":\"Album One\",\"artist\":\"Artist\",\"coverArt\":\"art-a1\",\"songCount\":2,\"year\":2020}]}"))
