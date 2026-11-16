@@ -1,5 +1,8 @@
 <Grid xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" x:Name="Shell" RequestedTheme="Dark" Background="#1c211f">
   <Grid.Resources>
+    <ItemsPanelTemplate x:Key="LibraryRowPanel">
+      <ItemsStackPanel Orientation="Horizontal"/>
+    </ItemsPanelTemplate>
     <SolidColorBrush x:Key="Sage" Color="#c0d7ae"/>
     <SolidColorBrush x:Key="Muted" Color="#acb8ae"/>
     <!-- Override the native Slider template resources, not only Foreground. -->

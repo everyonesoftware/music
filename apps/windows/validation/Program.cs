@@ -12,7 +12,13 @@ Check(!gate.IsCurrent(second) && second.Token.IsCancellationRequested, "navigati
 Check(BrowsePolicy.DefaultMode("songs") == "list", "songs start in list mode");
 Check(BrowsePolicy.DefaultMode("albums") == "grid", "albums start in grid mode");
 Check(BrowsePolicy.DefaultMode("playlists") == "grid", "playlists start in grid mode");
-Check(BrowsePolicy.ShowSection("library", "albums", 2), "library groups albums first");
+Check(BrowsePolicy.ShowSection("library", "albums", 2), "library includes albums");
+Check(!BrowsePolicy.ShowSection("library", "songs", 2), "library landing page hides songs");
+Check(!BrowsePolicy.ShowSection("library", "songs", 2, "   "), "blank library search hides songs");
+Check(BrowsePolicy.ShowSection("library", "songs", 2, "track"), "library search still shows matching songs");
+Check(!BrowsePolicy.ShowSection("library", "songs", 0, "track"), "empty song search results stay hidden");
+Check(BrowsePolicy.ShowSection("songs", "songs", 2), "dedicated songs page remains available");
+Check(BrowsePolicy.ShowSection("library", "playlists", 2), "library includes playlists");
 Check(!BrowsePolicy.ShowSection("library", "albums", 0), "zero match sections hidden");
 Check(!BrowsePolicy.ShowSection("songs", "albums", 2), "dedicated page isolates collection");
 Check(BrowsePolicy.ShowViewAll("library") && !BrowsePolicy.ShowViewAll("albums"), "view all links only in library");

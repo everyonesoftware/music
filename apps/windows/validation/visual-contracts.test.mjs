@@ -18,6 +18,38 @@ function method(name) {
   return source.slice(open + 1, end - 1);
 }
 
+test('library renders the playlists row before albums', () => {
+  const browse = method('RenderBrowse');
+  const playlists = browse.indexOf('NewSection("Playlists", "playlists")');
+  const albums = browse.indexOf('NewSection("Albums", "albums")');
+  assert.ok(playlists >= 0 && albums >= 0 && playlists < albums);
+});
+
+test('library collections use one horizontally scrolling row without the eight-card cap', () => {
+  const browse = method('RenderBrowse');
+  const collectionCalls = browse.split('\n').filter(line => line.includes('AddCollection(section,'));
+  assert.equal(collectionCalls.length, 2);
+  for (const call of collectionCalls) {
+    assert.match(call, /library \? "row" : mode, artLease.Token\)/);
+  }
+  const collection = method('AddCollection');
+  assert.match(collection, /layout == "grid" \? new GridView\(\) : new ListView\(\)/);
+  assert.match(collection, /if \(layout == "row"\)/);
+  assert.match(collection, /view.ItemsPanel = \(ItemsPanelTemplate\)root.Resources\["LibraryRowPanel"\]/);
+  assert.match(collection, /SetHorizontalScrollMode\(view, ScrollMode.Enabled\)/);
+  assert.match(collection, /SetHorizontalScrollBarVisibility\(view, ScrollBarVisibility.Auto\)/);
+  assert.match(collection, /SetVerticalScrollMode\(view, ScrollMode.Disabled\)/);
+  assert.match(collection, /foreach \(var card in cards\)/);
+  assert.match(collection, /CardElement\(card, layout == "row" \? "grid" : layout, token\)/);
+  assert.doesNotMatch(collection, /cards.Take\(/);
+  assert.match(shell, /<ItemsPanelTemplate x:Key="LibraryRowPanel">\s*<ItemsStackPanel Orientation="Horizontal"\s*\/>\s*<\/ItemsPanelTemplate>/);
+});
+
+test('library song results are query-aware and keep the song search request', () => {
+  assert.match(method('RenderBrowse'), /BrowsePolicy.ShowSection\(page, "songs", songs.Count, query\)/);
+  assert.match(method('LoadBrowseAsync'), /requestedPage is "library" or "songs".*SearchSongsAsync\(requestedQuery,/);
+});
+
 test('collection detail keeps back, play, and count in one compact action row', () => {
   const detail = method('RenderDetail');
   assert.match(detail, /Orientation = Orientation.Horizontal/);

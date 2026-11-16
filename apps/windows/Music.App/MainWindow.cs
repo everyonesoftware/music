@@ -325,19 +325,19 @@ public sealed partial class MainWindow : Window
         var foundAlbums = albums.Where(a => Match(a.Name + " " + a.Artist)).ToList();
         var foundPlaylists = playlists.Where(p => Match(p.Name)).ToList();
         bool library = page == "library";
-        if (BrowsePolicy.ShowSection(page, "albums", foundAlbums.Count))
-        {
-            var section = NewSection("Albums", "albums");
-            AddCollection(section, foundAlbums.Select(a => new Card(a.Name, $"{a.Artist} · {a.Year}", a.CoverArtId, a)).ToList(), library ? "grid" : mode, artLease.Token, library ? 8 : int.MaxValue);
-            panel.Children.Add(section);
-        }
         if (BrowsePolicy.ShowSection(page, "playlists", foundPlaylists.Count))
         {
             var section = NewSection("Playlists", "playlists");
-            AddCollection(section, foundPlaylists.Select(p => new Card(p.Name, $"{p.SongCount} songs", p.CoverArtId, p)).ToList(), library ? "grid" : mode, artLease.Token, library ? 8 : int.MaxValue);
+            AddCollection(section, foundPlaylists.Select(p => new Card(p.Name, $"{p.SongCount} songs", p.CoverArtId, p)).ToList(), library ? "row" : mode, artLease.Token);
             panel.Children.Add(section);
         }
-        if (BrowsePolicy.ShowSection(page, "songs", songs.Count))
+        if (BrowsePolicy.ShowSection(page, "albums", foundAlbums.Count))
+        {
+            var section = NewSection("Albums", "albums");
+            AddCollection(section, foundAlbums.Select(a => new Card(a.Name, $"{a.Artist} · {a.Year}", a.CoverArtId, a)).ToList(), library ? "row" : mode, artLease.Token);
+            panel.Children.Add(section);
+        }
+        if (BrowsePolicy.ShowSection(page, "songs", songs.Count, query))
         {
             var section = NewSection("Songs", "songs");
             AddSongs(section, library ? songs.Take(8).ToList() : songs, library ? "list" : mode, artLease.Token);
@@ -361,7 +361,7 @@ public sealed partial class MainWindow : Window
         return panel;
     }
     private sealed record Card(string Title, string Subtitle, string? ArtId, object Value);
-    private void AddCollection(StackPanel section, IReadOnlyList<Card> cards, string layout, CancellationToken token, int limit)
+    private void AddCollection(StackPanel section, IReadOnlyList<Card> cards, string layout, CancellationToken token)
     {
         var owner = connectionLease;
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
@@ -369,7 +369,13 @@ public sealed partial class MainWindow : Window
         view.HorizontalAlignment = HorizontalAlignment.Stretch;
         ScrollViewer.SetVerticalScrollMode(view, ScrollMode.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(view, ScrollBarVisibility.Disabled);
-        foreach (var card in cards.Take(limit)) view.Items.Add(CardElement(card, layout, token));
+        if (layout == "row")
+        {
+            view.ItemsPanel = (ItemsPanelTemplate)root.Resources["LibraryRowPanel"];
+            ScrollViewer.SetHorizontalScrollMode(view, ScrollMode.Enabled);
+            ScrollViewer.SetHorizontalScrollBarVisibility(view, ScrollBarVisibility.Auto);
+        }
+        foreach (var card in cards) view.Items.Add(CardElement(card, layout == "row" ? "grid" : layout, token));
         view.ItemClick += async (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement item) await OpenCollectionAsync(item.Tag); };
         section.Children.Add(view);
     }
