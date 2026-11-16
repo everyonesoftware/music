@@ -16,6 +16,55 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AudioViewModelTest {
+    @Test fun collectionNavigationPreservesQueriesLayoutsAndSessionAndRestoresLayoutsInNewModel() = runBlocking {
+        withBrowseFixture { model, graph, _ ->
+            val originalLayout = graph.store.collectionLayout(CollectionKind.PLAYLISTS)
+            val originalAlbumLayout = graph.store.collectionLayout(CollectionKind.ALBUMS)
+            val owner = ViewModelStore()
+            val session = graph.session.value
+            try {
+                onMain {
+                    model.showScreen(Screen.ALL_PLAYLISTS)
+                    model.setCollectionQuery(CollectionKind.PLAYLISTS, "Browse")
+                    model.setCollectionQuery(CollectionKind.ALBUMS, "Artist")
+                    model.setCollectionLayout(CollectionKind.PLAYLISTS, CollectionLayout.LIST)
+                    model.setCollectionLayout(CollectionKind.ALBUMS, CollectionLayout.GRID)
+                    model.openPlaylist("p")
+                }
+                until { !model.state.value.playlistLoading }
+                assertEquals(Screen.ALL_PLAYLISTS, model.state.value.backDestination)
+                onMain { model.showScreen(Screen.SETTINGS) }
+                assertEquals(Screen.PLAYLIST, model.state.value.backDestination)
+                onMain { model.showScreen(model.state.value.backDestination) }
+                assertEquals(Screen.ALL_PLAYLISTS, model.state.value.backDestination)
+                onMain { model.showScreen(model.state.value.backDestination); model.refreshCollection(CollectionKind.PLAYLISTS) }
+                until { !model.state.value.playlistsRefreshing }
+                assertEquals(Screen.ALL_PLAYLISTS, model.state.value.screen)
+                assertEquals("Browse", model.state.value.playlistCollectionQuery)
+                assertEquals("Artist", model.state.value.albumCollectionQuery)
+                assertEquals(CollectionLayout.LIST, model.state.value.playlistCollectionLayout)
+                assertEquals(CollectionLayout.GRID, model.state.value.albumCollectionLayout)
+                // Read the actual DataStore before constructing a new process-like owner.
+                until { runBlocking { graph.store.collectionLayout(CollectionKind.PLAYLISTS) == CollectionLayout.LIST &&
+                    graph.store.collectionLayout(CollectionKind.ALBUMS) == CollectionLayout.GRID } }
+                lateinit var restored: AudioViewModel
+                onMain { restored = AudioViewModel(model.getApplication(), graph, false); owner.put("restored", restored) }
+                until { !restored.state.value.booting }
+                assertEquals(Screen.PLAYLISTS, restored.state.value.screen)
+                assertEquals(CollectionLayout.LIST, restored.state.value.playlistCollectionLayout)
+                assertEquals(CollectionLayout.GRID, restored.state.value.albumCollectionLayout)
+                assertEquals("", restored.state.value.playlistCollectionQuery)
+                assertEquals(session, graph.session.value)
+                assertEquals(session, graph.store.session("vm-browse-fixture"))
+                assertFalse(model.state.value.playing)
+            } finally {
+                onMain { owner.clear() }
+                graph.store.setCollectionLayout(CollectionKind.PLAYLISTS, originalLayout)
+                graph.store.setCollectionLayout(CollectionKind.ALBUMS, originalAlbumLayout)
+            }
+        }
+    }
+
     private fun onMain(block: () -> Unit) = InstrumentationRegistry.getInstrumentation().runOnMainSync(block)
     private fun until(predicate: () -> Boolean) {
         val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(12)
@@ -173,7 +222,11 @@ class AudioViewModelTest {
             server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
                 override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
             }
-            onMain { model.openPlaylist("p"); model.search("failure") }
+            onMain {
+                model.setCollectionQuery(CollectionKind.PLAYLISTS, "private playlist")
+                model.setCollectionQuery(CollectionKind.ALBUMS, "private artist")
+                model.openPlaylist("p"); model.search("failure")
+            }
             until { model.state.value.playlistDetailError != null && model.state.value.searchError != null }
             assertFalse(model.state.value.playlistLoading)
             assertFalse(model.state.value.searchLoading)
@@ -188,9 +241,110 @@ class AudioViewModelTest {
                 assertNull(model.state.value.playlistDetailError)
                 assertFalse(model.state.value.playlistLoading)
                 assertEquals("", model.state.value.searchQuery)
+                assertEquals("", model.state.value.playlistCollectionQuery)
+                assertEquals("", model.state.value.albumCollectionQuery)
+                assertTrue(model.state.value.albums.isEmpty())
                 assertTrue(model.state.value.searchSongs.isEmpty())
                 assertNull(model.state.value.searchError)
             } finally { graph.store.removeConnection(second) }
+        }
+    }
+
+    @Test fun switchingToAccountWithoutSessionLoadsLibraryAlbumsAndImmediateViewAllSharesTheRequest() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val previous = graph.session.value
+            val albumRequests = java.util.concurrent.atomic.AtomicInteger()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                    request.path!!.contains("getAlbumList2.view") -> {
+                        albumRequests.incrementAndGet()
+                        ok(""", "albumList2":{"album":[{"id":"second-album","name":"Second account"}]}""")
+                            .setBodyDelay(400, java.util.concurrent.TimeUnit.MILLISECONDS)
+                    }
+                    request.path!!.contains("getPlaylists.view") -> ok(""", "playlists":{}""")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            val second = "vm-browse-no-session"
+            try {
+                graph.store.saveConnection(Credentials(Connection(second, "Second", server.url("/").toString(), "vm-second-user"), "test-only-password"))
+                onMain { model.switchConnection(second) }
+                until { model.state.value.connection?.id == second && !model.state.value.loading }
+                assertEquals(Screen.PLAYLISTS, model.state.value.screen)
+                // Library must initialize its sibling album section without opening Search or View all.
+                assertTrue(model.state.value.albumsRefreshing || model.state.value.albums.isNotEmpty())
+                onMain { model.showScreen(Screen.ALL_ALBUMS) }
+                until { !model.state.value.albumsRefreshing && model.state.value.albums.singleOrNull()?.id == "second-album" }
+                assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
+                assertEquals(1, albumRequests.get())
+                assertNull(graph.session.value)
+                assertEquals(previous, graph.store.session("vm-browse-fixture"))
+                onMain { model.showScreen(Screen.SETTINGS); model.showScreen(model.state.value.backDestination) }
+                assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
+                assertFalse(model.state.value.albumsRefreshing)
+                Thread.sleep(200)
+                assertEquals(1, albumRequests.get())
+            } finally { graph.store.removeConnection(second) }
+        }
+    }
+
+    @Test fun switchingToAccountWithSessionInitializesAlbumsOnViewAllAndKeepsLoadedEmptyCatalog() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val albumRequests = java.util.concurrent.atomic.AtomicInteger()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                    request.path!!.contains("getAlbumList2.view") -> {
+                        albumRequests.incrementAndGet()
+                        ok(""", "albumList2":{}""")
+                    }
+                    request.path!!.contains("getPlaylists.view") -> ok(""", "playlists":{}""")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            val second = "vm-browse-empty-session"
+            val session = ListeningSession(second, "second", "Second", listOf(Song("second-song", "Second song", "Fixture")), positionMs = 1234L)
+            try {
+                graph.store.saveConnection(Credentials(Connection(second, "Second", server.url("/").toString(), "vm-second-user"), "test-only-password"))
+                graph.store.saveSession(session)
+                onMain { model.switchConnection(second) }
+                until { model.state.value.connection?.id == second && !model.state.value.loading }
+                assertEquals(Screen.PLAYER, model.state.value.screen)
+                assertEquals(0, albumRequests.get())
+                onMain { model.showScreen(Screen.ALL_ALBUMS) }
+                until { albumRequests.get() == 1 && !model.state.value.albumsRefreshing }
+                assertTrue(model.state.value.albums.isEmpty())
+                assertNull(model.state.value.albumsError)
+                onMain { model.showScreen(Screen.SETTINGS); model.showScreen(model.state.value.backDestination) }
+                assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
+                assertFalse(model.state.value.albumsRefreshing)
+                Thread.sleep(200)
+                assertEquals(1, albumRequests.get())
+                onMain { model.refreshCollection(CollectionKind.ALBUMS) }
+                until { albumRequests.get() == 2 && !model.state.value.albumsRefreshing }
+                assertEquals(session, graph.session.value)
+                assertEquals(session, graph.store.session(second))
+                assertFalse(model.state.value.playing)
+            } finally { graph.store.removeConnection(second) }
+        }
+    }
+
+    @Test fun failedRefreshDoesNotInvalidateSuccessfullyLoadedEmptyAlbumCatalog() = runBlocking {
+        withBrowseFixture { model, _, server ->
+            until { !model.state.value.albumsRefreshing }
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            // A failed explicit refresh must not invalidate an already initialized empty catalog.
+            onMain { model.refreshCollection(CollectionKind.ALBUMS) }
+            until { !model.state.value.albumsRefreshing && model.state.value.albumsError != null }
+            val requests = server.requestCount
+            onMain { model.showScreen(Screen.ALL_ALBUMS) }
+            assertFalse(model.state.value.albumsRefreshing)
+            Thread.sleep(200)
+            assertEquals(requests, server.requestCount)
+            assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
         }
     }
 
@@ -253,10 +407,20 @@ class AudioViewModelTest {
             lateinit var model: AudioViewModel
             onMain { model = AudioViewModel(app, graph, false); owner.put("fixture", model) }
             until { !model.state.value.booting && model.state.value.albums.singleOrNull()?.id == "album-1" }
-            onMain { model.openAlbum("album-1") }
+            onMain {
+                model.showScreen(Screen.ALL_ALBUMS)
+                model.setCollectionQuery(CollectionKind.ALBUMS, "Fixture Artist")
+                model.openAlbum("album-1")
+            }
             until { !model.state.value.albumLoading && model.state.value.albumSongs.isNotEmpty() }
             assertEquals("Fixture Album", model.state.value.selectedAlbum?.name)
             assertEquals("Fixture Track", model.state.value.albumSongs.single().title)
+            assertEquals(Screen.ALL_ALBUMS, model.state.value.backDestination)
+            onMain { model.showScreen(Screen.SETTINGS); model.showScreen(model.state.value.backDestination) }
+            assertEquals(Screen.ALL_ALBUMS, model.state.value.backDestination)
+            onMain { model.showScreen(model.state.value.backDestination) }
+            assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
+            assertEquals("Fixture Artist", model.state.value.albumCollectionQuery)
             assertEquals(3, server.requestCount)
             val paths = List(3) { server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS)!!.requestUrl!!.encodedPath }.toSet()
             assertTrue(paths.contains("/rest/getPlaylists.view"))

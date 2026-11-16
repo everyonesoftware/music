@@ -6,11 +6,13 @@ import com.everyonesoftware.audio.data.Album
 import com.everyonesoftware.audio.data.MusicLibrary
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.Song
+import com.everyonesoftware.audio.data.CollectionKind
+import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.playback.output.MediaOutputState
 
 import com.everyonesoftware.audio.updates.UpdateUiState
 
-enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES }
+enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES }
 
 data class AudioUiState(
     val booting: Boolean = true,
@@ -25,6 +27,10 @@ data class AudioUiState(
     val playlistLoading: Boolean = false,
     val playlistDetailError: String? = null,
     val searchQuery: String = "",
+    val playlistCollectionQuery: String = "",
+    val albumCollectionQuery: String = "",
+    val playlistCollectionLayout: CollectionLayout = CollectionLayout.GRID,
+    val albumCollectionLayout: CollectionLayout = CollectionLayout.GRID,
     val searchSongs: List<Song> = emptyList(),
     val searchLoading: Boolean = false,
     val searchError: String? = null,
@@ -49,9 +55,53 @@ data class AudioUiState(
     val ratingError: String? = null,
     val updates: UpdateUiState = UpdateUiState(),
     val updatesReturnScreen: Screen = Screen.SETTINGS,
+    val settingsReturnScreen: Screen? = null,
+    val playlistReturnScreen: Screen = Screen.PLAYLISTS,
+    val albumReturnScreen: Screen = Screen.PLAYLISTS,
 )
 
+fun AudioUiState.withCollectionLayout(kind: CollectionKind, layout: CollectionLayout): AudioUiState = when (kind) {
+    CollectionKind.PLAYLISTS -> copy(playlistCollectionLayout = layout)
+    CollectionKind.ALBUMS -> copy(albumCollectionLayout = layout)
+}
+
+/** Browsing navigation never issues playback commands or clears collection state. */
+fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
+    val origins = setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.SEARCH)
+    val returningToSettings = screen == Screen.LIBRARIES || (screen == Screen.UPDATES && updatesReturnScreen == Screen.SETTINGS)
+    return copy(
+        screen = destination,
+        settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
+        updatesReturnScreen = if (destination == Screen.UPDATES && screen != Screen.UPDATES) screen else updatesReturnScreen,
+        playlistReturnScreen = if (destination == Screen.PLAYLIST && screen in origins) screen else playlistReturnScreen,
+        albumReturnScreen = if (destination == Screen.ALBUM && screen in origins) screen else albumReturnScreen,
+    )
+}
+
+val AudioUiState.backDestination: Screen
+    get() = when (screen) {
+        Screen.PLAYLIST -> playlistReturnScreen
+        Screen.ALBUM -> albumReturnScreen
+        Screen.SETTINGS -> settingsReturnScreen ?: if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
+        Screen.UPDATES -> updatesReturnScreen
+        Screen.QUEUE -> Screen.PLAYER
+        Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYER -> Screen.PLAYLISTS
+        else -> if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
+    }
+
+val AudioUiState.visiblePlaylists: List<Playlist>
+    get() = playlists.filter { it.name.contains(playlistCollectionQuery.trim(), ignoreCase = true) }
+
+val AudioUiState.visibleAlbums: List<Album>
+    get() = albums.filter {
+        it.name.contains(albumCollectionQuery.trim(), ignoreCase = true) ||
+            it.artist.contains(albumCollectionQuery.trim(), ignoreCase = true)
+    }
+
 interface AudioUiActions {
+    fun setCollectionQuery(kind: CollectionKind, query: String) = Unit
+    fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) = Unit
+    fun refreshCollection(kind: CollectionKind) = Unit
     fun refreshMediaOutputs() = Unit
     fun selectMediaOutput(id: String) = Unit
     fun checkForUpdates() = Unit

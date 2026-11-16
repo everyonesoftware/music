@@ -45,7 +45,7 @@ internal abstract class AudioDatabase : RoomDatabase() {
     abstract fun audioDao(): AudioDao
 }
 
-/** Room stores metadata and encrypted envelopes only; preferences contain IDs, never secrets or URLs. */
+/** Room stores metadata and encrypted envelopes; preferences contain IDs/layouts, never secrets or URLs. */
 class AudioStore(context: Context) {
     private val context = context.applicationContext
     private val dao = database(this.context).audioDao()
@@ -79,6 +79,14 @@ class AudioStore(context: Context) {
     }
     suspend fun session(connectionId: String): ListeningSession? = lock.withLock {
         dao.session(connectionId)?.let { decode<ListeningSession>(it.payload) }
+    }
+    suspend fun collectionLayout(kind: CollectionKind): CollectionLayout = lock.withLock {
+        val stored = preferences.data.first()[collectionLayoutKey(kind)]
+        CollectionLayout.entries.firstOrNull { it.name == stored } ?: CollectionLayout.GRID
+    }
+    suspend fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) = lock.withLock {
+        preferences.edit { it[collectionLayoutKey(kind)] = layout.name }
+        Unit
     }
     suspend fun selectedConnectionId(): String? = lock.withLock {
         preferences.data.first()[selectedKey]?.takeIf { dao.connection(it) != null }
@@ -121,6 +129,7 @@ class AudioStore(context: Context) {
     companion object {
         private val lock = Mutex()
         private val selectedKey = stringPreferencesKey("selected_connection")
+        private fun collectionLayoutKey(kind: CollectionKind) = stringPreferencesKey("collection_layout:${kind.name}")
         // An ID is data, not a path: DataStore keys safely retain arbitrary string IDs.
         private fun librariesKey(id: String) = stringSetPreferencesKey("libraries:$id")
         @Volatile private var instance: AudioDatabase? = null

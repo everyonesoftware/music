@@ -10,6 +10,9 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
@@ -49,6 +52,8 @@ import coil.compose.AsyncImage
 import com.everyonesoftware.audio.data.Album
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.Song
+import com.everyonesoftware.audio.data.CollectionKind
+import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.playback.output.OutputDeviceKind
 
 /** This is the single owner of system/cutout and keyboard insets. */
@@ -56,12 +61,7 @@ import com.everyonesoftware.audio.playback.output.OutputDeviceKind
 fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val home = if (state.connection != null) Screen.PLAYLISTS else Screen.WELCOME
     BackHandler(enabled = state.screen != Screen.WELCOME && state.screen != Screen.PLAYLISTS) {
-        actions.showScreen(when (state.screen) {
-            Screen.UPDATES -> state.updatesReturnScreen
-            Screen.QUEUE -> Screen.PLAYER
-            Screen.PLAYER -> Screen.PLAYLISTS
-            else -> home
-        })
+        actions.showScreen(state.backDestination)
     }
     CompositionLocalProvider(LocalSettings provides SettingsAffordance(state.updates.release != null) { actions.showScreen(Screen.SETTINGS) }) {
     Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -80,6 +80,8 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.LIBRARIES -> Libraries(state, actions)
                         Screen.READY -> Ready(state, actions)
                         Screen.PLAYLISTS -> Playlists(state, actions, artworkUrl)
+                        Screen.ALL_PLAYLISTS -> Collection(state, actions, CollectionKind.PLAYLISTS, artworkUrl)
+                        Screen.ALL_ALBUMS -> Collection(state, actions, CollectionKind.ALBUMS, artworkUrl)
                         Screen.PLAYLIST -> PlaylistDetails(state, actions, artworkUrl)
                         Screen.SEARCH -> Search(state, actions, artworkUrl)
                         Screen.ALBUM -> AlbumDetails(state, actions, artworkUrl)
@@ -89,7 +91,7 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.UPDATES -> Updates(state, actions)
                     }
                 }
-                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES)) {
+                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES)) {
                     MiniPlayer(state, actions, artworkUrl)
                 }
             }
@@ -269,7 +271,7 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Playlists", style = MaterialTheme.typography.titleLarge)
-                    TextButton(actions::loadPlaylists, enabled = !state.loading && !state.playlistsRefreshing) { Text("Refresh") }
+                    TextButton({ actions.showScreen(Screen.ALL_PLAYLISTS) }, Modifier.testTag("view-all-playlists").semantics { contentDescription = "View all playlists" }) { Text("View all"); Icon(Icons.Default.ChevronRight, null) }
                 }
                 if (state.playlists.isEmpty() && !state.playlistsRefreshing) Hint("No playlists available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -282,11 +284,98 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Albums", style = MaterialTheme.typography.titleLarge)
-                    if (state.albumsRefreshing) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                    TextButton({ actions.showScreen(Screen.ALL_ALBUMS) }, Modifier.testTag("view-all-albums").semantics { contentDescription = "View all albums" }) { Text("View all"); Icon(Icons.Default.ChevronRight, null) }
                 }
                 if (state.albums.isEmpty() && !state.albumsRefreshing && state.albumsError == null) Hint("No albums available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.albums, key = { "album-${it.id}" }) { album -> AlbumTile(album, artworkUrl) { actions.openAlbum(album.id) } }
+                }
+            }
+        }
+    }
+}
+
+private data class CollectionEntry(val id: String, val name: String, val subtitle: String, val coverArtId: String?)
+
+@Composable
+private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: CollectionKind, artworkUrl: (String?) -> String?) {
+    val playlists = kind == CollectionKind.PLAYLISTS
+    val noun = if (playlists) "playlists" else "albums"
+    val query = if (playlists) state.playlistCollectionQuery else state.albumCollectionQuery
+    val layout = if (playlists) state.playlistCollectionLayout else state.albumCollectionLayout
+    val refreshing = if (playlists) state.playlistsRefreshing else state.albumsRefreshing
+    val error = if (playlists) state.playlistError else state.albumsError
+    val total = if (playlists) state.playlists.size else state.albums.size
+    val entries = remember(state.playlists, state.albums, state.stalePlaylistIds, query, kind) {
+        if (playlists) state.visiblePlaylists.map {
+            CollectionEntry(it.id, it.name, "${it.songCount} songs" + if (it.id in state.stalePlaylistIds) " · last known" else "", it.coverArtId)
+        } else state.visibleAlbums.map {
+            CollectionEntry(it.id, it.name, it.artist + if (it.year > 0) " · ${it.year}" else "", it.coverArtId)
+        }
+    }
+    val open: (String) -> Unit = { if (playlists) actions.openPlaylist(it) else actions.openAlbum(it) }
+    Column(Modifier.fillMaxSize()) {
+        Header(if (playlists) "Playlists" else "Albums", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        OutlinedTextField(query, { actions.setCollectionQuery(kind, it) },
+            Modifier.fillMaxWidth().testTag("collection-search"), singleLine = true,
+            label = { Text(if (playlists) "Search playlists" else "Search albums or artists") },
+            leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = { if (query.isNotEmpty()) AudioIcon(Icons.Default.Close, "Clear search") { actions.setCollectionQuery(kind, "") } })
+        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(if (query.isBlank()) "${entries.size} $noun" else "${entries.size} of $total $noun",
+                Modifier.weight(1f).testTag("collection-count").semantics { liveRegion = LiveRegionMode.Polite },
+                style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Row(Modifier.selectableGroup()) {
+                for (mode in CollectionLayout.entries) {
+                    val grid = mode == CollectionLayout.GRID
+                    IconToggleButton(checked = layout == mode, onCheckedChange = { actions.setCollectionLayout(kind, mode) },
+                        modifier = Modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)) {
+                        Icon(if (grid) Icons.Default.GridView else Icons.Default.ViewList, if (grid) "Grid view" else "List view",
+                            tint = if (layout == mode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        ErrorMessage(state.error)
+        ErrorMessage(error)
+        if (error != null) TextButton({ actions.refreshCollection(kind) }, enabled = !refreshing) { Text("Retry $noun") }
+        if (refreshing) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading $noun" })
+        if (entries.isEmpty()) {
+            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                when {
+                    refreshing -> Hint("Loading $noun…")
+                    error != null -> Hint("Unable to load $noun. Check your connection and retry.")
+                    query.isNotBlank() -> {
+                        Hint("No $noun match “${query.trim()}”.")
+                        TextButton({ actions.setCollectionQuery(kind, "") }) { Text("Clear search") }
+                    }
+                    else -> Hint("No $noun available on this server.")
+                }
+            }
+        } else if (layout == CollectionLayout.GRID) {
+            LazyVerticalGrid(GridCells.Adaptive(128.dp), Modifier.weight(1f).fillMaxWidth().testTag("collection-grid"),
+                horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+                gridItems(entries, key = { it.id }) { entry ->
+                    Column(Modifier.fillMaxWidth().clickable(role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}")) {
+                        Artwork(entry.coverArtId, artworkUrl, Modifier.fillMaxWidth().aspectRatio(1f))
+                        Text(entry.name, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        Text(entry.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+            }
+        } else {
+            LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("collection-list"), contentPadding = PaddingValues(bottom = 16.dp)) {
+                items(entries, key = { it.id }) { entry ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).clickable(role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}").padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Artwork(entry.coverArtId, artworkUrl, Modifier.size(56.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(entry.name, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            Text(entry.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                        Icon(Icons.Default.ChevronRight, null)
+                    }
+                    HorizontalDivider()
                 }
             }
         }
@@ -368,7 +457,7 @@ private fun SongRow(song: Song, artworkUrl: (String?) -> String?, enabled: Boole
 private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val playlist = state.selectedPlaylist
     Column(Modifier.fillMaxSize()) {
-        Header(playlist?.name ?: "Playlist", "Playlist", back = { actions.showScreen(Screen.PLAYLISTS) })
+        Header(playlist?.name ?: "Playlist", "Playlist", back = { actions.showScreen(state.backDestination) })
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (playlist != null) item {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
@@ -398,7 +487,7 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
 private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val album = state.selectedAlbum
     Column(Modifier.fillMaxSize()) {
-        Header(album?.name ?: "Album", album?.artist.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        Header(album?.name ?: "Album", album?.artist.orEmpty(), back = { actions.showScreen(state.backDestination) })
         if (album != null) {
             Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
                 Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp))
@@ -411,6 +500,8 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
         }
         if (state.albumLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp))
         ErrorMessage(state.albumError)
+        if (state.albumError != null && album != null) TextButton({ actions.openAlbum(album.id) }) { Text("Retry album") }
+        if (!state.albumLoading && state.albumError == null && state.albumSongs.isEmpty()) Hint("This album has no songs.")
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp)) {
             items(state.albumSongs, key = { it.id }) { song ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 62.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -556,7 +647,7 @@ private fun Settings(state: AudioUiState, actions: AudioUiActions, home: Screen)
     val context = LocalContext.current
     var browserError by remember { mutableStateOf<String?>(null) }
     Column(Modifier.fillMaxSize()) {
-        Header("Server & libraries", "Connection settings", back = { actions.showScreen(home) })
+        Header("Server & libraries", "Connection settings", back = { actions.showScreen(state.backDestination) })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             Hint("Connections on this device. Listening sessions stay separate for each server.")
             state.connections.forEach { connection ->

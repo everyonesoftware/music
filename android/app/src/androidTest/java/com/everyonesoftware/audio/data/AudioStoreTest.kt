@@ -8,6 +8,26 @@ import java.util.UUID
 
 /** Requires a real Android device/emulator: Room, DataStore and AndroidKeyStore. */
 class AudioStoreTest {
+    @Test fun collectionLayoutsPersistIndependentlyAcrossStoreRecreation() = runBlocking {
+        val store = AudioStore(context)
+        val oldPlaylists = store.collectionLayout(CollectionKind.PLAYLISTS)
+        val oldAlbums = store.collectionLayout(CollectionKind.ALBUMS)
+        try {
+            store.setCollectionLayout(CollectionKind.PLAYLISTS, CollectionLayout.GRID)
+            store.setCollectionLayout(CollectionKind.ALBUMS, CollectionLayout.GRID)
+            store.setCollectionLayout(CollectionKind.PLAYLISTS, CollectionLayout.LIST)
+            val reopened = AudioStore(context)
+            assertEquals(CollectionLayout.LIST, reopened.collectionLayout(CollectionKind.PLAYLISTS))
+            assertEquals(CollectionLayout.GRID, reopened.collectionLayout(CollectionKind.ALBUMS))
+            reopened.setCollectionLayout(CollectionKind.ALBUMS, CollectionLayout.LIST)
+            assertEquals(CollectionLayout.LIST, AudioStore(context).collectionLayout(CollectionKind.PLAYLISTS))
+            assertEquals(CollectionLayout.LIST, AudioStore(context).collectionLayout(CollectionKind.ALBUMS))
+        } finally {
+            store.setCollectionLayout(CollectionKind.PLAYLISTS, oldPlaylists)
+            store.setCollectionLayout(CollectionKind.ALBUMS, oldAlbums)
+        }
+    }
+
     private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
     @Test fun credentialsAndMetadataSurviveNewStoreInstance() = runBlocking {
         val id = UUID.randomUUID().toString()

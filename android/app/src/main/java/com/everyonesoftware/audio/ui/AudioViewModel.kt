@@ -13,6 +13,8 @@ import com.everyonesoftware.audio.AudioApplication
 import com.everyonesoftware.audio.AudioGraph
 import com.everyonesoftware.audio.BuildConfig
 import com.everyonesoftware.audio.data.Connection
+import com.everyonesoftware.audio.data.CollectionKind
+import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.data.AlbumContents
 import com.everyonesoftware.audio.data.Song
 import com.everyonesoftware.audio.data.Credentials
@@ -49,6 +51,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private val mediaOutput = outputBackend?.let { MediaOutputController(it, viewModelScope) }
     private var operation: Job? = null
     private var albumsOperation: Job? = null
+    private var albumsInitialized = false
     private var searchOperation: Job? = null
     private var searchGeneration = 0L
     private var playlistDetailOperation: Job? = null
@@ -76,6 +79,9 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         initialization = viewModelScope.launch(start = CoroutineStart.LAZY) {
             try {
                 graph.bootstrap()
+                val playlistLayout = graph.store.collectionLayout(CollectionKind.PLAYLISTS)
+                val albumLayout = graph.store.collectionLayout(CollectionKind.ALBUMS)
+                current.update { it.copy(playlistCollectionLayout = playlistLayout, albumCollectionLayout = albumLayout) }
                 restoreConnection()
                 val session = graph.session.value
                 current.update { it.copy(booting = false, session = session, positionMs = session?.positionMs ?: 0,
@@ -112,6 +118,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         ++searchGeneration
         searchOperation?.cancel()
         albumsOperation?.cancel()
+        albumsInitialized = false
         albumDetailOperation?.cancel()
         val connection = graph.credentials.value?.connection
         val playlists = connection?.let { graph.store.cachedPlaylists(it.id) }.orEmpty()
@@ -120,6 +127,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         current.update { it.copy(connection = connection, connections = connections, playlists = playlists, albums = emptyList(), albumsError = null, selectedAlbum = null, albumSongs = emptyList(), albumError = null,
             selectedPlaylist = null, playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null,
             searchQuery = "", searchSongs = emptyList(), searchLoading = false, searchError = null,
+            playlistCollectionQuery = "", albumCollectionQuery = "",
+            settingsReturnScreen = null, playlistReturnScreen = Screen.PLAYLISTS, albumReturnScreen = Screen.PLAYLISTS,
             albumLoading = false, albumsRefreshing = false,
             libraries = emptyList(), selectedLibraries = selected,
             playlistsRefreshing = graph.playlists.state.value.refreshing,
@@ -171,8 +180,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             ++generation; operation?.cancel()
             current.update { it.copy(loading = false) }
         }
+        current.update { it.navigateTo(screen) }
         when (screen) {
             Screen.PLAYLISTS -> loadPlaylists()
+            Screen.ALL_ALBUMS -> if (!albumsInitialized) loadAlbums()
             Screen.SEARCH -> {
                 current.update { it.copy(screen = screen, error = null) }
                 loadAlbums()
@@ -218,6 +229,29 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
+    override fun setCollectionQuery(kind: CollectionKind, query: String) {
+        current.update { when (kind) {
+            CollectionKind.PLAYLISTS -> it.copy(playlistCollectionQuery = query)
+            CollectionKind.ALBUMS -> it.copy(albumCollectionQuery = query)
+        } }
+    }
+
+    override fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) {
+        current.update { it.withCollectionLayout(kind, layout) }
+        viewModelScope.launch {
+            try { graph.store.setCollectionLayout(kind, layout) }
+            catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { current.update { it.copy(error = "Unable to save collection layout. Try again.") } }
+        }
+    }
+
+    override fun refreshCollection(kind: CollectionKind) {
+        when (kind) {
+            CollectionKind.ALBUMS -> loadAlbums()
+            CollectionKind.PLAYLISTS -> viewModelScope.launch { initialization.join(); graph.playlists.refresh() }
+        }
+    }
+
     override fun loadAlbums() {
         val credentials = graph.credentials.value ?: return
         if (current.value.albumsRefreshing && current.value.connection?.id == credentials.connection.id) return
@@ -226,7 +260,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         albumsOperation = viewModelScope.launch {
             try {
                 val albums = graph.clientFor(credentials).albums()
-                if (graph.credentials.value == credentials) current.update { it.copy(albums = albums, albumsError = null) }
+                if (graph.credentials.value == credentials) {
+                    albumsInitialized = true
+                    current.update { it.copy(albums = albums, albumsError = null) }
+                }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 if (graph.credentials.value == credentials) current.update { it.copy(albumsError = safeMessage(error)) }
@@ -240,7 +277,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val credentials = graph.credentials.value ?: return
         val album = current.value.albums.firstOrNull { it.id == id } ?: return
         albumDetailOperation?.cancel()
-        current.update { it.copy(screen = Screen.ALBUM, selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
+        current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
         albumDetailOperation = viewModelScope.launch {
             try {
                 val result = graph.clientFor(credentials).album(id)
@@ -389,7 +426,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val playlist = current.value.playlists.firstOrNull { it.id == id } ?: return
         val ticket = ++playlistDetailGeneration
         playlistDetailOperation?.cancel()
-        current.update { it.copy(screen = Screen.PLAYLIST, selectedPlaylist = playlist, playlistSongs = emptyList(),
+        current.update { it.navigateTo(Screen.PLAYLIST).copy(selectedPlaylist = playlist, playlistSongs = emptyList(),
             playlistLoading = true, playlistDetailError = null) }
         playlistDetailOperation = viewModelScope.launch {
             try {
@@ -521,7 +558,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             restoreConnection()
             val session = graph.session.value
             current.update { it.copy(session = session, positionMs = session?.positionMs ?: 0, screen = if (session != null) Screen.PLAYER else Screen.PLAYLISTS) }
-            if (session == null) graph.playlists.refresh()
+            if (session == null) {
+                loadAlbums()
+                graph.playlists.refresh()
+            }
         }
     }
 

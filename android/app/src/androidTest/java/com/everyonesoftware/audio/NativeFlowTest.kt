@@ -145,7 +145,7 @@ class NativeFlowTest {
         compose.onNodeWithTag("library-continue").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Choose a playlist").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Choose a playlist").performClick()
-        compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-shuffle-routine").fetchSemanticsNodes().isNotEmpty() }
+        compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-card-routine").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Search playlists, albums, and songs").performClick()
         compose.onNodeWithTag("library-search").performTextInput("s1")
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s1").fetchSemanticsNodes().isNotEmpty() }
@@ -188,6 +188,7 @@ class NativeFlowTest {
         compose.onNodeWithTag("player-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(5000f) }
         compose.waitUntil(10_000) { graph.session.value?.positionMs in 4900L..5100L }
         val paused = graph.session.value!!
+        Assert.assertEquals("Fixture must not finish a track before the recreation check", original.index, paused.index)
         compose.activityRule.scenario.recreate()
         compose.onNodeWithTag("player-toggle").assertIsDisplayed()
         compose.waitUntil(10_000) { graph.session.value?.positionMs == paused.positionMs }

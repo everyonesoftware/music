@@ -18,6 +18,8 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.graphics.Color
@@ -28,6 +30,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.everyonesoftware.audio.data.Connection
+import com.everyonesoftware.audio.data.CollectionKind
+import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.data.Album
 import com.everyonesoftware.audio.data.ListeningSession
 import com.everyonesoftware.audio.data.MusicLibrary
@@ -45,6 +49,120 @@ import org.junit.runner.RunWith
 /** Real native UI; all account/media fixtures and action spies live only in androidTest. */
 @RunWith(AndroidJUnit4::class)
 class AudioScreensTest {
+    @Test fun albumCollectionSearchesArtistsAndShowsLoadingEmptyErrorAndRetry() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.ALL_ALBUMS,
+            albums = listOf(Album("a", "Journey", "Austin Wintory"), Album("b", "Celeste", "Lena Raine")),
+            albumCollectionQuery = "lena"))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        compose.onNodeWithText("Search albums or artists").assertIsDisplayed()
+        compose.onNodeWithText("1 of 2 albums").assertIsDisplayed()
+        compose.onNodeWithTag("album-card-b").assertIsDisplayed().performClick()
+        compose.onNodeWithTag("album-card-a").assertDoesNotExist()
+        captureOutputEvidence("collection-albums-grid", compose.onRoot())
+        compose.runOnIdle {
+            assertEquals(listOf("b"), actions.openedAlbums)
+            state.value = state.value.copy(albumCollectionLayout = CollectionLayout.LIST)
+        }
+        compose.onNodeWithTag("collection-list").assertIsDisplayed()
+        captureOutputEvidence("collection-albums-list", compose.onRoot())
+        compose.runOnIdle { state.value = state.value.copy(albumCollectionQuery = "no-match") }
+        compose.onNodeWithText("No albums match “no-match”.").assertIsDisplayed()
+        compose.runOnIdle { state.value = state.value.copy(albums = emptyList(), albumCollectionQuery = "", albumsRefreshing = true) }
+        compose.onNodeWithText("Loading albums…").assertIsDisplayed()
+        compose.onNodeWithText("No albums available on this server.").assertDoesNotExist()
+        compose.runOnIdle { state.value = state.value.copy(albumsRefreshing = false, albumsError = "Fixture album error") }
+        compose.onNodeWithText("Fixture album error").assertIsDisplayed()
+        compose.onNodeWithText("Retry albums").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf(CollectionKind.ALBUMS), actions.collectionRefreshes)
+            state.value = state.value.copy(albumsError = null)
+        }
+        compose.onNodeWithText("No albums available on this server.").assertIsDisplayed()
+        compose.runOnIdle { assertEquals(0, actions.playToggles); assertTrue(actions.playedAlbums.isEmpty()) }
+    }
+
+    @Test fun albumDetailErrorOffersRetryWithoutStartingPlayback() {
+        render(playerState().copy(screen = Screen.ALBUM, selectedAlbum = Album("a", "Album", "Artist"), albumError = "Fixture detail error"))
+        compose.onNodeWithText("Retry album").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(listOf("a"), actions.openedAlbums); assertTrue(actions.playedAlbums.isEmpty()) }
+    }
+
+    @Test fun collectionAndDetailAndSettingsBackUseTheSameOriginForToolbarAndSystem() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.ALL_ALBUMS))
+        compose.setContent {
+            backDispatcher = LocalOnBackPressedDispatcherOwner.current!!.onBackPressedDispatcher
+            AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) }
+        }
+        for ((screen, origin) in listOf(Screen.ALL_ALBUMS to Screen.PLAYLISTS, Screen.ALL_PLAYLISTS to Screen.PLAYLISTS,
+            Screen.ALBUM to Screen.ALL_ALBUMS, Screen.PLAYLIST to Screen.ALL_PLAYLISTS, Screen.SETTINGS to Screen.ALL_ALBUMS)) {
+            compose.runOnIdle { state.value = state.value.copy(screen = screen, albumReturnScreen = Screen.ALL_ALBUMS,
+                playlistReturnScreen = Screen.ALL_PLAYLISTS, settingsReturnScreen = Screen.ALL_ALBUMS) }
+            compose.onNodeWithContentDescription("Back").performClick()
+            compose.runOnIdle { backDispatcher.onBackPressed(); assertEquals(listOf(origin, origin), actions.screens.takeLast(2)) }
+            compose.onNodeWithTag("mini-player").assertIsDisplayed()
+            compose.onNodeWithTag("settings-gear").assertIsDisplayed()
+        }
+        compose.runOnIdle { assertEquals(0, actions.playToggles) }
+    }
+
+    @Test fun libraryViewAllActionsShareTheirHeadingRowsAndDoNotStartPlayback() {
+        render(playerState().copy(screen = Screen.PLAYLISTS))
+        compose.onNodeWithText("Refresh").assertDoesNotExist()
+        for ((tag, heading, screen) in listOf(
+            Triple("view-all-playlists", "Playlists", Screen.ALL_PLAYLISTS),
+            Triple("view-all-albums", "Albums", Screen.ALL_ALBUMS),
+        )) {
+            val button = compose.onNodeWithTag(tag).assertIsDisplayed()
+            val buttonBounds = button.fetchSemanticsNode().boundsInRoot
+            val headingBounds = compose.onNodeWithText(heading).fetchSemanticsNode().boundsInRoot
+            assertTrue(buttonBounds.top <= headingBounds.center.y && buttonBounds.bottom >= headingBounds.center.y)
+            button.performClick()
+            compose.runOnIdle { assertEquals(screen, actions.screens.last()) }
+        }
+        captureOutputEvidence("collection-library", compose.onRoot())
+        compose.runOnIdle { assertEquals(0, actions.playToggles); assertTrue(actions.startedPlaylists.isEmpty()) }
+    }
+
+    @Test fun playlistCollectionHasScopedSearchCountsClearAndScrollableGridAndList() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.ALL_PLAYLISTS,
+            playlists = (1..120).map { Playlist("p$it", "Playlist $it", songCount = it) }))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val first = compose.onNodeWithTag("playlist-card-p1").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val second = compose.onNodeWithTag("playlist-card-p2").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertEquals("Phone grid should show two columns", first.top, second.top, 1f)
+        assertTrue(first.right <= second.left)
+        compose.onNodeWithTag("collection-search").assertIsDisplayed().performTextInput("120")
+        compose.runOnIdle {
+            assertEquals(CollectionKind.PLAYLISTS to "120", actions.collectionQueries.last())
+            state.value = state.value.copy(playlistCollectionQuery = "120")
+        }
+        compose.onNodeWithText("1 of 120 playlists").assertIsDisplayed()
+        compose.onNodeWithTag("playlist-card-p120").assertIsDisplayed().performClick()
+        compose.onNodeWithContentDescription("List view").performClick()
+        compose.runOnIdle {
+            assertEquals(CollectionKind.PLAYLISTS to CollectionLayout.LIST, actions.collectionLayouts.last())
+            state.value = state.value.copy(playlistCollectionLayout = CollectionLayout.LIST)
+            assertEquals(listOf("p120"), actions.openedPlaylists)
+            assertEquals(0, actions.playToggles)
+        }
+        compose.onNodeWithTag("collection-list").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Clear search").performClick()
+        compose.runOnIdle {
+            assertEquals(CollectionKind.PLAYLISTS to "", actions.collectionQueries.last())
+            state.value = state.value.copy(playlistCollectionQuery = "")
+        }
+        compose.onNodeWithText("120 playlists").assertIsDisplayed()
+        compose.onNodeWithTag("collection-list").performScrollToNode(hasTestTag("playlist-card-p120"))
+        compose.onNodeWithTag("playlist-card-p120").assertIsDisplayed()
+        captureOutputEvidence("collection-playlists-list", compose.onRoot())
+        compose.runOnIdle { state.value = state.value.copy(playlistCollectionLayout = CollectionLayout.GRID) }
+        compose.onNodeWithTag("collection-grid").performScrollToNode(hasTestTag("playlist-card-p120"))
+        compose.onNodeWithTag("playlist-card-p120").assertIsDisplayed()
+        compose.onNodeWithTag("mini-player").assertIsDisplayed()
+        compose.onNodeWithTag("settings-gear").assertIsDisplayed()
+        captureOutputEvidence("collection-playlists-grid", compose.onRoot())
+    }
+
     @get:Rule val compose = createComposeRule()
 
     private val actions = RecordingActions()
@@ -351,7 +469,7 @@ class AudioScreensTest {
     @Test fun miniPlayerSpansWidthWithoutTabsAcrossScreens() {
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLISTS))
         compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
-        for (screen in listOf(Screen.PLAYLISTS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.SETTINGS, Screen.PLAYER)) {
+        for (screen in listOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.SETTINGS, Screen.PLAYER)) {
             compose.runOnIdle { state.value = state.value.copy(screen = screen) }
             val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
             compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
@@ -368,7 +486,7 @@ class AudioScreensTest {
                 compose.onNodeWithTag("mini-player-toggle").assertIsDisplayed().performClick()
             }
         }
-        compose.runOnIdle { assertEquals(6, actions.playToggles) }
+        compose.runOnIdle { assertEquals(8, actions.playToggles) }
         assertTrue(actions.screens.isEmpty())
     }
 
@@ -497,6 +615,12 @@ class AudioScreensTest {
     private data class ConnectCall(val name: String, val url: String, val username: String, val password: String)
 
     private class RecordingActions : AudioUiActions {
+        val collectionQueries = mutableListOf<Pair<CollectionKind, String>>()
+        val collectionLayouts = mutableListOf<Pair<CollectionKind, CollectionLayout>>()
+        val collectionRefreshes = mutableListOf<CollectionKind>()
+        override fun refreshCollection(kind: CollectionKind) { collectionRefreshes += kind }
+        override fun setCollectionQuery(kind: CollectionKind, query: String) { collectionQueries += kind to query }
+        override fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) { collectionLayouts += kind to layout }
         val screens = mutableListOf<Screen>()
         val connects = mutableListOf<ConnectCall>()
         val startedPlaylists = mutableListOf<String>()
