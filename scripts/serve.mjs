@@ -4,9 +4,9 @@ import { readFile } from 'node:fs/promises';
 const routes = new Map([
   ['/auto.html', 'android-auto-v1.html'],
   ['/android-auto-v1.html', 'android-auto-v1.html'],
-  ['/', 'first-install-v5-readable.html'],
-  ['/index.html', 'first-install-v5-readable.html'],
-  ['/first-install-v5-readable.html', 'first-install-v5-readable.html'],
+  ['/', 'android-library/index.html'],
+  ['/index.html', 'android-library/index.html'],
+  ['/android-library/index.html', 'android-library/index.html'],
   ['/v4.html', 'first-install-v4-phone-size.html'],
   ['/first-install-v4-phone-size.html', 'first-install-v4-phone-size.html'],
   ['/v3.html', 'first-install-v3.html'],

@@ -28,9 +28,10 @@ Local checks:
 - The approved existing Python assertion now checks the generated-metadata
   serialization call while retaining its PasswordVault/password-persistence
   safeguards. All 10 runtime-XAML/source checks pass; that CI blocker is removed.
-- The browser prototype suite still fails at `tests/readable-player.mjs:93`
-  (library-setup vertical overflow), also reproduced on unchanged HEAD with the
-  same Chromium and dependencies.
+- At this checkpoint, a legacy browser study had library-setup vertical overflow,
+  also reproduced on unchanged HEAD with the same Chromium and dependencies.
+  That study and its tests have since been removed; this is historical evidence,
+  not an outstanding failure in the active browser suite.
 
 ### Native hosted evidence — November 15, 2026
 
@@ -87,7 +88,7 @@ Executed locally for this change (not native Windows acceptance):
 - Existing runtime-XAML source contracts: **10 passed**. Executable logic harness: **17 assertions passed**.
 - Integrated Windows-targeted C# cross-build: **0 warnings, 0 errors**. Both workflow YAMLs passed actionlint 1.7.12; the configured NuGet audit reported no known vulnerable packages for Music.App.
 - Existing release regressions: **28 Windows and 19 Android tests passed**. No Python source was added or modified.
-- `npm run test`, with the installed Chromium selected using an external preload, passes mockup/workflow/onboarding/phone-size stages but fails `tests/readable-player.mjs:93`: the phone library-setup screen reports vertical overflow. The identical command fails at the identical assertion in an isolated `git archive HEAD` baseline with the same browser and dependencies. This prototype failure is not introduced by the Windows changes; the whole browser suite is not green.
+- At this checkpoint, `npm run test` passed mockup/workflow/onboarding/phone-size stages but failed a legacy browser study's library-setup overflow assertion, also reproduced in an unchanged baseline. That study and its tests have since been removed. This historical result is not a statement about the active suite.
 
 The reported session-save failure has **not been reproduced**. Its cause is not claimed fixed: errors now expose only safe category codes, dismissed identical warnings stay dismissed while retries continue, and a later successful save clears the corresponding notice. No credentials, exception messages, or signed media URLs enter those diagnostics.
 
@@ -147,7 +148,7 @@ See [RELEASING.md](RELEASING.md) for the native Windows build and opt-in GitHub 
 
 ## Existing browser regression suite
 
-The repository-wide `npm test` was executed with the installed Chromium selected through a temporary preload outside the repository. Mockup, workflow, onboarding, and phone-size stages passed. The existing readable-player stage failed at `tests/readable-player.mjs:93` with a popup overflow assertion. No tracked browser or Android source was changed by this work. The browser suite is therefore **not reported green**.
+At this checkpoint, the repository-wide `npm test` passed mockup, workflow, onboarding, and phone-size stages but failed the now-retired readable-player study. No tracked browser or Android source was changed by that Windows work. The legacy study and its tests have since been removed; this record does not describe the active browser suite.
 
 ## Windows acceptance — not yet executed
 

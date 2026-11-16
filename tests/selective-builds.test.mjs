@@ -12,7 +12,7 @@ test('platform ownership includes shared inputs, renames/deletions, branding dep
   for (const [paths, expected] of [
     [['android/app/src/main/java/Player.kt'], ['android']],
     [['apps/windows/Music.App/Program.cs'], ['windows']],
-    [['mockups/v5/readable.css'], ['web']],
+    [['mockups/android-library/index.html'], ['web']],
     [['package-lock.json'], ['web']],
     [['shared/protocol.json'], ['android', 'windows', 'web']],
     [['unknown-input.config'], ['android', 'windows', 'web']],

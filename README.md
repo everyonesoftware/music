@@ -64,15 +64,9 @@ The system dock and car layout are illustrative, not a claim of Android Auto hos
 
 Run `npm run test:auto` for paired-state interaction checks, pending/retry recovery, phone ratings, and all three screens in all three review modes at 1600px, 1024px, 390px, and 320px. Screenshots and the report are written to `test-results/audio-auto-*`.
 
-## Current review: readable player and rating popup (v5)
+## Android Library flow
 
-Open `mockups/first-install-v5-readable.html`. The 47% Services phone calibration and 390 × 875 logical viewport remain unchanged. This version makes the phone UI itself easier to read: 18–20px primary text, 15–16px supporting text, and larger controls. The player now fills its vertical space with flexible artwork, readable song details, transport, and the playlist/queue actions near the bottom.
-
-The five inline stars move into a modal opened by a compact star button beside the song title. Its five 56 × 80px choices save on tap; Clear removes a rating, Done closes, and Escape/backdrop restore focus. Pending/failure/offline/retry and song-specific rating behavior remain simulated.
-
-Connection fields are prefilled with fictional values, including a fixed dummy password, so setup and retry require no typing. This is a v5 mockup-only convenience: previous validation-focused versions are unchanged, no requests are sent, and no entered password is persisted. The popup and demo state use a separate v5 storage namespace; physical calibration is shared with v4.
-
-Sources: `mockups/v5/`, `scripts/build-readable.mjs`, and the reusable calibrated wrapper builder. Run `npm run test:readable`. Prior artifacts remain preserved.
+Open `mockups/android-library/index.html`, or the optional preview server's home page. This self-contained mockup shows the approved Library → Playlists / Albums flow: View all actions, collection-scoped search, grid/list switching, a top-right Settings gear, and a retained mini-player without bottom tabs. The native Android app implements this flow; the browser mockup uses sample data and simulated playback only.
 
 ## Preserved calibrated phone size (v4)
 
@@ -105,11 +99,11 @@ Open `mockups/playlist-first-v2.html`. This version shifts the primary surface f
 - State is stored only in the browser's localStorage under a v2-specific key per sample phone. No real library, account, server address, or credentials are stored. Reset demo clears only these demo keys. Browser policies may prevent persistence; the prototype discloses that limitation.
 - Reopen app simulates a cold launch for the displayed sample phone(s), without clearing the saved session. Reloading or opening a new tab also restores saved sessions in a browser that permits localStorage.
 
-The desktop board compares three moments of the same flow: returning, switching, and first use. The labeled Phone options focus on an individual interactive device. Hash entry points: `#all`, `#returning`, `#switching`, `#first`. Each frame has independent state. V2 is archived; the readable v5 layout informed the current native draft, with no final theme selected.
+The desktop board compares three moments of the same flow: returning, switching, and first use. The labeled Phone options focus on an individual interactive device. Hash entry points: `#all`, `#returning`, `#switching`, `#first`. Each frame has independent state. V2 is archived; it is not the current native layout.
 
 ## Open the mockups
 
-Open `mockups/first-install-v5-readable.html` in a browser. Prior versions remain unchanged at `mockups/playlist-first-v2.html` and `mockups/index.html`. It is self-contained: CSS, JavaScript, icons, and original illustrative album artwork are embedded. No CDN, account, network connection, or build is required.
+Open `mockups/android-library/index.html` in a browser. Prior studies remain at `mockups/playlist-first-v2.html` and `mockups/index.html`. The Library mockup is self-contained; no CDN, account, network connection, or build is required.
 
 Alternatively:
 
@@ -118,7 +112,7 @@ npm install
 npm run preview
 ```
 
-The optional preview server listens only on `127.0.0.1:4173`, serving readable v5 by default, calibrated v4 at `/v4.html`, the unscaled first-install study at `/v3.html`, the playlist-first study at `/v2.html`, and the first theme study at `/v1.html`.
+The optional preview server listens only on `127.0.0.1:4173`, serving the Android Library mockup by default and at `/android-library/index.html`, calibrated v4 at `/v4.html`, the unscaled first-install study at `/v3.html`, the playlist-first study at `/v2.html`, and the first theme study at `/v1.html`.
 
 ## Archived v1 directions
 
