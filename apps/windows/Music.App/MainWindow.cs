@@ -673,7 +673,8 @@ public sealed partial class MainWindow : Window
         if (sessions is null) return false;
         try
         {
-            sessions.SavePlayback(new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true));
+            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true);
+            sessions.SavePlayback(snapshot.WithoutTransientArtwork());
             if (sessionSaveWarning is not null)
             {
                 var notice = C<InfoBar>("Notice");

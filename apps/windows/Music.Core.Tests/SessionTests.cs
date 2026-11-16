@@ -91,6 +91,68 @@ public sealed class SessionTests : IDisposable
         Assert.DoesNotContain("private-token", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(DatabasePath)));
     }
 
+    [Theory]
+    [InlineData("https://server/rest/getCoverArt?id=art&t=private-token")]
+    [InlineData("artwork:album-123")]
+    public void Transient_artwork_does_not_prevent_replacing_and_reopening_the_playback_queue(string artwork)
+    {
+        var affected = Expected with { Id = "playlist-track", CoverArtId = artwork };
+        var queue = new[] { Expected, affected, affected, Expected with { Id = "no-art", CoverArtId = null } };
+        var snapshot = new PlaybackSnapshot("home", queue, 2, 12.25, true, true);
+        using (var store = new SessionStore(DatabasePath))
+        {
+            store.SavePlayback(new PlaybackSnapshot("home", new[] { Expected }, 0, 42, false, false));
+            for (int tick = 0; tick < 3; tick++)
+                store.SavePlayback(snapshot.WithoutTransientArtwork());
+        }
+        using (var reopened = new SessionStore(DatabasePath))
+        {
+            var loaded = Assert.IsType<PlaybackSnapshot>(reopened.LoadPlayback("home"));
+            Assert.Equal(snapshot with { Queue = loaded.Queue }, loaded);
+            Assert.Equal(new[] { Expected, affected with { CoverArtId = null }, affected with { CoverArtId = null }, queue[3] }, loaded.Queue);
+            Assert.Equal(artwork, queue[1].CoverArtId);
+            Assert.Equal(artwork, queue[2].CoverArtId);
+        }
+        Assert.DoesNotContain(artwork, System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(DatabasePath)));
+        Assert.DoesNotContain("private-token", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(DatabasePath)));
+    }
+
+    [Theory]
+    [InlineData("connection", "invalid-connection")]
+    [InlineData("queue", "invalid-queue")]
+    [InlineData("index", "invalid-queue-index")]
+    [InlineData("position", "invalid-playback-position")]
+    [InlineData("null-song", "invalid-song-id")]
+    [InlineData("blank-song", "invalid-song-id")]
+    [InlineData("url-song", "invalid-song-id")]
+    [InlineData("empty-index", "invalid-queue-index")]
+    [InlineData("empty-position", "invalid-playback-position")]
+    public void Omitting_transient_artwork_preserves_required_session_validation(string field, string code)
+    {
+        var snapshot = new PlaybackSnapshot("home", new[] { Expected with { CoverArtId = "https://server/art?t=private-token" } }, 0, 1, false, false);
+        snapshot = field switch
+        {
+            "connection" => snapshot with { ConnectionId = " " },
+            "queue" => snapshot with { Queue = null! },
+            "index" => snapshot with { Index = 1 },
+            "position" => snapshot with { PositionSeconds = double.NaN },
+            "null-song" => snapshot with { Queue = new Song[] { null! } },
+            "blank-song" => snapshot with { Queue = new[] { Expected with { Id = " " } } },
+            "url-song" => snapshot with { Queue = new[] { Expected with { Id = "https://server/stream?t=private-token" } } },
+            "empty-index" => snapshot with { Queue = Array.Empty<Song>(), PositionSeconds = 0 },
+            "empty-position" => snapshot with { Queue = Array.Empty<Song>(), Index = -1 },
+            _ => throw new InvalidOperationException()
+        };
+        using (var store = new SessionStore(DatabasePath))
+        {
+            store.SavePlayback(new PlaybackSnapshot("home", new[] { Expected }, 0, 42, false, false));
+            var error = Assert.Throws<ArgumentException>(() => store.SavePlayback(snapshot.WithoutTransientArtwork()));
+            Assert.Equal(code, SessionSaveFailure.Code(error));
+            Assert.Equal(42, store.LoadPlayback("home")!.PositionSeconds);
+        }
+        Assert.DoesNotContain("private-token", System.Text.Encoding.UTF8.GetString(File.ReadAllBytes(DatabasePath)));
+    }
+
     [Fact]
     public void Queue_replacement_is_atomic_scoped_and_allows_explicit_empty_queue()
     {

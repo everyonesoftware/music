@@ -14,6 +14,15 @@ test('window binds explicit update actions and requires successful session persi
   assert.ok(shutdown.indexOf('updatesPanel.Dispose()') < shutdown.indexOf('sessions?.Dispose()'));
 });
 
+test('window saves a copy without transient artwork for every playback save', () => {
+  const save = source.split('private bool TrySavePlayback()')[1].split('private void RestorePlayback()')[0];
+  assert.match(save, /var snapshot = new PlaybackSnapshot\(/);
+  assert.match(save, /sessions.SavePlayback\(snapshot.WithoutTransientArtwork\(\)\)/);
+  assert.doesNotMatch(save, /queue\s*=|queue\[.*\]\s*=/);
+  assert.match(source, /if \(\+\+tickCount % 5 == 0\) SavePlayback\(\)/);
+  assert.match(source.split('private void Shutdown()')[1], /SavePlayback\(\); closed = true/);
+});
+
 test('window and titlebar use the shared Android artwork, not a text-note substitute', () => {
   assert.match(shell, /<Image x:Name="AppIcon"/);
   assert.match(source, /AppWindow.SetIcon\(Path.Combine\(AppContext.BaseDirectory, "Assets", "Music.ico"\)\)/);
