@@ -115,7 +115,7 @@ test('a stale rerun skips newer published source, while a diverged history fails
 test('native CI jobs gate SDK setup on validation outputs and preserve manual component selection', () => {
   const workflow = readWorkflow();
   const validate = workflowJob(workflow, 'validate');
-  assert.deepEqual(Object.keys(workflowJobs(workflow)), ['validate', 'android', 'windows', 'release']);
+  assert.deepEqual(Object.keys(workflowJobs(workflow)), ['validate', 'browser-prototypes', 'android', 'windows', 'release']);
   assert.match(workflow, /options: \[all, android, windows, maintenance\]/);
   assert.match(validate, /fetch-depth: 0/);
   assert.match(validate, /inputs\.component/);
@@ -178,14 +178,17 @@ test('CLI rejects malformed options, inaccessible GitHub baselines and shallow c
   assert.throws(() => decideFromBaseline({ root: '.', component: 'android', baseline: null, run: () => ({ status: 0, stdout: 'true\n' }) }), /Full history/);
 });
 
-test('browser studies run selectively within validation without a separate web job or push path filters', () => {
+test('browser studies run selectively after validation in parallel with native jobs without push path filters', () => {
   const workflow = readWorkflow();
   const validate = workflowJob(workflow, 'validate');
-  assert.ok(!Object.hasOwn(workflowJobs(workflow), 'web'));
+  const browser = workflowJob(workflow, 'browser-prototypes');
   assert.match(validate, /node scripts\/ci-selection.mjs/);
-  assert.match(validate, /if:.*steps\.[\w-]+\.outputs\.web == 'true'/);
-  assert.match(validate, /npm ci/);
-  assert.match(validate, /npm (?:run )?(?:test|build)/);
+  assert.match(validate, /web: \$\{\{ steps.detect.outputs.web \}\}/);
+  assert.match(browser, /needs: validate/);
+  assert.match(browser, /if: needs.validate.outputs.web == 'true'/);
+  assert.match(browser, /npm ci/);
+  assert.match(browser, /npm test/);
+  assert.doesNotMatch(validate, /npm ci|playwright install|run: npm test/);
   assert.match(workflow, /actions: read/);
   assert.doesNotMatch(workflow.split('workflow_dispatch:')[0], /paths:/);
 });

@@ -33,6 +33,7 @@ jobs:
       android: ${{ steps.detect.outputs.android }}
       windows: ${{ steps.detect.outputs.windows }}
       android_changed: ${{ steps.detect.outputs.android_changed }}
+      web: ${{ steps.detect.outputs.web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -77,14 +78,21 @@ jobs:
       - name: Test Windows workflow, visual and smoke-test contracts
         if: steps.detect.outputs.windows == 'true'
         run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs tests/windows-branding.test.mjs tests/windows-window-integration.test.mjs tests/windows-package-size.test.mjs tests/windows-trimming.test.mjs apps/windows/validation/visual-contracts.test.mjs
+
+  browser-prototypes:
+    needs: validate
+    if: needs.validate.outputs.web == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install locked study-test dependencies
-        if: steps.detect.outputs.web == 'true'
         run: npm ci
       - name: Install the pinned study-test browser
-        if: steps.detect.outputs.web == 'true'
         run: npx playwright install --with-deps chromium
       - name: Validate preserved browser studies without a web output
-        if: steps.detect.outputs.web == 'true'
         run: npm test
 
   android:
@@ -231,8 +239,8 @@ jobs:
           include-hidden-files: false
 
   release:
-    needs: [validate, android, windows]
-    if: always() && !cancelled() && needs.validate.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+    needs: [validate, android, windows, browser-prototypes]
+    if: always() && !cancelled() && needs.validate.result == 'success' && (needs['browser-prototypes'].result == 'success' || needs['browser-prototypes'].result == 'skipped') && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:

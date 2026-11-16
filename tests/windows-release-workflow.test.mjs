@@ -17,7 +17,7 @@ test('flat Windows packaging builds only when selected by validation and cannot 
   assert.match(workflow, /if:.*needs.validate.outputs.windows == 'true'/);
   assert.match(workflow, /steps:/);
   assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/|contents: write|scripts\/windows-release.py publish|scripts\/android-release.py/);
-  assert.match(release, /needs: \[validate, android, windows\]/);
+  assert.match(release, /needs: \[validate, android, windows, browser-prototypes\]/);
   assert.match(release, /if:.*always\(\).* !cancelled\(\).*github.ref == 'refs\/heads\/main'.*github.event_name != 'pull_request'.*!inputs.trimmed_experiment/);
 });
 

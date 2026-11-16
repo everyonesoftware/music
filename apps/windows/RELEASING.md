@@ -5,7 +5,7 @@
 - `scripts/build-windows-installer.py`: Windows-only orchestration of tests, a real self-contained x64 publish, pinned Velopack packaging, and integrity metadata.
 - `scripts/windows-release.py`: existing commit-count versioning, package validation and checksum generation. Its legacy preview publisher is no longer used by CI.
 - `apps/windows/.config/dotnet-tools.json`: pins `vpk` to **1.2.161**, matching the app's Velopack NuGet package.
-- `.github/workflows/ci.yml`: exactly four jobs (`validate`, `android`, `windows`, `release`). Validation selects changed platforms; Android and Windows build in parallel; one final release job serializes all publication/recovery/download refresh.
+- `.github/workflows/ci.yml`: exactly five jobs (`validate`, `browser-prototypes`, `android`, `windows`, `release`). Validation selects changed inputs; browser-prototype checks, Android and Windows run in parallel; one final release job waits for selected browser checks to pass and serializes all publication/recovery/download refresh.
 - `scripts/publish-windows-main-release.mjs`: validate and add the complete Windows installer/feed/package inventory to the same-version, same-source stable **Music** release. It creates no Windows preview release.
 - `scripts/attach-windows-installer.mjs`: add the installer and its dedicated checksum to the same-version, same-source `v0.1.<count>` release without replacing Android assets.
 - `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
@@ -158,7 +158,7 @@ gh workflow run ci.yml --ref main -f component=windows
 gh workflow run ci.yml --ref main -f component=windows -f trimmed_experiment=true
 ```
 
-Do not run both commands unless you intentionally want two builds. Monitor the selected run and inspect its artifact/metadata. Pull requests use the same four-job entry point but cannot publish or access signing material.
+Do not run both commands unless you intentionally want two builds. Monitor the selected run and inspect its artifact/metadata. Pull requests use the same five-job entry point but cannot publish or access signing material.
 
 The smoke test runs the actual setup executable, not the loose publish output, and fails closed when the native window cannot be verified. Its logs, screenshot, and structured result are retained in the `music-windows-smoke-<sha>` Actions artifact even when the test fails. Only a successful package job provides the installer artifact to the publish job. Do not bypass a failed smoke test to publish.
 

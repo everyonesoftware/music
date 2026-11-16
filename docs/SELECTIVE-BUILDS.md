@@ -1,8 +1,8 @@
 # Selective component builds
 
-Every main push starts one **Music CI** workflow (`.github/workflows/ci.yml`) with exactly four real jobs: **validate → android + windows → release**. The two native jobs run in parallel and contain their own platform tests and packaging. There is no web/container job or nested multi-job workflow. Pull requests use validation and changed-platform tests without signing or publication. Preserved browser-study checks run inside validation only when affected; they produce no web release. Scheduled/manual maintenance and isolated experimental trimming retain separate entry points, with no completion-triggered fan-out.
+Every main push starts one **Music CI** workflow (`.github/workflows/ci.yml`) with exactly five real jobs: **validate → browser-prototypes + android + windows → release**. After validation, the browser checks and two native jobs run in parallel; native jobs contain their own platform tests and packaging. There is no published web/container output or nested multi-job workflow. Pull requests use validation and changed-platform tests without signing or publication. Preserved browser-study checks run in `browser-prototypes` only when affected; that job installs the locked dependencies and pinned Chromium and runs the full `npm test` suite without delaying native builds. Scheduled/manual maintenance and isolated experimental trimming retain separate entry points, with no completion-triggered fan-out.
 
-Native SDK setup, native compilation, signing, installers and publication run only for selected affected components. Lightweight pipeline/release-tool contracts always run. Validation's native compatibility checks are also gated by Windows selection. A successful run with skipped platform jobs is not an app update. The final release job waits for both native jobs, publishes Android before Windows, then performs historical attachment recovery and download refresh serially. Its always/not-cancelled dependency handling permits maintenance when unchanged platforms skip or a platform fails; failed builds still fail the overall workflow.
+Native SDK setup, native compilation, signing, installers and publication run only for selected affected components. Lightweight pipeline/release-tool contracts always run. Validation's native compatibility checks are also gated by Windows selection; Chromium installation and browser tests no longer run in validation. A successful run with skipped platform jobs is not an app update. The final release job waits for the browser and both native jobs, publishes Android before Windows, then performs historical attachment recovery and download refresh serially. Browser checks must pass when selected; unchanged skipped browser checks permit release. Its always/not-cancelled dependency handling permits maintenance when unchanged native platforms skip or a native platform fails; failed builds still fail the overall workflow.
 
 ## Ownership rules
 
@@ -17,7 +17,7 @@ Native SDK setup, native compilation, signing, installers and publication run on
 | Download-table generator/tests/workflow | Skip | Skip | Skip |
 | Shared/unknown inputs or selective-build detector/tests | Build | Build | Build/test |
 
-The rules live in `scripts/selective-builds.mjs`; unknown paths deliberately affect every component until explicitly classified. Deletions and renames retain both affected paths through `git diff --no-renames`. There is no released web player to publish: browser studies are checked within validation only.
+The rules live in `scripts/selective-builds.mjs`; unknown paths deliberately affect every component until explicitly classified. Deletions and renames retain both affected paths through `git diff --no-renames`. There is no released web player to publish: browser studies are checked in the separate `browser-prototypes` job, gated by validation's `web` output.
 
 ## Last successful publication, not last push
 

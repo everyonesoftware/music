@@ -16,9 +16,9 @@ test('one workflow owns main pushes and pull requests without completion-trigger
   for (const file of files) assert.doesNotMatch(triggers(read(file)), /workflow_run:/, file);
 });
 
-test('the pipeline has exactly four real jobs with parallel read-only native builds', () => {
+test('the pipeline has five real jobs with browser prototypes parallel to read-only native builds', () => {
   const ci = read('ci.yml'), jobs = workflowJobs(ci);
-  assert.deepEqual(Object.keys(jobs), ['validate', 'android', 'windows', 'release']);
+  assert.deepEqual(Object.keys(jobs), ['validate', 'browser-prototypes', 'android', 'windows', 'release']);
   assert.doesNotMatch(ci, /uses: \.\/\.github\/workflows\//);
   assert.match(ci, /AUDIO_KEYSTORE_BASE64: \$\{\{ secrets.AUDIO_KEYSTORE_BASE64 \}\}/);
   assert.match(ci, /permissions:\n  contents: read\n  actions: read/);
@@ -28,15 +28,25 @@ test('the pipeline has exactly four real jobs with parallel read-only native bui
     assert.ok(jobs[platform].includes(`needs.validate.outputs.${platform} == 'true'`));
   }
   assert.match(jobs.release, /contents: write/);
+  assert.match(jobs.validate, /web: \$\{\{ steps.detect.outputs.web \}\}/);
+  assert.match(jobs['browser-prototypes'], /needs: validate/);
+  assert.match(jobs['browser-prototypes'], /if: needs.validate.outputs.web == 'true'/);
+  assert.match(jobs['browser-prototypes'], /runs-on: ubuntu-24.04/);
+  for (const command of ['npm ci', 'npx playwright install --with-deps chromium', 'npm test']) {
+    assert.ok(jobs['browser-prototypes'].includes(command));
+    assert.ok(!jobs.validate.includes(command));
+  }
+  assert.doesNotMatch(jobs['browser-prototypes'], /contents: write|secrets\.|upload-artifact|needs:.*(?:android|windows)/);
 });
 
 test('serialized release runs after native jobs even when an unchanged platform is skipped', () => {
   const release = workflowJobs(read('ci.yml')).release ?? '';
-  assert.match(release, /needs: \[validate, android, windows\]/);
+  assert.match(release, /needs: \[validate, android, windows, browser-prototypes\]/);
   assert.match(release, /always\(\) && !cancelled\(\)/);
   assert.match(release, /needs.validate.result == 'success'/);
   assert.match(release, /github.ref == 'refs\/heads\/main'/);
   assert.match(release, /github.event_name != 'pull_request'/);
+  assert.match(release, /needs\['browser-prototypes'\].result == 'success' \|\| needs\['browser-prototypes'\].result == 'skipped'/);
   const commands = ['scripts/android-release.py publish', 'scripts/publish-windows-main-release.mjs', 'scripts/recover-windows-publication.mjs', 'scripts/current-downloads.mjs'];
   let previous = -1;
   for (const command of commands) {
@@ -67,4 +77,18 @@ test('native acceptance remains mandatory and no Windows preview publication pat
   assert.match(jobs.windows ?? '', /scripts\/test-windows-installer.ps1/);
   assert.match(jobs.release ?? '', /needs.android.result == 'success'/);
   assert.match(jobs.release ?? '', /needs.windows.result == 'success'/);
+});
+
+test('release permits passed or unchanged browser checks but blocks failed or cancelled checks', () => {
+  const release = workflowJobs(read('ci.yml')).release;
+  const condition = release.match(/^    if: (.*)$/m)[1];
+  // Evaluate the trusted local workflow expression with the supported contexts.
+  const enabled = new Function('needs', 'github', 'inputs', 'always', 'cancelled', `return ${condition};`);
+  for (const [result, expected] of [['success', true], ['skipped', true], ['failure', false], ['cancelled', false]]) {
+    assert.equal(enabled(
+      { validate: { result: 'success' }, 'browser-prototypes': { result } },
+      { ref: 'refs/heads/main', event_name: 'push' },
+      { trimmed_experiment: false }, () => true, () => false,
+    ), expected, result);
+  }
 });

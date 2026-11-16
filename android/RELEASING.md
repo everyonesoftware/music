@@ -1,6 +1,6 @@
 # Music APK releases and Git-count versions
 
-Workflow: `.github/workflows/ci.yml`, with four jobs: `validate`, `android`, `windows`, `release`.
+Workflow: `.github/workflows/ci.yml`, with five jobs: `validate`, `browser-prototypes`, `android`, `windows`, `release`. Browser-prototype checks run selectively after validation, in parallel with native builds; publication waits for selected browser checks to pass.
 
 ## What runs
 

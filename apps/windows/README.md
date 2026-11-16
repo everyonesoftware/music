@@ -42,7 +42,7 @@ The interface XAML is embedded and loaded by WinUI's native `XamlReader`, with e
 dotnet build Music.App/Music.App.csproj -c Release -p:WindowsAppSDKSelfContained=false -p:PrepareForRunDependsOn=CopyFilesToOutputDirectory
 ```
 
-The second override skips Windows SDK resource processing for the Linux compile gate only. Never apply it to the Windows release build. Full self-contained deployment uses Windows SDK manifest tools and must be built on Windows. `.github/workflows/ci.yml` has four jobs: validate, Android, Windows and release. Changed Windows inputs run Linux compatibility checks plus native Windows packaging/install/launch/uninstall gates; only the final release job writes the verified installer and full update feed into the normal Music release. Unchanged Windows inputs skip packaging entirely. Local checks do not establish hosted execution.
+The second override skips Windows SDK resource processing for the Linux compile gate only. Never apply it to the Windows release build. Full self-contained deployment uses Windows SDK manifest tools and must be built on Windows. `.github/workflows/ci.yml` has five jobs: validate, browser-prototypes, Android, Windows and release. Browser-prototype checks run selectively in parallel with native builds; publication waits for selected browser checks to pass. Changed Windows inputs run Linux compatibility checks plus native Windows packaging/install/launch/uninstall gates; only the final release job writes the verified installer and full update feed into the normal Music release. Unchanged Windows inputs skip packaging entirely. Local checks do not establish hosted execution.
 
 ## Product constraints
 
