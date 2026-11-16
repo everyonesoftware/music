@@ -1,9 +1,16 @@
 name: Build and release Android APK
 
 on:
-  push:
-    branches: [main]
-  workflow_dispatch:
+  workflow_call:
+    secrets:
+      AUDIO_KEYSTORE_BASE64:
+        required: true
+      AUDIO_KEYSTORE_PASSWORD:
+        required: true
+      AUDIO_KEY_ALIAS:
+        required: true
+      AUDIO_KEY_PASSWORD:
+        required: true
 
 permissions:
   contents: read

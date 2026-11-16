@@ -1,15 +1,12 @@
 name: Test and build Windows Music
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_dispatch:
+  workflow_call:
     inputs:
       trimmed_experiment:
         description: 'Build an experimental trimmed artifact only; do not publish a release'
         type: boolean
-        required: true
+        required: false
         default: false
 
 permissions:

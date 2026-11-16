@@ -10,7 +10,7 @@ import { deriveSource, validateLocal, attachWindowsInstaller } from './attach-wi
 import { main as ensureMain } from './ensure-windows-main-release.mjs';
 import { publishedBaseline, decideFromBaseline } from './selective-builds.mjs';
 
-export async function recoverWindowsPublications({ root, repository, api, run = spawnSync, ensure = ensureMain, attach = attachWindowsInstaller,
+export async function recoverWindowsPublications({ root, repository, api, run = spawnSync, ensure = ensureMain, attach = attachWindowsInstaller, currentRunId = process.env.GITHUB_RUN_ID ?? '',
   androidChanged = sourceRoot => decideFromBaseline({ root: sourceRoot, component: 'android', baseline: publishedBaseline('android', { api }), run }).build }) {
   if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(repository)) throw Error('Invalid repository.');
   const invoke = (command, args, extra = {}) => {
@@ -19,9 +19,10 @@ export async function recoverWindowsPublications({ root, repository, api, run = 
     return String(result.stdout ?? '').trim();
   };
   // The workflow also holds the original Windows publisher's concurrency lock.
-  // Defer during builds/Android publication, not just during the last upload step.
-  for (const workflow of ['android-release.yml', 'windows-release.yml']) {
-    if (api(`actions/workflows/${workflow}/runs?branch=main&per_page=100`, { paginate: true }).some(p => p.workflow_runs.some(r => r.status !== 'completed'))) return { deferred: true };
+  // Call within unified CI only AFTER its native dependencies finish. Ignore
+  // exactly that owning run (also for independent recovery), never other runs.
+  for (const workflow of ['ci.yml', 'android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
+    if (api(`actions/workflows/${workflow}/runs?branch=main&per_page=100`, { paginate: true }).some(p => p.workflow_runs.some(r => r.status !== 'completed' && !(currentRunId && String(r.id) === currentRunId)))) return { deferred: true };
   }
   const previews = api('releases?per_page=100', { paginate: true }).flat().filter(r => /^windows-v0\.1\.[1-9][0-9]*$/.test(r.tag_name));
   const recovered = [];

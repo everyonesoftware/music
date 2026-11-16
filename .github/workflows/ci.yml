@@ -1,0 +1,88 @@
+name: Music CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Platform to force rebuild, or maintenance without rebuilding
+        type: choice
+        options: [all, android, windows, web, maintenance]
+        default: all
+        required: true
+      trimmed_experiment:
+        description: Build experimental trimmed Windows artifact only; never publish
+        type: boolean
+        default: false
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  contracts:
+    name: Validate pipeline contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Test single-run orchestration and publication guards
+        run: node --test tests/ci-workflow.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs
+
+  web:
+    needs: contracts
+    if: github.event_name != 'workflow_dispatch' || (!inputs.trimmed_experiment && (inputs.component == 'all' || inputs.component == 'web'))
+    uses: ./.github/workflows/web-build.yml
+
+  windows:
+    needs: contracts
+    if: github.event_name != 'workflow_dispatch' || inputs.component == 'all' || inputs.component == 'windows'
+    uses: ./.github/workflows/windows-build.yml
+    with:
+      trimmed_experiment: ${{ inputs.trimmed_experiment == true }}
+
+  android:
+    needs: contracts
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment && (github.event_name != 'workflow_dispatch' || inputs.component == 'all' || inputs.component == 'android')
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/android-release.yml
+    secrets:
+      AUDIO_KEYSTORE_BASE64: ${{ secrets.AUDIO_KEYSTORE_BASE64 }}
+      AUDIO_KEYSTORE_PASSWORD: ${{ secrets.AUDIO_KEYSTORE_PASSWORD }}
+      AUDIO_KEY_ALIAS: ${{ secrets.AUDIO_KEY_ALIAS }}
+      AUDIO_KEY_PASSWORD: ${{ secrets.AUDIO_KEY_PASSWORD }}
+
+  windows-release:
+    # Wait for Android publication as well as Windows checks, so attachment never
+    # races this run's creation of the shared Music release. Android may skip.
+    needs: [windows, android]
+    if: always() && !cancelled() && needs.windows.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/windows-release.yml
+    with:
+      publish_preview: ${{ github.event_name == 'workflow_dispatch' }}
+
+  recovery:
+    needs: [android, windows, windows-release]
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/windows-publication-recovery.yml
+
+  downloads:
+    needs: [android, windows, windows-release, recovery]
+    if: always() && !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+    permissions:
+      contents: write
+      actions: read
+    uses: ./.github/workflows/current-downloads.yml

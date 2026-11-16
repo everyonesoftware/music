@@ -104,8 +104,8 @@ test('failed main creation is repaired from original preview at same SHA without
 
 test('recovery is independent of native affectedness and shares the Android stable publisher lock', () => {
   const text = readFileSync(new URL('../.github/workflows/windows-publication-recovery.yml', import.meta.url), 'utf8');
-  assert.match(text, /workflow_run:/);
-  assert.match(text, /push:/);
+  assert.match(text, /workflow_call:/);
+  assert.doesNotMatch(text, /workflow_run:|push:/);
   assert.match(text, /schedule:/);
   assert.match(text, /group: audio-apk-publication/);
   assert.match(text, /\nconcurrency:\n  group: music-windows-release-publication\n  cancel-in-progress: false/);

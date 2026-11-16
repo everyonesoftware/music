@@ -172,11 +172,11 @@ test('CLI rejects malformed and missing options before executing commands', asyn
   }
 });
 
-test('workflow checks trusted default-branch code and refreshes after either publisher without personal tokens', () => {
+test('reusable refresh checks trusted default-branch code without completion-triggered fan-out or personal tokens', () => {
   const workflow = readFileSync(new URL('../.github/workflows/current-downloads.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /workflow_run:/);
-  assert.match(workflow, /Build and release Android APK, Package and release Windows installer/);
-  assert.match(workflow, /types: \[completed\]/);
+  assert.match(workflow, /workflow_call:/);
+  assert.match(workflow, /schedule:/);
+  assert.doesNotMatch(workflow, /workflow_run:|push:/);
   assert.match(workflow, /ref: \$\{\{ github.event.repository.default_branch \}\}/);
   assert.match(workflow, /persist-credentials: false/);
   assert.match(workflow, /GH_TOKEN: \$\{\{ github.token \}\}/);

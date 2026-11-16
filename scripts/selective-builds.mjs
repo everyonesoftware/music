@@ -58,12 +58,17 @@ export function decideFromBaseline({ root, component, baseline, force = false, r
 export function publishedBaseline(component, { api }) {
   if (!components.includes(component)) throw new Error('Invalid component.');
   if (component === 'web') {
-    const pages = api('actions/workflows/web-build.yml/runs?branch=main&status=success&per_page=100', { paginate: true, optional: true });
-    if (pages === null) return null; // First deployment of this workflow.
-    const run = pages.flatMap(page => page.workflow_runs).find(run => run.conclusion === 'success' && run.head_branch === 'main' && ['push', 'workflow_dispatch'].includes(run.event));
-    if (!run) return null;
-    if (!shaPattern.test(run.head_sha)) throw new Error('Invalid successful web source.');
-    return run.head_sha;
+    // Successful pushes are conservative web checks. Targeted manual CI runs
+    // may skip web entirely, so they cannot establish a web baseline.
+    for (const workflow of ['ci.yml', 'web-build.yml']) {
+      const pages = api(`actions/workflows/${workflow}/runs?branch=main&status=success&per_page=100`, { paginate: true, optional: true });
+      const events = workflow === 'ci.yml' ? ['push'] : ['push', 'workflow_dispatch'];
+      const run = pages?.flatMap(page => page.workflow_runs).find(run => run.conclusion === 'success' && run.head_branch === 'main' && events.includes(run.event));
+      if (!run) continue;
+      if (!shaPattern.test(run.head_sha)) throw new Error('Invalid successful web source.');
+      return run.head_sha;
+    }
+    return null;
   }
   const windows = component === 'windows';
   const pattern = windows ? /^windows-v0\.1\.([1-9][0-9]*)$/ : /^v0\.1\.([1-9][0-9]*)$/;

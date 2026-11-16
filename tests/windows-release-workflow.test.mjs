@@ -8,9 +8,9 @@ test('native release subprocesses read UTF-8 source independently of the Windows
   assert.match(workflow, /env:\s+(?:#[^\n]*\n\s+)?PYTHONUTF8: '1'/);
 });
 
-test('Windows installers build only when selected, with force build-only dispatch retained', () => {
-  assert.match(workflow, /push:\s+branches: \[main\]/);
-  assert.doesNotMatch(workflow.split('workflow_dispatch:')[0], /paths:/);
+test('reusable Windows packaging builds only when selected by the single push pipeline', () => {
+  assert.match(workflow, /workflow_call:/);
+  assert.doesNotMatch(workflow, /push:\s+branches:|workflow_dispatch:|paths:/);
   assert.match(workflow, /publish_preview:[\s\S]*?default: false/);
   assert.match(workflow, /needs: changes\s+if: needs.changes.outputs.windows == 'true'/);
   assert.match(workflow, /--component windows --force "\$FORCE_COMPONENT"/);

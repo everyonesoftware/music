@@ -1,6 +1,8 @@
 # Selective component builds
 
-Every main push starts a lightweight change-detection job. Native SDK setup, tests, compilation, signing, installers and publication run only for affected components. GitHub may still display successful workflows containing skipped build jobs; that is not an app update.
+Every main push starts one **Music CI** workflow (`.github/workflows/ci.yml`), with platform checks, builds, publication, Windows attachment recovery and download refresh as dependent jobs in that same run. Pull requests use the same entry point for web and Windows checks without signing or publication. The platform YAML files are reusable `workflow_call` implementations, not separate push-triggered runs. Scheduled/manual maintenance and the isolated experimental trimming branch retain their own entry points; no `workflow_run` completion events fan out additional runs.
+
+Native SDK setup, tests, compilation, signing, installers and publication run only for affected components. Lightweight pipeline contracts always run. A successful workflow containing skipped platform build jobs is not an app update. Windows packaging waits for Windows checks and for this run's Android publication to finish (or skip) before attaching its installer to the shared release. Recovery and refresh use explicit always/not-cancelled dependencies so unchanged platforms and failed builds do not suppress maintenance.
 
 ## Ownership rules
 
@@ -23,7 +25,7 @@ For Android, discovery selects the highest numeric published stable `v0.1.N` rel
 
 Each component compares its own last published source tree against HEAD. If an Android build fails, a later docs-only push still sees the unpublished Android changes and retries Android rather than losing those changes. The detector never writes a release marker; only the publishers' existing verified outputs establish native baselines. A source already included in a newer publication is skipped on stale reruns, and divergent or shallow histories are rejected.
 
-The web studies compare against the last successful main `web-build.yml` push/manual run, not pull-request checks or failed runs. Their first workflow deployment runs a bootstrap validation because no prior successful check exists. There is no invented web release/version.
+The web studies compare against the last successful main `ci.yml` push run, falling back to legacy `web-build.yml` push/manual history during migration, not pull-request checks or failed runs. Unified manual runs are deliberately excluded because targeted native/manual maintenance runs can succeed without browser validation. Successful main pushes either validate web or prove it unchanged against that prior baseline. Their first workflow deployment runs a bootstrap validation because no prior successful check exists. There is no invented web release/version.
 
 ## Releases and existing updaters
 
@@ -40,22 +42,25 @@ Versions remain the existing full-history `0.1.<commit-count>` scheme. Component
 
 ## Independent Windows publication recovery
 
-The complete `windows-v` preview is the **packaging** baseline, not evidence that attachment to `v` succeeded. `.github/workflows/windows-publication-recovery.yml` runs independently on main pushes (including docs-only), either native publisher's completion, manual dispatch, and every six hours. A failed main-release creation or attachment therefore does not require a native rebuild. Rerunning all jobs at the original SHA can skip packaging safely; the completion event still starts recovery.
+The complete `windows-v` preview is the **packaging** baseline, not evidence that attachment to `v` succeeded. `.github/workflows/windows-publication-recovery.yml` is called after native jobs inside Music CI on main pushes (including docs-only), and remains independently available through manual dispatch and a six-hour schedule. A failed main-release creation or attachment therefore does not require a native rebuild. Rerunning all jobs at the original SHA can skip packaging safely and still execute recovery.
 
 Recovery checks every known preview's exact published source/tag/state and full inventory. Already complete same-source main installer/checksum pairs need metadata checks only. For missing attachment, it creates a detached full-history worktree at the **original preview SHA**, downloads that preview's original seven-file inventory, checks installer source/hash with the existing Node attachment tooling, and runs the existing `windows-release.py validate --root <original-worktree>` with trusted current tooling. It never builds, repackages, re-manifests, relabels at newer HEAD, replaces assets, or promotes Latest. The existing create/attach helpers then create a missing Windows-only main release with `latest=false` where appropriate and attach/read back the original verified bytes/checksum. A required but missing Android publication fails visibly for Android recovery, not an invented Windows-only replacement.
 
-The recovery workflow holds the original Windows publisher's concurrency group at workflow level and Android's publication group at job level. It also defers if either native workflow is visibly active (including builds); completion/scheduled retries avoid holding a lock while waiting for Android. Both publishers and recovery use GitHub's documented [`queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency), rather than letting recovery replace pending publication jobs. GitHub bounds this queue at 100 pending entries. Older actionlint releases may reject the documented `queue` key; treat only that specific diagnostic as a tool-version limitation, not permission to ignore other lint errors.
+The recovery workflow holds the original Windows publisher's concurrency group at workflow level and Android's publication group at job level. It also defers if another Music CI run or legacy native workflow is visibly active (including builds). The caller's own run ID is excluded only because its native jobs have already finished; independent invocations still detect active publishers. Later push/manual/scheduled retries repair deferred work. Both publishers and recovery use GitHub's documented [`queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency), rather than letting recovery replace pending publication jobs. GitHub bounds this queue at 100 pending entries. Older actionlint releases may reject the documented `queue` key; treat only that specific diagnostic as a tool-version limitation, not permission to ignore other lint errors.
 
 Conflicting/draft releases, wrong/divergent source or tags, incomplete preview inventories, tampered downloads, and changed remote asset metadata fail visibly without clobbering. Missing installer/checksum assets are repairable; conflicting existing bytes are not. Completeness discovery is metadata-only for an already complete main pair, not an audit of subsequent same-size remote tampering. Keep manual/API publication writers out of these lock-protected workflows. GitHub may also refuse release writes targeting old workflow-file revisions with `GITHUB_TOKEN`; such permission failures remain visible and require operator intervention, never retargeting the source.
 
 ## Manual recovery
 
-Manual dispatch forces the selected workflow's component even if its inputs are unchanged:
+Manually dispatch **Music CI** and choose `component` to force the selected platform even if its inputs are unchanged:
 
-- **Build and release Android APK:** force Android build/sign/publication on main.
-- **Package and release Windows installer:** force Windows packaging; leave `publish_preview=false` for build-only, or explicitly enable publication on main.
-- **Test and build Windows Music:** force build-only checks; existing optional trimming experiment remains build-only.
-- **Validate web design studies:** force browser build/tests, without publishing a web app.
+- `all`: force all platform checks and native publication on main.
+- `android`: force Android build/sign/publication on main.
+- `windows`: force Windows checks, packaging and publication on main.
+- `web`: force browser build/tests, without publishing a web app.
+- `maintenance`: run recovery and download refresh without rebuilding.
+
+Set `trimmed_experiment=true` with `component=windows` (or `all`) for build-only experimental Windows checks; Android, Windows packaging/publication, recovery and refresh are disabled for this mode. The independent experimental native trimming validation remains separate from the main push pipeline. Maintenance workflows also retain their individual manual dispatches.
 
 Published version/source collisions remain errors, not permission to overwrite binaries. Rerun a failed workflow at its original source when repairing publication. To intentionally publish different bytes, or add an APK to an already published Windows-only version, use a new commit/version rather than mutating the existing release. A missing matching Android release after an Android failure is not repaired by Windows inventing an APK.
 

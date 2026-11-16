@@ -68,12 +68,14 @@ export function replaceDownloads(text, table, { readme = false } = {}) {
 
 // Publication workflows inspect release metadata while attaching assets. Do not edit
 // their release descriptions until all currently visible publishers have finished.
-export function refreshDownloads({ repository, api, publish = false, localReadme }) {
+export function refreshDownloads({ repository, api, publish = false, localReadme, currentRunId = process.env.GITHUB_RUN_ID ?? '' }) {
   validateRepository(repository);
   if (publish) {
-    for (const workflow of ['android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
+    // Nested CI/recovery refresh runs only after native publication/recovery.
+    // Its owning run remains active in the API; all other runs must still defer.
+    for (const workflow of ['ci.yml', 'android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
       const pages = api(`actions/workflows/${workflow}/runs?branch=main&per_page=100`, { paginate: true });
-      if (pages.some(page => page.workflow_runs.some(run => run.status !== 'completed'))) return { deferred: true };
+      if (pages.some(page => page.workflow_runs.some(run => run.status !== 'completed' && !(currentRunId && String(run.id) === currentRunId)))) return { deferred: true };
     }
   }
   const releases = api('releases?per_page=100', { paginate: true }).flat()
