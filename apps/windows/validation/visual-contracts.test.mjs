@@ -67,11 +67,13 @@ test('track list shares responsive columns with its headings and stretches item 
   const songs = method('AddSongs');
   assert.match(songs, /var header = SongGrid\(\)/);
   for (const label of ['#', 'Title / artist', 'Album', 'Time']) assert.ok(songs.includes(`"${label}"`));
-  assert.match(songs, /var grid = SongGrid\(\)/);
+  const row = method('SongRow');
+  assert.match(songs, /view.Items.Add\(SongRow\(/);
+  assert.match(row, /var grid = SongGrid\(\)/);
   assert.match(songs, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
   assert.match(songs, /view.ItemContainerStyle = itemStyle/);
   assert.match(songs, /PaddingProperty, new Thickness\(0\)/);
-  assert.match(songs, /ToolTipService.SetToolTip\(album, song.Album\)/);
+  assert.match(row, /ToolTipService.SetToolTip\(album, song.Album\)/);
   assert.match(songs, /StartQueue\(playQueue, index\)/);
   const grid = method('SongGrid');
   assert.match(grid, /new GridLength\(1, GridUnitType.Star\)/);

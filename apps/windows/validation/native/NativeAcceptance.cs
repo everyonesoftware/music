@@ -165,6 +165,7 @@ public sealed partial class MainWindow
             await target.PingAsync();
             var library = await ReadLibraryAsync(target, CancellationToken.None);
             ActivateConnection(profile!, target, library.Albums, library.Playlists);
+            await cacheInitialization;
             timer.Stop(); // No periodic mutation while observing upgrade state.
             NativeRequire(checks, "libraryLoaded", albums.Count == 1 && playlists.Count == 1);
             if (stage == "restore")

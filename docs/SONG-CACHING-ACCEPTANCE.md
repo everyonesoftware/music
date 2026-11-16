@@ -56,6 +56,12 @@ Merged Android native validation: 41 tests passed without assumption skips at 41
 
 ## Implementation limits and remaining acceptance
 
+### Windows download responsiveness regression
+
+The local fix moves pinning, reconciliation/planning, local-path resolution and cache maintenance off the UI dispatcher. Badges read immutable metadata snapshots without taking the storage lock or checking files. Playback protection publishes immediately through a separate memory-only lock shared with logical eviction, never with filesystem work. Completion refreshes are coalesced, queue controls are reused for same-queue handoff, and offline-list membership changes reuse existing rows with bounded creation batches. Existing offline rows retain their order during live updates; rebuilding the view reapplies recency ordering.
+
+Local verification: Core 168 passed (including blocked-storage dispatch, gate-held snapshot/protection reads, delayed-lookup eviction protection, queued explicit-removal refusal, retryable failed deletions, immutable views, failed persistence, disposal and explicit-account purge behind pending initialization); Update 31 passed; logic checks 23 assertions passed; visual/offline/window/native-driver source contracts 40 passed; existing source contracts 10 passed. Review fixes make deletion wait for initialization and address the explicit account, and protect credential commit through activation from late cancellation. Both normal and opt-in-native-driver Windows-targeted Linux compile checks passed with zero warnings/errors. The full `npm test` passed with the installed Chromium selected by an external scratch preload. These are regression/policy/source/compile checks, not a native reproduction of the reported freeze. No commit, push, installer publication or native Windows responsiveness acceptance is established by these results.
+
 - Initial uncached playback may use separate foreground/background transfers on both platforms; shared persistent storage is not a deduplicated progressive transport. Windows switches to the completed local source with position/intent guards.
 - Android now persists bounded artwork and independently browsable album/playlist snapshots with ordered song occurrences, collection metadata and shared pin ownership. The automatic artwork budget is a separate 50 MB; downloaded covers remain pinned. Old song-only downloads cannot reconstruct their former collection grouping: downloading the album/playlist once online creates a snapshot while reusing already-complete audio. Interrupted Android downloads resume on app/account activation, not through an OS-guaranteed download service after process death.
 - Windows interrupted downloads restart from zero. Automatic limits may be exceeded temporarily by protected tracks. Windows native launch, rendering, codec playback, offline handoff and installed-app acceptance still require a Windows runtime.
@@ -70,6 +76,8 @@ Exercise actual Media3 playback in a task-owned emulator where available, includ
 ### Windows
 
 Exercise the actual WinUI/MediaPlayer app on Windows, including local-source decoding, progressive playback, previous/seek disconnected, restart and Settings. Linux .NET tests and a Windows-targeted cross-build establish logic and compilation, not native audio, XAML rendering or installed-app behavior.
+
+For download responsiveness, start a large playlist download while music is playing. Keep navigating, scrolling, seeking, pausing/resuming and changing tracks during pin persistence, transfer completion, automatic eviction and storage errors. Repeat with the queue pane and Offline & recent page visible, including the available-offline-only filter. Controls must continue responding; continuing audio alone is not evidence of a responsive UI. Check duplicate tracks, removal, account replacement and closing during pending storage work. Background-storage barrier tests and lock-free metadata snapshot tests cover dispatch/lock boundaries; source contracts cover the app wiring. Neither substitutes for this native check.
 
 ## Shared regression baseline
 

@@ -13,6 +13,16 @@ public sealed partial class MainWindow
     private SongCache? cache;
     private CancellationTokenSource cacheCancellation = new();
     private Task cacheTask = Task.CompletedTask;
+    private readonly BackgroundStorage storageWork = new();
+    private Task cacheInitialization = Task.CompletedTask;
+    private readonly Dictionary<string, List<(Song Song, WeakReference<TextBlock> Label)>> songLabels = new(StringComparer.Ordinal);
+    private readonly HashSet<string> changedCacheSongs = new(StringComparer.Ordinal);
+    private IReadOnlyDictionary<string, CachedSong> renderedCacheSnapshot = new Dictionary<string, CachedSong>();
+    private Microsoft.UI.Dispatching.DispatcherQueueTimer? cacheRefreshTimer;
+    private ListViewBase? offlineSongsView;
+    private readonly List<Song> offlineRows = [];
+    private readonly List<Song> offlinePlaybackSongs = [];
+    private TextBlock? offlineEmpty;
     private int cacheMaintenance;
     private readonly List<Song> pendingDownloads = [];
     private bool playIntended, playbackInterrupted, offlineOnly, offlineInitialized;
@@ -89,19 +99,39 @@ public sealed partial class MainWindow
         }
         catch { ShowError("Could not save storage preferences. They may reset after reopening."); }
     }
-    private void ActivateCache(ConnectionProfile profile)
+    private async Task ActivateCache(ConnectionProfile profile)
     {
-        cacheCancellation.Cancel(); cache?.Dispose(); cache = null; pendingDownloads.Clear();
+        cacheCancellation.Cancel();
+        var old = cache; cache = null; pendingDownloads.Clear(); songLabels.Clear();
+        changedCacheSongs.Clear(); renderedCacheSnapshot = new Dictionary<string, CachedSong>();
+        var owner = connectionLease;
         if (profiles is null) return;
         // Account identity is stable across credential refresh, but case-sensitive for usernames.
         string account = new Uri(profile.ServerUrl.TrimEnd('/') + "/").AbsoluteUri + "\n" + profile.Username;
         try
         {
-            cache = new SongCache(Path.Combine(profiles.DirectoryPath, "media"), account);
-            cache.SetProtectedSongs(ProtectedTracks());
+            string root = Path.Combine(profiles.DirectoryPath, "media");
+            await cacheTask;
+            var created = await storageWork.RunAsync(() => { old?.Dispose(); return new SongCache(root, account); });
+            if (closed || !connectionGate.IsCurrent(owner))
+            { await storageWork.RunAsync(created.Dispose); return; }
+            cache = created;
         }
-        catch { ShowError("Song storage is unavailable. Streaming still works while online. Check free disk space and folder permissions, then reconnect to retry storage."); }
+        catch { if (!closed && connectionGate.IsCurrent(owner)) ShowError("Song storage is unavailable. Streaming still works while online. Check free disk space and folder permissions, then reconnect to retry storage."); }
         RefreshStorageUsage();
+    }
+    private async Task PurgeAccountCacheAsync(ConnectionProfile profile)
+    {
+        // An account still opening may have no attached cache. Drain initialization
+        // and purge by explicit account identity, never by a nullable UI attachment.
+        await cacheInitialization;
+        string root = Path.Combine(profiles!.DirectoryPath, "media");
+        string account = new Uri(profile.ServerUrl.TrimEnd('/') + "/").AbsoluteUri + "\n" + profile.Username;
+        await storageWork.RunAsync(() =>
+        {
+            using var storage = new SongCache(root, account);
+            storage.Purge();
+        });
     }
     private async Task SetOfflineAsync(bool value)
     {
@@ -124,7 +154,7 @@ public sealed partial class MainWindow
     private void RefreshStorageUsage()
     {
         if (storageUsage is null) return;
-        var entries = cache?.Recent() ?? [];
+        var entries = cache?.Snapshot().Values.ToArray() ?? [];
         string Usage(bool pin)
         {
             var items = entries.Where(x => x.Pinned == pin).ToArray();
@@ -141,7 +171,10 @@ public sealed partial class MainWindow
         {
             await cacheTask;
             if (storage is null || cache != storage || closed) return;
-            if (clear) storage.ClearAutomatic(ProtectedTracks()); else storage.Trim(offlineSettings.CacheLimitBytes, ProtectedTracks());
+            var protect = ProtectedTracks().ToArray();
+            long limit = offlineSettings.CacheLimitBytes;
+            await storageWork.RunAsync(() => { if (clear) storage.ClearAutomatic(protect); else storage.Trim(limit, protect); });
+            if (closed || cache != storage) return;
             RefreshStorageUsage();
             if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
         }
@@ -156,18 +189,56 @@ public sealed partial class MainWindow
         var filter = new CheckBox { Content = "Available offline only", IsChecked = offlineOnly };
         filter.Click += (_, _) => { offlineOnly = filter.IsChecked == true; RenderOfflineBrowse(); };
         panel.Children.Add(filter);
-        var entries = cache?.Recent() ?? [];
-        var found = entries.Where(x => (!offlineOnly || x.Complete) && ($"{x.Song.Title} {x.Song.Artist} {x.Song.Album}").Contains(query, StringComparison.OrdinalIgnoreCase)).Select(x => x.Song).ToArray();
-        if (found.Length == 0) panel.Children.Add(Text("No saved songs match. Play or download songs while connected to save them here.", 14, true));
-        else AddSongs(panel, found, "list", CancellationToken.None);
+        offlineRows.Clear();
+        offlineEmpty = Text("No saved songs match. Play or download songs while connected to save them here.", 14, true);
+        panel.Children.Add(offlineEmpty);
+        AddSongs(panel, offlineRows, "list", CancellationToken.None, offlinePlaybackSongs);
+        offlineSongsView = panel.Children.OfType<ListViewBase>().Last();
+        RefreshOfflineRows();
     }
-    private void DownloadSongs(IEnumerable<Song> tracks)
+    private void RefreshOfflineRows()
+    {
+        if (offlineSongsView is null || !C<StackPanel>("BrowsePanel").Children.Contains(offlineSongsView)) return;
+        var found = (cache?.Snapshot().Values ?? []).Where(x => (!offlineOnly || x.Complete) &&
+            ($"{x.Song.Title} {x.Song.Artist} {x.Song.Album}").Contains(query, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => x.Accessed).Select(x => x.Song).ToArray();
+        var wanted = found.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+        bool removed = false;
+        for (int i = offlineRows.Count - 1; i >= 0; i--)
+            if (!wanted.Contains(offlineRows[i].Id)) { offlineRows.RemoveAt(i); offlineSongsView.Items.RemoveAt(i); removed = true; }
+        var displayed = offlineRows.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+        int added = 0;
+        foreach (var song in found)
+        {
+            if (displayed.Contains(song.Id)) continue;
+            // Bound new control creation so large download lists yield between batches.
+            if (added++ == 50) { QueueCacheRefresh(song.Id); break; }
+            offlineSongsView.Items.Add(SongRow(song, offlineRows.Count, "list", CancellationToken.None, connectionLease));
+            offlineRows.Add(song);
+            displayed.Add(song.Id);
+        }
+        offlinePlaybackSongs.Clear();
+        offlinePlaybackSongs.AddRange(offlineRows);
+        offlinePlaybackSongs.AddRange(found.Where(song => !displayed.Contains(song.Id)));
+        if (removed)
+            for (int i = 0; i < offlineRows.Count; i++)
+                if (offlineSongsView.Items[i] is Grid row)
+                { row.Tag = i; if (row.Children[0] is TextBlock number) number.Text = (i + 1).ToString(); }
+        if (offlineEmpty is not null) offlineEmpty.Visibility = found.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+    private async Task DownloadSongs(IEnumerable<Song> tracks)
     {
         if (offlineSettings.Offline) { ShowError("Turn off Offline mode to download songs."); return; }
         var requested = tracks.ToArray();
-        try { cache?.Pin(requested); }
-        catch { ShowError("Could not save download choices. Check free disk space and retry."); return; }
-        foreach (var song in requested) if (!pendingDownloads.Any(x => x.Id == song.Id)) pendingDownloads.Add(song);
+        var storage = cache;
+        var owner = connectionLease;
+        if (storage is null) { ShowError("Song storage is not ready. Reconnect or retry shortly."); return; }
+        try { await storageWork.RunAsync(() => storage.Pin(requested)); }
+        catch { if (!closed && storage == cache && connectionGate.IsCurrent(owner)) ShowError("Could not save download choices. Check free disk space and retry."); return; }
+        if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
+        var pendingIds = pendingDownloads.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+        foreach (var song in requested) if (pendingIds.Add(song.Id)) pendingDownloads.Add(song);
+        foreach (var song in requested) QueueCacheRefresh(song.Id);
         RefreshStorageUsage();
         ScheduleCache();
     }
@@ -176,20 +247,27 @@ public sealed partial class MainWindow
         var menu = new MenuFlyout();
         var download = new MenuFlyoutItem { Text = "Download song" };
         var remove = new MenuFlyoutItem { Text = "Remove download" };
-        download.Click += (_, _) => { if (connectionGate.IsCurrent(owner)) DownloadSongs([song]); };
+        download.Click += async (_, _) => { if (connectionGate.IsCurrent(owner)) await DownloadSongs([song]); };
         remove.Click += async (_, _) =>
         {
             if (!connectionGate.IsCurrent(owner)) return;
-            cacheCancellation.Cancel(); await cacheTask;
-            if (!connectionGate.IsCurrent(owner)) return;
+            cacheMaintenance++;
+            cacheCancellation.Cancel();
             try
             {
+                await cacheTask;
+                if (!connectionGate.IsCurrent(owner) || closed) return;
+                var storage = cache;
+                if (storage is null) return;
+                bool removed = await storageWork.RunAsync(() => storage.RemoveDownload(song.Id));
+                if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
+                if (!removed) { ShowError("The current or previous song is protected. Change songs before removing its download."); return; }
                 pendingDownloads.RemoveAll(x => x.Id == song.Id);
-                if (queueIndex >= 0 && queue[queueIndex].Id == song.Id) { ShowError("Stop or change the current song before removing its download."); return; }
-                cache?.RemoveDownload(song.Id); RefreshStorageUsage();
+                QueueCacheRefresh(song.Id); RefreshStorageUsage();
                 if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
             }
             catch { ShowError("Could not remove this download."); }
+            finally { cacheMaintenance--; ScheduleCache(); }
         };
         menu.Items.Add(download); menu.Items.Add(remove); row.ContextFlyout = menu;
     }
@@ -217,31 +295,92 @@ public sealed partial class MainWindow
     }
     private async Task RemoveAccountAsync()
     {
-        if (connection is null || profiles is null) return;
+        if (connection is null || profiles is null || accountChangePending) return;
+        var profile = connection;
         var dialog = new ContentDialog { Title = "Remove account?", Content = "This deletes all automatic cache, pinned downloads and the saved queue for this account.", PrimaryButtonText = "Remove", CloseButtonText = "Cancel", XamlRoot = root.XamlRoot, DefaultButton = ContentDialogButton.Close };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
-        var profile = connection;
+        if (closed || connection != profile || accountChangePending) return;
+        accountChangePending = true;
         connectGate.Cancel(); browseGate.Cancel(); testGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel(); connectionGate.Cancel();
-        cacheCancellation.Cancel(); await cacheTask;
-        StopPlayback();
-        try { cache?.Purge(); sessions?.RemovePlayback(profile.Id); profiles.Remove(profile); }
-        catch { ShowError("Account removal did not finish. Retry before closing the app."); return; }
-        cache?.Dispose(); cache = null; client?.Dispose(); client = null; connection = null;
-        pendingDownloads.Clear(); albums = []; playlists = []; songs.Clear(); artwork.Clear();
-        C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
-        C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";
-        RefreshStorageUsage(); await NavigateAsync("settings");
+        cacheMaintenance++;
+        try
+        {
+            cacheCancellation.Cancel(); await cacheTask;
+            if (closed || connection != profile) return;
+            StopPlayback();
+            var storage = cache;
+            try { await PurgeAccountCacheAsync(profile); sessions?.RemovePlayback(profile.Id); profiles.Remove(profile); }
+            catch { ShowError("Account removal did not finish. Retry before closing the app."); return; }
+            await storageWork.RunAsync(() => storage?.Dispose());
+            if (closed || connection != profile) return;
+            cache = null; client?.Dispose(); client = null; connection = null;
+            pendingDownloads.Clear(); albums = []; playlists = []; songs.Clear(); artwork.Clear();
+            C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
+            C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";
+            RefreshStorageUsage(); await NavigateAsync("settings");
+        }
+        finally { accountChangePending = false; cacheMaintenance--; if (!closed) SetConnecting(false); }
     }
 
     private string SongAvailability(Song song)
     {
-        var entry = cache?.Recent().FirstOrDefault(x => x.Song.Id == song.Id);
+        CachedSong? entry = null;
+        cache?.Snapshot().TryGetValue(song.Id, out entry);
         return entry is { Complete: true } ? (entry.Pinned ? " · Downloaded · Offline" : " · Offline") : entry is not null ? " · Incomplete" : "";
+    }
+    private bool HasSavedSong(string id) => cache?.Snapshot().TryGetValue(id, out var entry) == true && entry.Complete;
+    private TextBlock SongTitle(Song song, double size)
+    {
+        var label = Text(song.Title + SongAvailability(song), size);
+        if (!songLabels.TryGetValue(song.Id, out var labels)) songLabels[song.Id] = labels = [];
+        labels.RemoveAll(x => !x.Label.TryGetTarget(out _));
+        labels.Add((song, new(label)));
+        return label;
+    }
+    private void QueueCacheRefresh(string id)
+    {
+        changedCacheSongs.Add(id);
+        if (cacheRefreshTimer is null)
+        {
+            cacheRefreshTimer = DispatcherQueue.CreateTimer();
+            cacheRefreshTimer.Interval = TimeSpan.FromMilliseconds(250);
+            cacheRefreshTimer.IsRepeating = false;
+            cacheRefreshTimer.Tick += (_, _) =>
+            {
+                cacheRefreshTimer.Stop();
+                if (closed) return;
+                var snapshot = cache?.Snapshot() ?? new Dictionary<string, CachedSong>();
+                foreach (var entry in snapshot)
+                    if (!renderedCacheSnapshot.TryGetValue(entry.Key, out var prior) || prior.Complete != entry.Value.Complete || prior.Pinned != entry.Value.Pinned)
+                        changedCacheSongs.Add(entry.Key);
+                foreach (var id in renderedCacheSnapshot.Keys)
+                    if (!snapshot.ContainsKey(id)) changedCacheSongs.Add(id);
+                renderedCacheSnapshot = snapshot;
+                foreach (var changed in changedCacheSongs)
+                {
+                    if (!songLabels.TryGetValue(changed, out var labels)) continue;
+                    labels.RemoveAll(item =>
+                    {
+                        if (!item.Label.TryGetTarget(out var label)) return true;
+                        label.Text = item.Song.Title + SongAvailability(item.Song);
+                        return false;
+                    });
+                }
+                changedCacheSongs.Clear();
+                RefreshStorageUsage();
+                if (queueIndex >= 0) C<TextBlock>("TrackTitle").Text = queue[queueIndex].Title + SongAvailability(queue[queueIndex]);
+                if (page == "offline" || offlineSettings.Offline) RefreshOfflineRows();
+            };
+        }
+        if (!cacheRefreshTimer.IsRunning) cacheRefreshTimer.Start();
     }
     private void ShutdownOffline()
     {
         NetworkInformation.NetworkStatusChanged -= NetworkChanged;
-        cacheCancellation.Cancel(); cache?.Dispose();
+        cacheRefreshTimer?.Stop();
+        cacheCancellation.Cancel();
+        var storage = cache; cache = null;
+        _ = storageWork.RunAsync(() => storage?.Dispose());
     }
 
     private void EnsurePlaybackOrder()
@@ -287,22 +426,43 @@ public sealed partial class MainWindow
         var storage = cache; var target = client; var token = cacheCancellation.Token;
         EnsurePlaybackOrder();
         var upcoming = playbackOrder is null ? [] : playbackOrder.Upcoming(offlineSettings.NextCount).Select(i => queue[i]).ToArray();
-        var plan = OfflinePolicy.Plan(queue, queueIndex, storage.Recent(), offlineSettings, PrefetchAllowed(), upcoming);
-        var pins = pendingDownloads.Concat(storage.Recent().Where(x => x.Pinned && !x.Complete).Select(x => x.Song)).DistinctBy(x => x.Id).ToArray();
-        plan = plan.Concat(pins).DistinctBy(x => x.Id).ToArray();
+        var capturedQueue = queue.ToArray();
+        int capturedIndex = queueIndex;
+        var settings = offlineSettings;
+        bool prefetch = PrefetchAllowed();
+        var requested = pendingDownloads.ToArray();
         var protectedTracks = ProtectedTracks().ToArray();
         long limit = offlineSettings.CacheLimitBytes;
         long scheduledPlaybackVersion = playbackVersion;
         var previousTask = cacheTask;
         cacheTask = Task.Run(async () =>
         {
-            await previousTask;
+            try { await previousTask; } catch { /* A failed generation must not poison retries. */ }
+            if (token.IsCancellationRequested) return;
+            Song[] plan;
+            HashSet<string> pinnedIds;
+            try
+            {
+                var recent = storage.Recent();
+                var pins = requested.Concat(recent.Where(x => x.Pinned && !x.Complete).Select(x => x.Song)).DistinctBy(x => x.Id).ToArray();
+                pinnedIds = pins.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+                plan = OfflinePolicy.Plan(capturedQueue, capturedIndex, recent, settings, prefetch, upcoming)
+                    .Concat(pins).DistinctBy(x => x.Id).ToArray();
+            }
+            catch (Exception error)
+            {
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (!closed && storage == cache && !token.IsCancellationRequested) ShowError(CacheFailureMessage(error));
+                });
+                return;
+            }
             foreach (var song in plan)
             {
                 if (token.IsCancellationRequested) break;
                 try
                 {
-                    bool pin = pins.Any(x => x.Id == song.Id);
+                    bool pin = pinnedIds.Contains(song.Id);
                     await storage.SaveMediaAsync(song, pin, (output, cancel) => target.DownloadSongAsync(song.Id, output, cancel), token);
                     token.ThrowIfCancellationRequested();
                     storage.Trim(limit, protectedTracks);
@@ -310,10 +470,7 @@ public sealed partial class MainWindow
                     {
                         if (closed || storage != cache || token.IsCancellationRequested) return;
                         pendingDownloads.RemoveAll(x => x.Id == song.Id);
-                        RefreshStorageUsage();
-                        RenderQueue();
-                        if (queueIndex >= 0) C<TextBlock>("TrackTitle").Text = queue[queueIndex].Title + SongAvailability(queue[queueIndex]);
-                        if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
+                        QueueCacheRefresh(song.Id);
                         HandoffCompletedSong(song.Id, scheduledPlaybackVersion);
                     });
                 }
@@ -326,8 +483,7 @@ public sealed partial class MainWindow
                         DispatcherQueue.TryEnqueue(() =>
                         {
                             if (closed || storage != cache || token.IsCancellationRequested) return;
-                            RefreshStorageUsage(); RenderQueue();
-                            if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
+                            QueueCacheRefresh(song.Id);
                             ShowError(CacheFailureMessage(error));
                         });
                     }

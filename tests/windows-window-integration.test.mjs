@@ -1,4 +1,5 @@
 import test from 'node:test';
+import '../apps/windows/validation/offline-contracts.test.mjs';
 import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

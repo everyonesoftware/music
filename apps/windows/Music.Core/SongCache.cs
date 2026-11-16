@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -14,8 +15,10 @@ public sealed class SongCache : IDisposable
 {
     private readonly string directory, metadata;
     private readonly object gate = new();
+    private readonly object protectionGate = new();
     private readonly SemaphoreSlim writer = new(1);
     private List<CachedSong> entries;
+    private IReadOnlyDictionary<string, CachedSong> snapshot = FrozenDictionary<string, CachedSong>.Empty;
     private HashSet<string> protectedSongs = new(StringComparer.Ordinal);
     private bool disposed;
     public SongCache(string root, string account)
@@ -42,9 +45,17 @@ public sealed class SongCache : IDisposable
     private string PathFor(string id, bool complete = true) => Path.Combine(directory, Hash(id + "\noriginal-v1") + (complete ? ".media" : ".partial"));
     private void Persist()
     {
+        PublishSnapshot();
         File.WriteAllText(metadata + ".tmp", JsonSerializer.Serialize(entries, PersistenceJsonContext.Default.ListCachedSong));
         File.Move(metadata + ".tmp", metadata, true);
     }
+    private void PublishSnapshot() => Volatile.Write(ref snapshot,
+        disposed ? FrozenDictionary<string, CachedSong>.Empty : entries.ToFrozenDictionary(x => x.Song.Id, StringComparer.Ordinal));
+
+    /// <summary>Immutable metadata only; does not acquire the storage lock or inspect files.
+    /// Complete reflects the last worker reconciliation, not a fresh filesystem check.</summary>
+    public IReadOnlyDictionary<string, CachedSong> Snapshot() => Volatile.Read(ref snapshot);
+
     public string? Find(string id)
     {
         lock (gate)
@@ -59,7 +70,15 @@ public sealed class SongCache : IDisposable
     }
     private bool Available(CachedSong entry) => entry.Complete && File.Exists(PathFor(entry.Song.Id)) && new FileInfo(PathFor(entry.Song.Id)).Length == entry.Bytes && entry.Bytes > 0;
     public IReadOnlyList<CachedSong> Recent()
-    { lock (gate) return disposed ? [] : entries.Select(x => x with { Complete = Available(x) }).OrderByDescending(x => x.Accessed).ToArray(); }
+    {
+        lock (gate)
+        {
+            if (disposed) return [];
+            entries = entries.Select(x => x with { Complete = Available(x) }).ToList();
+            PublishSnapshot();
+            return entries.OrderByDescending(x => x.Accessed).ToArray();
+        }
+    }
     private static Song SafeSong(Song song)
     {
         if (string.IsNullOrWhiteSpace(song.Id) || Uri.TryCreate(song.Id, UriKind.Absolute, out _)) throw new ArgumentException("Unsigned song identifier required.");
@@ -127,22 +146,49 @@ public sealed class SongCache : IDisposable
     }
     private void Delete(CachedSong entry)
     {
-        File.Delete(PathFor(entry.Song.Id)); File.Delete(PathFor(entry.Song.Id, false)); entries.Remove(entry);
+        DeleteFiles(entry); entries.Remove(entry);
     }
-    /// <summary>Publish live playback protection under the same lock as eviction and deletion.</summary>
+    private void DeleteFiles(CachedSong entry)
+    {
+        File.Delete(PathFor(entry.Song.Id)); File.Delete(PathFor(entry.Song.Id, false));
+    }
+    /// <summary>Publish playback protection without waiting for storage IO.</summary>
     public void SetProtectedSongs(IEnumerable<string> ids)
     {
-        lock (gate) protectedSongs = ids.ToHashSet(StringComparer.Ordinal);
+        var next = ids.ToHashSet(StringComparer.Ordinal);
+        lock (protectionGate) protectedSongs = next;
+    }
+    // Caller holds gate. Logical eviction linearizes against selection here;
+    // never hold protectionGate during disk IO, or acquire gate while holding it.
+    private bool DeleteIfUnprotected(CachedSong entry)
+    {
+        lock (protectionGate)
+        {
+            if (protectedSongs.Contains(entry.Song.Id)) return false;
+            if (!entries.Remove(entry)) return false;
+        }
+        try { DeleteFiles(entry); }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            // Keep failed deletions retryable; earlier deletions in this batch still succeeded.
+            entries.Add(entry);
+            PublishSnapshot();
+            throw;
+        }
+        return true;
     }
     public void Trim(long limit, IEnumerable<string> protectedIds)
     {
         lock (gate)
         {
             var keep = protectedIds.ToHashSet(StringComparer.Ordinal);
-            keep.UnionWith(protectedSongs);
             long size = entries.Where(x => !x.Pinned).Sum(x => x.Bytes);
             foreach (var entry in entries.Where(x => !x.Pinned && !keep.Contains(x.Song.Id)).OrderBy(x => x.Accessed).ToArray())
-            { if (size <= limit) break; Delete(entry); size -= entry.Bytes; }
+            {
+                if (size <= limit) break;
+                if (!DeleteIfUnprotected(entry)) continue;
+                size -= entry.Bytes;
+            }
             Persist();
         }
     }
@@ -151,14 +197,23 @@ public sealed class SongCache : IDisposable
         lock (gate)
         {
             var keep = protectedIds.ToHashSet(StringComparer.Ordinal);
-            keep.UnionWith(protectedSongs);
-            foreach (var entry in entries.Where(x => !x.Pinned && !keep.Contains(x.Song.Id)).ToArray()) Delete(entry);
+            foreach (var entry in entries.Where(x => !x.Pinned && !keep.Contains(x.Song.Id)).ToArray())
+                DeleteIfUnprotected(entry);
             Persist();
         }
     }
-    public void RemoveDownload(string id)
-    { lock (gate) { var entry = entries.Find(x => x.Song.Id == id); if (entry is not null) Delete(entry); Persist(); } }
+    /// <summary>Returns false when live playback protection refuses removal; absent downloads succeed.</summary>
+    public bool RemoveDownload(string id)
+    {
+        lock (gate)
+        {
+            var entry = entries.Find(x => x.Song.Id == id);
+            if (entry is not null && !DeleteIfUnprotected(entry)) return false;
+            Persist();
+            return true;
+        }
+    }
     public void Purge()
     { lock (gate) { foreach (var entry in entries.ToArray()) Delete(entry); Persist(); } }
-    public void Dispose() { lock (gate) disposed = true; }
+    public void Dispose() { lock (gate) { disposed = true; PublishSnapshot(); } }
 }

@@ -31,9 +31,12 @@ public sealed partial class MainWindow : Window
     private IReadOnlyList<Album> albums = Array.Empty<Album>();
     private IReadOnlyList<Playlist> playlists = Array.Empty<Playlist>();
     private List<Song> songs = new(), queue = new();
+    private List<Song>? renderedQueue;
+    private int renderedQueueCount = -1, renderedSelection = -1;
     private string page = "library", mode = "grid", query = "";
     private int queueIndex = -1, songOffset, tickCount;
     private bool moreSongs, closed, updatingSeek, seekDragging, initialized, browsePending;
+    private bool accountChangePending;
     private long browseResultsVersion;
     private long playbackVersion;
     private double restoredPosition;
@@ -68,7 +71,7 @@ public sealed partial class MainWindow : Window
         { string target = entry.Item2; C<Button>(entry.Item1).Click += async (_, _) => await NavigateAsync(target); }
         C<Button>("WelcomeConnect").Click += async (_, _) => await NavigateAsync("settings");
         C<Button>("ConnectButton").Click += async (_, _) => await ConnectAsync();
-        C<Button>("CancelConnectButton").Click += (_, _) => { connectGate.Cancel(); SetConnecting(false); C<TextBlock>("ConnectionStatus").Text = "Connection cancelled. Previous connection kept."; };
+        C<Button>("CancelConnectButton").Click += (_, _) => { if (accountChangePending) return; connectGate.Cancel(); SetConnecting(false); C<TextBlock>("ConnectionStatus").Text = "Connection cancelled. Previous connection kept."; };
         C<Button>("TestConnectionButton").Click += async (_, _) => await TestConnectionAsync();
         C<TextBox>("SearchBox").TextChanged += async (_, _) =>
         {
@@ -90,7 +93,7 @@ public sealed partial class MainWindow : Window
             if (!updatingSeek && queueIndex >= 0)
                 try
                 {
-                    if (!localPlayback && cache?.Find(queue[queueIndex].Id) is not null) SelectTrack(queueIndex, playIntended, e.NewValue);
+                    if (!localPlayback && HasSavedSong(queue[queueIndex].Id)) SelectTrack(queueIndex, playIntended, e.NewValue);
                     else { restoredPosition = 0; player.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue); SavePlayback(); }
                 }
                 catch { ShowError("This stream cannot seek right now."); }
@@ -115,7 +118,7 @@ public sealed partial class MainWindow : Window
             {
                 if (closed || failedVersion != playbackVersion) return;
                 playbackInterrupted = true;
-                if (!localPlayback && queueIndex >= 0 && cache?.Find(queue[queueIndex].Id) is not null)
+                if (!localPlayback && queueIndex >= 0 && HasSavedSong(queue[queueIndex].Id))
                 { SelectTrack(queueIndex, playIntended, interruptedPosition); return; }
                 ShowError("Playback interrupted. Complete saved songs work offline; reconnect to resume this song. Check the format and output device if it still fails.");
             });
@@ -155,6 +158,8 @@ public sealed partial class MainWindow : Window
             C<TextBlock>("ConnectionStatus").Text = "Connecting to saved server…";
             candidate = new NavidromeClient(profile, profiles.ReadPassword(profile));
             ActivateConnection(profile, candidate, [], []); candidate = null;
+            await cacheInitialization;
+            if (closed || !connectGate.IsCurrent(lease)) return;
             RestorePlayback();
             await NavigateAsync("offline");
             if (offlineSettings.Offline)
@@ -202,9 +207,11 @@ public sealed partial class MainWindow : Window
 
     private async Task ConnectAsync()
     {
+        if (accountChangePending) return;
         if (offlineSettings.Offline) { ShowError("Turn off Offline mode before connecting to a server."); return; }
         var lease = connectGate.Begin();
         NavidromeClient? candidate = null;
+        bool ownsAccountChange = false, committed = false;
         SetConnecting(true);
         try
         {
@@ -231,33 +238,55 @@ public sealed partial class MainWindow : Window
             }
             // Stage the migrated session before replacing the profile or vault entry.
             // A failure leaves the previous profile, password and session untouched.
+            await cacheInitialization;
             cacheCancellation.Cancel(); await cacheTask;
-            if (!connectGate.IsCurrent(lease) || closed) return;
+            if (!connectGate.IsCurrent(lease) || closed || accountChangePending) return;
+            // Credentials cannot be rolled back by a late cancellation: complete
+            // activation once commit begins, while the dispatcher remains responsive.
+            accountChangePending = true; ownsAccountChange = true; cacheMaintenance++;
+            SetConnecting(true);
             profiles.Commit(profile, password);
+            committed = true;
             if (previous is not null && previous.Id != profile.Id)
             {
                 if (!ConnectionIdentity.SameAccount(previous.ServerUrl, previous.Username, profile.ServerUrl, profile.Username))
                 {
                     StopPlayback();
-                    try { cache?.Purge(); } catch { ShowError("The replaced account's saved media could not be fully removed. Check storage permissions."); }
+                    try { await PurgeAccountCacheAsync(previous); } catch { ShowError("The replaced account's saved media could not be fully removed. Check storage permissions."); }
+                    if (closed) return;
                 }
                 try { sessions.RemovePlayback(previous.Id); } catch { ShowError("The previous account's saved queue could not be removed. Check storage permissions."); }
             }
             ActivateConnection(profile, candidate, data.Albums, data.Playlists);
             candidate = null;
+            await cacheInitialization;
+            if (closed) return;
             RestorePlayback();
             C<PasswordBox>("Password").Password = "";
-            await NavigateAsync("library");
+            await NavigateAsync(offlineSettings.Offline ? "offline" : "library");
         }
         catch (OperationCanceledException) { }
-        catch { if (connectGate.IsCurrent(lease) && !closed) C<TextBlock>("ConnectionStatus").Text = "Could not connect or securely save credentials. Check server, username, password, and Windows Credential Locker. Previous connection kept."; }
-        finally { candidate?.Dispose(); if (connectGate.IsCurrent(lease) && !closed) SetConnecting(false); }
+        catch
+        {
+            if (!closed && (ownsAccountChange || connectGate.IsCurrent(lease)))
+                C<TextBlock>("ConnectionStatus").Text = committed
+                    ? "The connection was saved, but setup did not finish. Reopen the app to retry the saved connection."
+                    : "Could not connect or securely save credentials. Check server, username, password, and Windows Credential Locker. Previous connection kept.";
+        }
+        finally
+        {
+            candidate?.Dispose();
+            if (ownsAccountChange) { accountChangePending = false; cacheMaintenance--; }
+            if (!closed && (ownsAccountChange || connectGate.IsCurrent(lease))) SetConnecting(false);
+            if (ownsAccountChange) ScheduleCache();
+        }
     }
 
     private void SetConnecting(bool value)
     {
-        C<Button>("ConnectButton").IsEnabled = !value;
+        C<Button>("ConnectButton").IsEnabled = !value && !offlineSettings.Offline && !accountChangePending;
         C<Button>("CancelConnectButton").Visibility = value ? Visibility.Visible : Visibility.Collapsed;
+        C<Button>("CancelConnectButton").IsEnabled = !accountChangePending;
     }
 
     private void ActivateConnection(ConnectionProfile profile, NavidromeClient target, IReadOnlyList<Album> newAlbums, IReadOnlyList<Playlist> newPlaylists)
@@ -270,7 +299,7 @@ public sealed partial class MainWindow : Window
         client?.Dispose();
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
         client.Offline = offlineSettings.Offline;
-        ActivateCache(profile);
+        cacheInitialization = ActivateCache(profile);
         songs.Clear(); artwork.Clear();
         C<TextBlock>("ConnectionStatus").Text = "Connected. Password protected by Windows Credential Locker.";
         C<TextBlock>("ConnectionInfo").Text = $"{profile.Name}\n{profile.ServerUrl}\nUsername: {profile.Username}\nNavidrome · Connected";
@@ -433,13 +462,13 @@ public sealed partial class MainWindow : Window
         view.ItemClick += async (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement item) await OpenCollectionAsync(item.Tag); };
         section.Children.Add(view);
     }
-    private FrameworkElement CardElement(Card card, string layout, CancellationToken token)
+    private FrameworkElement CardElement(Card card, string layout, CancellationToken token, Song? song = null)
     {
         var outer = new Grid { Tag = card.Value, Margin = new Thickness(0, 0, 12, 12), Padding = new Thickness(4), MinHeight = 60 };
         var art = new Image { Stretch = Stretch.UniformToFill, Width = layout == "grid" ? 156 : 48, Height = layout == "grid" ? 156 : 48 };
         var cover = new Border { Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57)), CornerRadius = new CornerRadius(5), Child = art };
         var copy = new StackPanel { Spacing = 4 };
-        copy.Children.Add(Text(card.Title, 14)); copy.Children.Add(Text(card.Subtitle, 12, true));
+        copy.Children.Add(song is null ? Text(card.Title, 14) : SongTitle(song, 14)); copy.Children.Add(Text(card.Subtitle, 12, true));
         if (layout == "grid")
         {
             outer.Width = 164;
@@ -457,7 +486,7 @@ public sealed partial class MainWindow : Window
         return outer;
     }
 
-    private void AddSongs(StackPanel section, IReadOnlyList<Song> tracks, string layout, CancellationToken token)
+    private void AddSongs(StackPanel section, IReadOnlyList<Song> tracks, string layout, CancellationToken token, IReadOnlyList<Song>? playbackTracks = null)
     {
         var owner = connectionLease;
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
@@ -484,29 +513,32 @@ public sealed partial class MainWindow : Window
         }
         ScrollViewer.SetVerticalScrollMode(view, ScrollMode.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(view, ScrollBarVisibility.Disabled);
-        var playQueue = tracks.ToList();
+        var playQueue = playbackTracks ?? tracks.ToList();
         for (int index = 0; index < tracks.Count; index++)
         {
-            var song = tracks[index];
-            FrameworkElement row;
-            if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token);
-            else
-            {
-                var grid = SongGrid(); grid.Tag = index;
-                grid.Children.Add(Text((index + 1).ToString(), 12, true));
-                var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-                copy.Children.Add(Text(song.Title + SongAvailability(song), 14)); copy.Children.Add(Text(song.Artist, 12, true));
-                ToolTipService.SetToolTip(copy, song.Title + "\n" + song.Artist);
-                Grid.SetColumn(copy, 1); grid.Children.Add(copy);
-                var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
-                var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
-                AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
-            }
-            AddDownloadMenu(row, song, owner);
-            view.Items.Add(row);
+            view.Items.Add(SongRow(tracks[index], index, layout, token, owner));
         }
         view.ItemClick += (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement { Tag: int index }) StartQueue(playQueue, index); };
         section.Children.Add(view);
+    }
+    private FrameworkElement SongRow(Song song, int index, string layout, CancellationToken token, RequestGate.Lease owner)
+    {
+        FrameworkElement row;
+        if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token, song);
+        else
+        {
+            var grid = SongGrid(); grid.Tag = index;
+            grid.Children.Add(Text((index + 1).ToString(), 12, true));
+            var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            copy.Children.Add(SongTitle(song, 14)); copy.Children.Add(Text(song.Artist, 12, true));
+            ToolTipService.SetToolTip(copy, song.Title + "\n" + song.Artist);
+            Grid.SetColumn(copy, 1); grid.Children.Add(copy);
+            var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
+            var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
+            AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
+        }
+        AddDownloadMenu(row, song, owner);
+        return row;
     }
 
     private static Grid SongGrid()
@@ -589,7 +621,7 @@ public sealed partial class MainWindow : Window
         var download = new Button { Content = "Download " + detailTitle };
         var owner = connectionLease;
         var capturedSongs = detailSongs.ToArray();
-        download.Click += (_, _) => { if (connectionGate.IsCurrent(owner)) DownloadSongs(capturedSongs); };
+        download.Click += async (_, _) => { if (connectionGate.IsCurrent(owner)) await DownloadSongs(capturedSongs); };
         actions.Children.Add(download);
         actions.Children.Add(Text($"{detailSongs.Count} songs", 13, true));
         panel.Children.Add(actions);
@@ -626,17 +658,20 @@ public sealed partial class MainWindow : Window
             queueIndex = index; restoredPosition = Math.Max(0, position);
             EnsurePlaybackOrder();
             Song song = queue[index];
-            // Publish protection before exposing the new active/previous state or
-            // resolving a path; eviction and this update share the cache lock.
+            // Publish protection immediately, before exposing selection or yielding.
+            // This short memory-only operation never waits behind storage IO.
             string? previous = activeSongId != song.Id ? activeSongId : previousSongId;
-            cache?.SetProtectedSongs(new[] { song.Id, previous }.OfType<string>());
+            var storage = cache;
+            var protectedSongs = new[] { song.Id, previous }.OfType<string>().ToArray();
+            storage?.SetProtectedSongs(protectedSongs);
             previousSongId = previous; activeSongId = song.Id;
             interruptedPosition = Math.Max(0, position);
             playIntended = play; playbackInterrupted = false;
             C<TextBlock>("TrackTitle").Text = song.Title;
             C<TextBlock>("TrackArtist").Text = song.Artist;
             RenderQueue(); SavePlayback();
-            var local = cache?.Find(song.Id);
+            var local = await storageWork.RunAsync(() => storage?.Find(song.Id));
+            if (closed || version != playbackVersion || storage != cache) return;
             localPlayback = local is not null;
 #if MUSIC_NATIVE_ACCEPTANCE
             if (NativeAcceptance.IsRequested) mediaSource = MediaSource.CreateFromUri(NativeAcceptance.MediaUri);
@@ -649,7 +684,7 @@ public sealed partial class MainWindow : Window
                 var opened = await file.OpenReadAsync();
                 if (closed || version != playbackVersion) { opened.Dispose(); return; }
                 localStream = opened;
-                string contentType = cache?.Recent().FirstOrDefault(x => x.Song.Id == song.Id)?.ContentType ?? "application/octet-stream";
+                string contentType = storage?.Snapshot().GetValueOrDefault(song.Id)?.ContentType ?? "application/octet-stream";
                 mediaSource = MediaSource.CreateFromStream(localStream, contentType);
             }
             else
@@ -712,7 +747,7 @@ public sealed partial class MainWindow : Window
         {
             if (player.PlaybackSession.Position.TotalSeconds > 3 && player.PlaybackSession.CanSeek)
             {
-                if (!localPlayback && cache?.Find(queue[queueIndex].Id) is not null) SelectTrack(queueIndex, playIntended);
+                if (!localPlayback && HasSavedSong(queue[queueIndex].Id)) SelectTrack(queueIndex, playIntended);
                 else { player.PlaybackSession.Position = TimeSpan.Zero; SavePlayback(); }
                 return;
             }
@@ -734,14 +769,28 @@ public sealed partial class MainWindow : Window
     }
     private void RenderQueue()
     {
-        var list = C<ListView>("QueueList"); list.Items.Clear();
+        var list = C<ListView>("QueueList");
+        if (ReferenceEquals(renderedQueue, queue) && renderedQueueCount == queue.Count)
+        { UpdateQueueSelection(list); return; }
+        list.Items.Clear();
         for (int i = 0; i < queue.Count; i++)
         {
             var song = queue[i];
             var row = new StackPanel { Tag = i, Spacing = 4, Margin = new Thickness(0, 6, 0, 6) };
-            var title = Text(song.Title + SongAvailability(song), 14); if (i == queueIndex) title.Foreground = Sage;
+            var title = SongTitle(song, 14); if (i == queueIndex) title.Foreground = Sage;
             row.Children.Add(title); row.Children.Add(Text(song.Artist, 12, true)); list.Items.Add(row);
         }
+        renderedQueue = queue; renderedQueueCount = queue.Count;
+        renderedSelection = -1;
+        UpdateQueueSelection(list);
+    }
+    private void UpdateQueueSelection(ListView list)
+    {
+        if (renderedSelection >= 0 && renderedSelection < list.Items.Count && list.Items[renderedSelection] is StackPanel oldRow && oldRow.Children[0] is TextBlock oldTitle)
+            oldTitle.Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233));
+        if (queueIndex >= 0 && queueIndex < list.Items.Count && list.Items[queueIndex] is StackPanel row && row.Children[0] is TextBlock title)
+            title.Foreground = Sage;
+        renderedSelection = queueIndex;
         list.SelectedIndex = queueIndex;
     }
     private void UpdateTransport()
@@ -828,7 +877,8 @@ public sealed partial class MainWindow : Window
         playbackVersion++;
         if (openedHandler is not null) { player.MediaOpened -= openedHandler; openedHandler = null; }
         player.Pause(); player.Source = null; mediaSource?.Dispose(); mediaSource = null; localStream?.Dispose(); localStream = null;
-        cache?.SetProtectedSongs([]);
+        var storage = cache;
+        storage?.SetProtectedSongs([]);
         queue.Clear(); queueIndex = -1; restoredPosition = 0;
         C<TextBlock>("TrackTitle").Text = "Nothing playing"; C<TextBlock>("TrackArtist").Text = ""; C<Image>("CurrentArt").Source = null;
         RenderQueue(); UpdateTransport();
