@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-const main = readFileSync(new URL('../Music.App/MainWindow.cs', import.meta.url), 'utf8');
-const offline = () => readFileSync(new URL('../Music.App/MainWindow.Offline.cs', import.meta.url), 'utf8');
+const main = readFileSync(new URL('../Music.App/MainWindow.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+const offline = () => readFileSync(new URL('../Music.App/MainWindow.Offline.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
 test('Previous and Next navigate the same model; replacing queues resets history', () => {
   const step = main.slice(main.indexOf('private void Step(int direction)'), main.indexOf('private void RenderQueue()'));
   assert.ok(step.includes('playbackOrder!.MovePrevious()'));
