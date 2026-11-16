@@ -35,6 +35,7 @@ import java.util.concurrent.ConcurrentLinkedQueue
 
 /** All network, account and audio data are local fixtures. This exercises the production activity and service. */
 @RunWith(AndroidJUnit4::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class NativeFlowTest {
     @get:Rule val compose = createAndroidComposeRule<MainActivity>()
     private val requests = ConcurrentLinkedQueue<RecordedRequest>()
@@ -99,7 +100,10 @@ class NativeFlowTest {
         InstrumentationRegistry.getInstrumentation().runOnMainSync {
             app.stopService(Intent(app, PlaybackService::class.java))
         }
-        if (!preserveFixture) runBlocking { graph.store.connections().filter { it.username == "native-fixture-user" }.forEach { graph.store.removeConnection(it.id) } }
+        if (!preserveFixture) runBlocking {
+            graph.store.connections().filter { it.username == "native-fixture-user" }.forEach { graph.store.removeConnection(it.id) }
+            Assert.assertTrue("Removed account retained active credentials", graph.credentials.value?.connection?.username != "native-fixture-user")
+        }
         if (!coldProbe) server.shutdown()
     }
 
@@ -224,6 +228,25 @@ class NativeFlowTest {
         compose.onNodeWithText("Fixture ${original.queue[original.index].id}").performClick()
         compose.onNodeWithTag("player-toggle").assertIsDisplayed()
         capture("native-tonal-player")
+        // The real service must replay and seek saved audio without another stream request.
+        // Emulator images differ in whether their default network is reported as metered.
+        val settings = graph.songCache.state.value.settings
+        graph.songCache.setSettings(settings.copy(mobilePrefetch = true))
+        compose.waitUntil(15_000) { original.queue.all { graph.songCache.complete(graph.credentials.value!!, it.id) } }
+        graph.songCache.setSettings(settings.copy(offline = true))
+        compose.waitForIdle()
+        Assert.assertFalse("Enabling offline resumed a paused session", graph.playback.value.playing)
+        val streamsBeforeOfflineReplay = requests.count { it.requestUrl?.encodedPath?.endsWith("/stream.view") == true }
+        compose.onNodeWithTag("player-seek").performSemanticsAction(SemanticsActions.SetProgress) { it(12_000f) }
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(15_000) { graph.playback.value.playing && graph.playback.value.positionMs >= 11_900 }
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        Assert.assertEquals(streamsBeforeOfflineReplay, requests.count { it.requestUrl?.encodedPath?.endsWith("/stream.view") == true })
+        Assert.assertEquals(original.queueId, graph.session.value!!.queueId)
+        graph.songCache.setSettings(settings)
+        compose.waitForIdle()
+        Assert.assertFalse("Leaving offline resumed a paused session", graph.playback.value.playing)
         if (preserveFixture) {
             java.io.File(app.getExternalFilesDir(null), "evidence/expected-session.json")
                 .writeText(Json.encodeToString(graph.session.value!!))

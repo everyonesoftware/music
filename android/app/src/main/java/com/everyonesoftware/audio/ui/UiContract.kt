@@ -12,7 +12,7 @@ import com.everyonesoftware.audio.playback.output.MediaOutputState
 
 import com.everyonesoftware.audio.updates.UpdateUiState
 
-enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES }
+enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES, OFFLINE }
 
 data class AudioUiState(
     val booting: Boolean = true,
@@ -53,6 +53,9 @@ data class AudioUiState(
     val mediaOutput: MediaOutputState = MediaOutputState(),
     val ratingBusy: Boolean = false,
     val ratingError: String? = null,
+    val storage: com.everyonesoftware.audio.data.SongCacheState = com.everyonesoftware.audio.data.SongCacheState(),
+    val selectedOfflineCollection: com.everyonesoftware.audio.data.OfflineCollection? = null,
+    val artworkRevision: Long = 0,
     val updates: UpdateUiState = UpdateUiState(),
     val updatesReturnScreen: Screen = Screen.SETTINGS,
     val settingsReturnScreen: Screen? = null,
@@ -68,7 +71,8 @@ fun AudioUiState.withCollectionLayout(kind: CollectionKind, layout: CollectionLa
 /** Browsing navigation never issues playback commands or clears collection state. */
 fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
     val origins = setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.SEARCH)
-    val returningToSettings = screen == Screen.LIBRARIES || (screen == Screen.UPDATES && updatesReturnScreen == Screen.SETTINGS)
+    val returningToSettings = screen == Screen.LIBRARIES || screen == Screen.OFFLINE ||
+        (screen == Screen.UPDATES && updatesReturnScreen == Screen.SETTINGS)
     return copy(
         screen = destination,
         settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
@@ -85,6 +89,7 @@ val AudioUiState.backDestination: Screen
         Screen.SETTINGS -> settingsReturnScreen ?: if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
         Screen.UPDATES -> updatesReturnScreen
         Screen.QUEUE -> Screen.PLAYER
+        Screen.OFFLINE -> if (selectedOfflineCollection != null) Screen.OFFLINE else Screen.SETTINGS
         Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYER -> Screen.PLAYLISTS
         else -> if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
     }
@@ -102,6 +107,15 @@ interface AudioUiActions {
     fun setCollectionQuery(kind: CollectionKind, query: String) = Unit
     fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) = Unit
     fun refreshCollection(kind: CollectionKind) = Unit
+    fun downloadAlbum() = Unit
+    fun downloadPlaylist() = Unit
+    fun openOfflineCollection(kind: String, id: String) = Unit
+    fun playOfflineCollection(kind: String, id: String) = Unit
+    fun removeOfflineCollection(kind: String, id: String) = Unit
+    fun setOfflineSettings(settings: com.everyonesoftware.audio.data.OfflineSettings) = Unit
+    fun clearSongCache() = Unit
+    fun removeDownload(songId: String) = Unit
+    fun downloadSongs(songs: List<Song>) = Unit
     fun refreshMediaOutputs() = Unit
     fun selectMediaOutput(id: String) = Unit
     fun checkForUpdates() = Unit

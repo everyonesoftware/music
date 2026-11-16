@@ -60,6 +60,32 @@ class UpdateScreensTest {
         compose.onNodeWithTag("settings-update-dot", useUnmergedTree = true).assertDoesNotExist()
     }
 
+    @Test fun savedBrowserUsesActualPlayedHistoryAndAnOfflineOnlyFilter() {
+        val played = Song("played", "Actually played", "Artist")
+        val prefetched = Song("prefetched", "Only prefetched", "Artist")
+        val evicted = Song("evicted", "Played but evicted", "Artist")
+        render(state(Screen.OFFLINE).copy(storage = com.everyonesoftware.audio.data.SongCacheState(
+            songs = listOf(played, prefetched), cachedSongs = setOf(played.id), downloadedSongs = setOf(prefetched.id),
+            recentSongs = listOf(played, evicted), explicitDownloads = setOf(prefetched.id))))
+        compose.onNodeWithText("Only prefetched").assertExists()
+        compose.onNodeWithText("Remove download").assertExists()
+        compose.onNodeWithText("Recently played").performClick()
+        compose.onNodeWithText("Only prefetched").assertDoesNotExist()
+        compose.onNodeWithText("Actually played").assertExists()
+        compose.onNodeWithText("Played but evicted").assertDoesNotExist()
+        compose.onNodeWithTag("recent-offline-filter").performClick()
+        compose.onNodeWithText("Played but evicted").assertExists()
+    }
+
+    @Test fun settingsShowsStorageAndOfflineControls() {
+        render(state(Screen.SETTINGS))
+        compose.onNodeWithText("Storage & offline").performScrollTo().assertIsDisplayed()
+        compose.onNodeWithTag("storage-auto-save").performScrollTo().assertIsOn()
+        compose.onNodeWithTag("storage-mobile").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("storage-offline").performScrollTo().assertIsOff()
+        compose.onNodeWithTag("storage-clear").performScrollTo().assertIsEnabled()
+    }
+
     @Test fun settingsEntryPreservesConnectionAndLibraryControls() {
         render(state(Screen.SETTINGS))
         compose.onNodeWithText("Add another server").assertExists()

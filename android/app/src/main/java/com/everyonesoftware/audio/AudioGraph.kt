@@ -16,11 +16,30 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 
 data class PlaybackSnapshot(val playing: Boolean = false, val positionMs: Long = 0, val durationMs: Long = 0, val error: String? = null)
 
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) {
-    val store = AudioStore(context)
+    private val currentCredentials = MutableStateFlow<Credentials?>(null)
+    val networkPolicy = com.everyonesoftware.audio.data.MusicNetworkPolicy()
+    val artworkCache = com.everyonesoftware.audio.data.ArtworkCache(context, networkPolicy, { currentCredentials.value })
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    val songCache = com.everyonesoftware.audio.data.SongCache(context, networkPolicy = networkPolicy) { currentCredentials.value }
+    val store = AudioStore(context) { id ->
+        if (currentCredentials.value?.connection?.id == id) {
+            currentCredentials.value = null
+            currentSession.value = null
+            playback.value = PlaybackSnapshot()
+            songCache.accountChanged()
+            artworkCache.accountChanged()
+        }
+        songCache.removeConnection(id)
+        artworkCache.removeConnection(id)
+    }
     private val libraryScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     val updates = UpdateManager(context, libraryScope, updateClient)
     private val clientLock = Any()
@@ -29,13 +48,28 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         summaries = { clientFor(it).playlists() },
         contents = { credentials, id -> clientFor(credentials).playlistContents(id) },
         cached = store::cachedPlaylists, save = store::cachePlaylists)
-    private val currentCredentials = MutableStateFlow<Credentials?>(null)
     private val currentSession = MutableStateFlow<ListeningSession?>(null)
     val credentials = currentCredentials.asStateFlow()
     val session = currentSession.asStateFlow()
     val playback = MutableStateFlow(PlaybackSnapshot())
     private val lock = Mutex()
     private var initialized = false
+    init {
+        libraryScope.launch(Dispatchers.IO) {
+            combine(credentials, songCache.state) { account, _ ->
+                Triple(account, account?.let { runCatching { songCache.pinnedSongs(it).mapNotNull { song -> song.coverArtId } }.getOrDefault(emptyList()) }.orEmpty(),
+                    account?.let { runCatching { songCache.collections(it) }.getOrDefault(emptyList()) }.orEmpty())
+            }.distinctUntilChanged().collect { (account, covers, collections) ->
+                if (account != null) {
+                    val owners = mutableMapOf("downloaded-songs" to covers)
+                    collections.forEach { collection ->
+                        owners[collection.owner] = (listOfNotNull(collection.coverArtId) + collection.songs.mapNotNull { it.coverArtId }).distinct()
+                    }
+                    artworkCache.syncOwners(account, owners)
+                }
+            }
+        }
+    }
     suspend fun bootstrap() = lock.withLock {
         if (initialized) return@withLock
         val connections = store.connections()
@@ -53,14 +87,19 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         val restored = store.session(id)?.takeIf { it.queue.isNotEmpty() }?.let(SessionRules::restore)
         store.selectConnection(id)
         playlists.activate(credentials)
+        if (currentCredentials.value != credentials) {
+            songCache.accountChanged()
+            artworkCache.accountChanged()
+        }
         currentCredentials.value = credentials
         currentSession.value = restored
+        songCache.download(credentials, emptyList())
         playback.value = PlaybackSnapshot(positionMs = restored?.positionMs ?: 0)
     }
     fun client(): NavidromeClient = clientFor(requireNotNull(credentials.value) { "Connect to Navidrome first." })
     internal fun clientFor(credentials: Credentials): NavidromeClient = synchronized(clientLock) {
         cachedClient?.takeIf { it.first == credentials }?.second
-            ?: NavidromeClient(credentials, allowLocalHttp = BuildConfig.DEBUG).also { cachedClient = credentials to it }
+            ?: NavidromeClient(credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = networkPolicy).also { cachedClient = credentials to it }
     }
     suspend fun setSession(value: ListeningSession, expectedCredentials: Credentials? = null, expectedSession: ListeningSession? = null) = lock.withLock {
         require(value.connectionId == credentials.value?.connection?.id) { "The active connection changed. Choose the playlist again." }

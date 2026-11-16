@@ -39,6 +39,7 @@ public sealed partial class MainWindow : Window
     private double restoredPosition;
     private string? sessionSaveWarning;
     private MediaSource? mediaSource;
+    private Windows.Storage.Streams.IRandomAccessStream? localStream;
     private Windows.Foundation.TypedEventHandler<MediaPlayer, object>? openedHandler;
     private T C<T>(string name) where T : class => (T)root.FindName(name);
     private static readonly SolidColorBrush Sage = new(ColorHelper.FromArgb(255, 192, 215, 174));
@@ -81,13 +82,18 @@ public sealed partial class MainWindow : Window
         C<Button>("PlayButton").Click += (_, _) => TogglePlayback();
         C<Button>("PreviousButton").Click += (_, _) => Previous();
         C<Button>("NextButton").Click += (_, _) => Step(1);
-        C<ToggleButton>("ShuffleButton").Click += (_, _) => SavePlayback();
-        C<ToggleButton>("RepeatButton").Click += (_, _) => SavePlayback();
+        C<ToggleButton>("ShuffleButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); };
+        C<ToggleButton>("RepeatButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); };
         C<Slider>("VolumeSlider").ValueChanged += (_, e) => player.Volume = e.NewValue / 100;
         C<Slider>("SeekSlider").ValueChanged += (_, e) =>
         {
             if (!updatingSeek && queueIndex >= 0)
-                try { restoredPosition = 0; player.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue); SavePlayback(); } catch { ShowError("This stream cannot seek right now."); }
+                try
+                {
+                    if (!localPlayback && cache?.Find(queue[queueIndex].Id) is not null) SelectTrack(queueIndex, playIntended, e.NewValue);
+                    else { restoredPosition = 0; player.PlaybackSession.Position = TimeSpan.FromSeconds(e.NewValue); SavePlayback(); }
+                }
+                catch { ShowError("This stream cannot seek right now."); }
         };
         C<Slider>("SeekSlider").AddHandler(UIElement.PointerPressedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => seekDragging = true), true);
         C<Slider>("SeekSlider").AddHandler(UIElement.PointerReleasedEvent, new Microsoft.UI.Xaml.Input.PointerEventHandler((_, _) => seekDragging = false), true);
@@ -102,7 +108,20 @@ public sealed partial class MainWindow : Window
             long endedVersion = Interlocked.Read(ref playbackVersion);
             DispatcherQueue.TryEnqueue(() => { if (!closed && endedVersion == playbackVersion) Step(1); });
         };
-        player.MediaFailed += (_, _) => DispatcherQueue.TryEnqueue(() => { if (!closed) ShowError("Playback failed. Check your connection, stream format, and output device."); });
+        player.MediaFailed += (_, _) =>
+        {
+            long failedVersion = Interlocked.Read(ref playbackVersion);
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                if (closed || failedVersion != playbackVersion) return;
+                playbackInterrupted = true;
+                if (!localPlayback && queueIndex >= 0 && cache?.Find(queue[queueIndex].Id) is not null)
+                { SelectTrack(queueIndex, playIntended, interruptedPosition); return; }
+                ShowError("Playback interrupted. Complete saved songs work offline; reconnect to resume this song. Check the format and output device if it still fails.");
+            });
+        };
+        player.CommandManager.PlayReceived += (_, _) => DispatcherQueue.TryEnqueue(() => playIntended = true);
+        player.CommandManager.PauseReceived += (_, _) => DispatcherQueue.TryEnqueue(() => playIntended = false);
         // MediaPlayer's command manager handles play/pause and publishes item metadata.
         player.CommandManager.NextReceived += (_, e) => { e.Handled = true; DispatcherQueue.TryEnqueue(() => Step(1)); };
         player.CommandManager.PreviousReceived += (_, e) => { e.Handled = true; DispatcherQueue.TryEnqueue(Previous); };
@@ -129,21 +148,40 @@ public sealed partial class MainWindow : Window
         {
             profiles = new ProfileStore();
             sessions = new SessionStore(Path.Combine(profiles.DirectoryPath, "session.sqlite3"));
+            InitializeOfflineSettings();
             var profile = profiles.ReadProfile();
             if (profile is null) return;
             C<TextBlock>("ConnectionInfo").Text = $"Saved connection: {profile.Name}\n{profile.ServerUrl}\nUsername: {profile.Username}\nNot connected yet.";
             C<TextBlock>("ConnectionStatus").Text = "Connecting to saved server…";
             candidate = new NavidromeClient(profile, profiles.ReadPassword(profile));
-            await candidate.PingAsync(lease.Token);
-            var data = await ReadLibraryAsync(candidate, lease.Token);
-            if (!connectGate.IsCurrent(lease) || closed) return;
-            ActivateConnection(profile, candidate, data.Albums, data.Playlists);
-            candidate = null;
+            ActivateConnection(profile, candidate, [], []); candidate = null;
             RestorePlayback();
+            await NavigateAsync("offline");
+            if (offlineSettings.Offline)
+            {
+                return;
+            }
+            var startupClient = client!;
+            if (client is null) return;
+            await client.PingAsync(lease.Token);
+            var data = await ReadLibraryAsync(startupClient, lease.Token);
+            if (!connectGate.IsCurrent(lease) || closed) return;
+            albums = data.Albums; playlists = data.Playlists;
             await NavigateAsync("library");
         }
         catch (OperationCanceledException) { }
-        catch { if (connectGate.IsCurrent(lease) && !closed) { C<TextBlock>("ConnectionStatus").Text = "Saved connection could not be opened. Reconnect below; your saved connection has not been removed."; ShowError("Could not open the saved connection or local session store. Check the server and Windows credentials."); } }
+        catch
+        {
+            if (connectGate.IsCurrent(lease) && !closed)
+            {
+                if (client is not null && connection is not null)
+                {
+                    await NavigateAsync("offline");
+                    ShowError("Server unavailable. Your saved songs and queue are available; incomplete songs need a connection.");
+                }
+                else ShowError("Could not open the saved connection or local session store. Check Windows credentials.");
+            }
+        }
         finally { candidate?.Dispose(); }
     }
 
@@ -164,6 +202,7 @@ public sealed partial class MainWindow : Window
 
     private async Task ConnectAsync()
     {
+        if (offlineSettings.Offline) { ShowError("Turn off Offline mode before connecting to a server."); return; }
         var lease = connectGate.Begin();
         NavidromeClient? candidate = null;
         SetConnecting(true);
@@ -192,7 +231,18 @@ public sealed partial class MainWindow : Window
             }
             // Stage the migrated session before replacing the profile or vault entry.
             // A failure leaves the previous profile, password and session untouched.
+            cacheCancellation.Cancel(); await cacheTask;
+            if (!connectGate.IsCurrent(lease) || closed) return;
             profiles.Commit(profile, password);
+            if (previous is not null && previous.Id != profile.Id)
+            {
+                if (!ConnectionIdentity.SameAccount(previous.ServerUrl, previous.Username, profile.ServerUrl, profile.Username))
+                {
+                    StopPlayback();
+                    try { cache?.Purge(); } catch { ShowError("The replaced account's saved media could not be fully removed. Check storage permissions."); }
+                }
+                try { sessions.RemovePlayback(previous.Id); } catch { ShowError("The previous account's saved queue could not be removed. Check storage permissions."); }
+            }
             ActivateConnection(profile, candidate, data.Albums, data.Playlists);
             candidate = null;
             RestorePlayback();
@@ -219,10 +269,12 @@ public sealed partial class MainWindow : Window
         StopPlayback();
         client?.Dispose();
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
+        client.Offline = offlineSettings.Offline;
+        ActivateCache(profile);
         songs.Clear(); artwork.Clear();
         C<TextBlock>("ConnectionStatus").Text = "Connected. Password protected by Windows Credential Locker.";
         C<TextBlock>("ConnectionInfo").Text = $"{profile.Name}\n{profile.ServerUrl}\nUsername: {profile.Username}\nNavidrome · Connected";
-        C<Button>("TestConnectionButton").IsEnabled = true;
+        C<Button>("TestConnectionButton").IsEnabled = !offlineSettings.Offline;
         timer.Start();
     }
 
@@ -286,6 +338,7 @@ public sealed partial class MainWindow : Window
     private async Task LoadBrowseAsync(bool debounce = false)
     {
         if (client is null) return;
+        if (offlineSettings.Offline || page == "offline") { RenderOfflineBrowse(); return; }
         browsePending = true;
         browseResultsVersion++;
         moreSongs = false;
@@ -319,6 +372,7 @@ public sealed partial class MainWindow : Window
     private void RenderBrowse()
     {
         if (client is null || page is "settings" or "detail") return;
+        if (offlineSettings.Offline || page == "offline") { RenderOfflineBrowse(); return; }
         var artLease = artworkGate.Begin();
         var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear(); panel.Spacing = 24;
         bool Match(string text) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
@@ -399,7 +453,7 @@ public sealed partial class MainWindow : Window
         }
         outer.Children.Add(cover); outer.Children.Add(copy);
         AutomationProperties.SetName(outer, card.Title + ", " + card.Subtitle);
-        _ = artwork.SetAsync(art, card.ArtId, client!, token);
+        if (!offlineSettings.Offline) _ = artwork.SetAsync(art, card.ArtId, client!, token);
         return outer;
     }
 
@@ -435,19 +489,20 @@ public sealed partial class MainWindow : Window
         {
             var song = tracks[index];
             FrameworkElement row;
-            if (layout == "grid") row = CardElement(new Card(song.Title, song.Artist, song.CoverArtId, index), layout, token);
+            if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token);
             else
             {
                 var grid = SongGrid(); grid.Tag = index;
                 grid.Children.Add(Text((index + 1).ToString(), 12, true));
                 var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-                copy.Children.Add(Text(song.Title, 14)); copy.Children.Add(Text(song.Artist, 12, true));
+                copy.Children.Add(Text(song.Title + SongAvailability(song), 14)); copy.Children.Add(Text(song.Artist, 12, true));
                 ToolTipService.SetToolTip(copy, song.Title + "\n" + song.Artist);
                 Grid.SetColumn(copy, 1); grid.Children.Add(copy);
                 var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
                 var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
-                AutomationProperties.SetName(grid, song.Title + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
+                AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
             }
+            AddDownloadMenu(row, song, owner);
             view.Items.Add(row);
         }
         view.ItemClick += (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement { Tag: int index }) StartQueue(playQueue, index); };
@@ -500,6 +555,7 @@ public sealed partial class MainWindow : Window
     private async Task OpenCollectionAsync(object? value)
     {
         if (client is null) return;
+        if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
         var lease = browseGate.Begin(); var target = client;
         C<ProgressBar>("BusyBar").Visibility = Visibility.Visible;
         try
@@ -530,6 +586,11 @@ public sealed partial class MainWindow : Window
         var play = new Button { Content = "Play", IsEnabled = detailSongs.Count > 0, Background = Sage, Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 36, 52, 31)), Padding = new Thickness(20, 8, 20, 8) };
         AutomationProperties.SetName(play, "Play " + detailTitle);
         play.Click += (_, _) => StartQueue(detailSongs, 0); actions.Children.Add(play);
+        var download = new Button { Content = "Download " + detailTitle };
+        var owner = connectionLease;
+        var capturedSongs = detailSongs.ToArray();
+        download.Click += (_, _) => { if (connectionGate.IsCurrent(owner)) DownloadSongs(capturedSongs); };
+        actions.Children.Add(download);
         actions.Children.Add(Text($"{detailSongs.Count} songs", 13, true));
         panel.Children.Add(actions);
         AddSongs(panel, detailSongs, "list", lease.Token);
@@ -547,24 +608,60 @@ public sealed partial class MainWindow : Window
     private void StartQueue(IReadOnlyList<Song> tracks, int index)
     {
         if (tracks.Count == 0 || client is null) return;
+        playbackOrder = null;
         queue = tracks.ToList(); SelectTrack(index, true);
     }
-    private void SelectTrack(int index, bool play, double position = 0)
+    private async void SelectTrack(int index, bool play, double position = 0)
     {
         if (closed || client is null || index < 0 || index >= queue.Count) return;
         long version = ++playbackVersion;
+        // Invalidate old transfers before any asynchronous local-file open. A worker
+        // already past cancellation is also fenced by the cache's live protection.
+        cacheCancellation.Cancel();
         try
         {
             player.Pause();
             if (openedHandler is not null) player.MediaOpened -= openedHandler;
-            player.Source = null; mediaSource?.Dispose(); mediaSource = null;
+            player.Source = null; mediaSource?.Dispose(); mediaSource = null; localStream?.Dispose(); localStream = null;
             queueIndex = index; restoredPosition = Math.Max(0, position);
+            EnsurePlaybackOrder();
             Song song = queue[index];
+            // Publish protection before exposing the new active/previous state or
+            // resolving a path; eviction and this update share the cache lock.
+            string? previous = activeSongId != song.Id ? activeSongId : previousSongId;
+            cache?.SetProtectedSongs(new[] { song.Id, previous }.OfType<string>());
+            previousSongId = previous; activeSongId = song.Id;
+            interruptedPosition = Math.Max(0, position);
+            playIntended = play; playbackInterrupted = false;
+            C<TextBlock>("TrackTitle").Text = song.Title;
+            C<TextBlock>("TrackArtist").Text = song.Artist;
+            RenderQueue(); SavePlayback();
+            var local = cache?.Find(song.Id);
+            localPlayback = local is not null;
 #if MUSIC_NATIVE_ACCEPTANCE
-            mediaSource = MediaSource.CreateFromUri(NativeAcceptance.IsRequested ? NativeAcceptance.MediaUri : client.GetStreamUri(song.Id));
-#else
-            mediaSource = MediaSource.CreateFromUri(client.GetStreamUri(song.Id));
+            if (NativeAcceptance.IsRequested) mediaSource = MediaSource.CreateFromUri(NativeAcceptance.MediaUri);
+            else
 #endif
+            if (local is not null)
+            {
+                var file = await Windows.Storage.StorageFile.GetFileFromPathAsync(local);
+                if (closed || version != playbackVersion) return;
+                var opened = await file.OpenReadAsync();
+                if (closed || version != playbackVersion) { opened.Dispose(); return; }
+                localStream = opened;
+                string contentType = cache?.Recent().FirstOrDefault(x => x.Song.Id == song.Id)?.ContentType ?? "application/octet-stream";
+                mediaSource = MediaSource.CreateFromStream(localStream, contentType);
+            }
+            else
+            {
+                if (offlineSettings.Offline)
+                {
+                    ShowError("This song is not fully saved. Partial or missing songs cannot play offline. Reconnect to finish saving it.");
+                    UpdateTransport(); return;
+                }
+                mediaSource = MediaSource.CreateFromUri(client.GetStreamUri(song.Id));
+            }
+            ScheduleCache();
             var item = new MediaPlaybackItem(mediaSource);
             var metadata = item.GetDisplayProperties(); metadata.Type = MediaPlaybackType.Music;
             metadata.MusicProperties.Title = song.Title; metadata.MusicProperties.Artist = song.Artist; metadata.MusicProperties.AlbumTitle = song.Album;
@@ -585,10 +682,10 @@ public sealed partial class MainWindow : Window
             });
             player.MediaOpened += openedHandler;
             player.Source = item;
-            if (play) player.Play();
-            C<TextBlock>("TrackTitle").Text = song.Title; C<TextBlock>("TrackArtist").Text = song.Artist;
+            if (playIntended) player.Play();
+            C<TextBlock>("TrackTitle").Text = song.Title + SongAvailability(song); C<TextBlock>("TrackArtist").Text = song.Artist;
             C<Image>("CurrentArt").Source = null;
-            var lease = playingArtGate.Begin(); _ = artwork.SetAsync(C<Image>("CurrentArt"), song.CoverArtId, client, lease.Token);
+            var lease = playingArtGate.Begin(); if (!offlineSettings.Offline) _ = artwork.SetAsync(C<Image>("CurrentArt"), song.CoverArtId, client, lease.Token);
             RenderQueue(); Tick(); SavePlayback();
         }
         catch { ShowError("Could not open this stream. Check server connectivity and the song format."); }
@@ -596,29 +693,44 @@ public sealed partial class MainWindow : Window
     private void TogglePlayback()
     {
         if (queueIndex < 0) return;
-        try { if (player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing) { player.Pause(); SavePlayback(); } else player.Play(); }
+        try
+        {
+            if (playIntended) { playIntended = false; player.Pause(); SavePlayback(); }
+            else
+            {
+                playIntended = true;
+                if (playbackInterrupted || player.Source is null) SelectTrack(queueIndex, true, interruptedPosition > 0 ? interruptedPosition : restoredPosition);
+                else player.Play();
+            }
+        }
         catch { ShowError("Playback is unavailable right now."); }
     }
     private void Previous()
     {
         if (closed || queueIndex < 0) return;
-        try { if (player.PlaybackSession.Position.TotalSeconds > 3 && player.PlaybackSession.CanSeek) { player.PlaybackSession.Position = TimeSpan.Zero; SavePlayback(); return; } } catch { }
+        try
+        {
+            if (player.PlaybackSession.Position.TotalSeconds > 3 && player.PlaybackSession.CanSeek)
+            {
+                if (!localPlayback && cache?.Find(queue[queueIndex].Id) is not null) SelectTrack(queueIndex, playIntended);
+                else { player.PlaybackSession.Position = TimeSpan.Zero; SavePlayback(); }
+                return;
+            }
+        }
+        catch { }
         Step(-1);
     }
     private void Step(int direction)
     {
         if (closed || queue.Count == 0 || queueIndex < 0) return;
-        int next = queueIndex + direction;
-        bool repeat = C<ToggleButton>("RepeatButton").IsChecked == true;
-        if (C<ToggleButton>("ShuffleButton").IsChecked == true && queue.Count > 1 && direction > 0)
-        { next = Random.Shared.Next(queue.Count - 1); if (next >= queueIndex) next++; }
-        if (next >= queue.Count)
+        EnsurePlaybackOrder();
+        if (direction > 0)
         {
-            if (!repeat) { player.Pause(); SavePlayback(); UpdateTransport(); return; }
-            next = 0;
+            var plannedNext = playbackOrder!.MoveNext();
+            if (plannedNext is null) { playIntended = false; player.Pause(); SavePlayback(); UpdateTransport(); return; }
+            SelectTrack(plannedNext.Value, true); return;
         }
-        if (next < 0) next = repeat ? queue.Count - 1 : 0;
-        SelectTrack(next, true);
+        SelectTrack(playbackOrder!.MovePrevious(), true);
     }
     private void RenderQueue()
     {
@@ -627,7 +739,7 @@ public sealed partial class MainWindow : Window
         {
             var song = queue[i];
             var row = new StackPanel { Tag = i, Spacing = 4, Margin = new Thickness(0, 6, 0, 6) };
-            var title = Text(song.Title, 14); if (i == queueIndex) title.Foreground = Sage;
+            var title = Text(song.Title + SongAvailability(song), 14); if (i == queueIndex) title.Foreground = Sage;
             row.Children.Add(title); row.Children.Add(Text(song.Artist, 12, true)); list.Items.Add(row);
         }
         list.SelectedIndex = queueIndex;
@@ -651,6 +763,7 @@ public sealed partial class MainWindow : Window
             double duration = session.NaturalDuration.TotalSeconds;
             if (duration <= 0 && queueIndex >= 0) duration = queue[queueIndex].DurationSeconds;
             double position = restoredPosition > 0 ? restoredPosition : session.Position.TotalSeconds;
+            if (!playbackInterrupted) interruptedPosition = position;
             C<TextBlock>("ElapsedText").Text = Clock(position); C<TextBlock>("DurationText").Text = Clock(duration);
             updatingSeek = true;
             try
@@ -661,6 +774,7 @@ public sealed partial class MainWindow : Window
             }
             finally { updatingSeek = false; }
             if (++tickCount % 5 == 0) SavePlayback();
+            if (tickCount % 15 == 0 && cacheTask.IsCompleted && !offlineSettings.Offline) { ScheduleCache(); if (playbackInterrupted) _ = ReconnectAsync(); }
         }
         catch { /* Media sessions can transition while a timer tick is queued. */ }
     }
@@ -673,7 +787,7 @@ public sealed partial class MainWindow : Window
         if (sessions is null) return false;
         try
         {
-            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true);
+            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true);
             sessions.SavePlayback(snapshot.WithoutTransientArtwork());
             if (sessionSaveWarning is not null)
             {
@@ -700,6 +814,7 @@ public sealed partial class MainWindow : Window
             var saved = sessions.LoadPlayback(connection.Id);
             if (saved is null || saved.Queue.Count == 0 || saved.Index < 0 || saved.Index >= saved.Queue.Count) return;
             queue = saved.Queue.ToList();
+            playbackOrder = null;
             C<ToggleButton>("ShuffleButton").IsChecked = saved.Shuffle; C<ToggleButton>("RepeatButton").IsChecked = saved.Repeat;
             SelectTrack(saved.Index, false, double.IsFinite(saved.PositionSeconds) ? saved.PositionSeconds : 0);
         }
@@ -707,9 +822,13 @@ public sealed partial class MainWindow : Window
     }
     private void StopPlayback()
     {
+        playIntended = false; playbackInterrupted = false; interruptedPosition = 0;
+        activeSongId = previousSongId = null;
+        playbackOrder = null;
         playbackVersion++;
         if (openedHandler is not null) { player.MediaOpened -= openedHandler; openedHandler = null; }
-        player.Pause(); player.Source = null; mediaSource?.Dispose(); mediaSource = null;
+        player.Pause(); player.Source = null; mediaSource?.Dispose(); mediaSource = null; localStream?.Dispose(); localStream = null;
+        cache?.SetProtectedSongs([]);
         queue.Clear(); queueIndex = -1; restoredPosition = 0;
         C<TextBlock>("TrackTitle").Text = "Nothing playing"; C<TextBlock>("TrackArtist").Text = ""; C<Image>("CurrentArt").Source = null;
         RenderQueue(); UpdateTransport();
@@ -842,8 +961,9 @@ public sealed partial class MainWindow : Window
         if (closed) return;
         updatesPanel.Dispose();
         SavePlayback(); closed = true;
+        ShutdownOffline();
         timer.Stop(); browseGate.Dispose(); connectGate.Dispose(); testGate.Dispose(); artworkGate.Dispose(); playingArtGate.Dispose(); connectionGate.Dispose();
         if (openedHandler is not null) player.MediaOpened -= openedHandler;
-        player.Pause(); player.Source = null; mediaSource?.Dispose(); player.Dispose(); client?.Dispose(); sessions?.Dispose();
+        player.Pause(); player.Source = null; mediaSource?.Dispose(); localStream?.Dispose(); player.Dispose(); client?.Dispose(); sessions?.Dispose();
     }
 }

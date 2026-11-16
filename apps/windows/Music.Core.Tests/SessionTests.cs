@@ -12,6 +12,16 @@ public sealed class SessionTests : IDisposable
     public SessionTests() => Directory.CreateDirectory(directory);
     public void Dispose() => Directory.Delete(directory, true);
 
+    [Fact]
+    public void Removing_account_deletes_only_its_saved_queue()
+    {
+        using var store = new SessionStore(DatabasePath);
+        store.SavePlayback(new PlaybackSnapshot("one", new[] { Expected }, 0, 1, false, false));
+        store.SavePlayback(new PlaybackSnapshot("two", new[] { Expected }, 0, 1, false, false));
+        store.RemovePlayback("one");
+        Assert.Null(store.LoadPlayback("one"));
+        Assert.NotNull(store.LoadPlayback("two"));
+    }
     [Theory]
     [InlineData(13, "storage-full")]
     [InlineData(8, "storage-read-only")]

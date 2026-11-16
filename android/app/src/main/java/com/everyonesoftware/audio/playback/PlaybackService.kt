@@ -97,8 +97,11 @@ class PlaybackService : MediaLibraryService() {
             override fun createMediaSource(mediaItem: MediaItem): MediaSource {
                 val owner = mediaItem.localConfiguration?.tag as? QueueBinding
                     ?: throw IllegalArgumentException("Choose music from Music.")
-                val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG)
-                return DefaultMediaSourceFactory(OkHttpDataSource.Factory(streamClient(owner, client)))
+                val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = graph.networkPolicy)
+                val song = graph.session.value?.queue?.firstOrNull { client.streamUri(it.id) == mediaItem.localConfiguration?.uri.toString() }
+                    ?: throw IllegalArgumentException("Choose music from the active queue.")
+                return DefaultMediaSourceFactory(graph.songCache.factory(owner.credentials, song,
+                    OkHttpDataSource.Factory(streamClient(owner, client)), writeThrough = false))
                     .createMediaSource(mediaItem)
             }
         }
@@ -112,7 +115,12 @@ class PlaybackService : MediaLibraryService() {
                 override fun onEvents(player: Player, events: Player.Events) {
                     if (replacingQueue) return
                     publishSnapshot()
-                    if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED)) {
+                    if (player.isPlaying && events.containsAny(Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION)) {
+                        val owner = binding
+                        val song = graph.session.value?.queue?.getOrNull(player.currentMediaItemIndex)
+                        if (owner != null && song != null && owner.credentials == graph.credentials.value) graph.songCache.played(owner.credentials, song)
+                    }
+                    if (events.containsAny(Player.EVENT_MEDIA_ITEM_TRANSITION, Player.EVENT_TIMELINE_CHANGED, Player.EVENT_REPEAT_MODE_CHANGED)) {
                         refreshArtwork()
                     }
                     if (events.containsAny(Player.EVENT_PLAY_WHEN_READY_CHANGED,
@@ -218,6 +226,43 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         serviceScope.launch {
+            graph.songCache.state.map { it.settings.offline }.distinctUntilChanged().drop(1).collect { offline ->
+                if (offline) cancelArtwork()
+                val owner = binding ?: return@collect
+                if (owner.credentials != graph.credentials.value) return@collect
+                val index = player.currentMediaItemIndex
+                val position = player.currentPosition.coerceAtLeast(0)
+                val intent = player.playWhenReady
+                player.stop()
+                player.seekTo(index, position)
+                player.prepare()
+                player.playWhenReady = intent
+                refreshArtwork()
+            }
+        }
+        serviceScope.launch {
+            graph.songCache.state.map { it.cachedSongs + it.downloadedSongs }.distinctUntilChanged().collect { complete ->
+                val owner = binding ?: return@collect
+                val song = graph.session.value?.queue?.getOrNull(player.currentMediaItemIndex) ?: return@collect
+                if (owner.credentials == graph.credentials.value && song.id in complete && player.playerError != null) {
+                    // prepare retains the latest playWhenReady, including an explicit pause.
+                    player.prepare()
+                }
+            }
+        }
+        serviceScope.launch {
+            graph.artworkCache.state.collect {
+                val owner = binding ?: return@collect
+                val song = graph.session.value?.queue?.getOrNull(player.currentMediaItemIndex) ?: return@collect
+                val cover = song.coverArtId ?: return@collect
+                if (player.currentMediaItem?.mediaMetadata?.artworkData == null &&
+                    graph.artworkCache.cachedUri(owner.credentials, cover) != null) {
+                    artworkTarget = null
+                    refreshArtwork()
+                }
+            }
+        }
+        serviceScope.launch {
             while (true) {
                 delay(1_000)
                 publishSnapshot()
@@ -314,6 +359,12 @@ class PlaybackService : MediaLibraryService() {
         if (graph.credentials.value != owner.credentials || graph.session.value?.key() != owner.key) return
         val target = owner to item.mediaId
         val index = player.currentMediaItemIndex
+        val saved = graph.session.value
+        if (saved != null) {
+            val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = graph.networkPolicy)
+            graph.songCache.schedule(owner.credentials, saved.queue, index,
+                OkHttpDataSource.Factory(streamClient(owner, client)), queueIdentity = owner.key, repeatMode = player.repeatMode, uri = client::streamUri)
+        }
         val coverId = graph.session.value?.queue?.getOrNull(index)?.coverArtId?.takeIf { it.isNotBlank() }
         if (artworkTarget == target) {
             // A controller can reapply this occurrence after the service already loaded it.
@@ -339,7 +390,7 @@ class PlaybackService : MediaLibraryService() {
         if (artworkCredentials != owner.credentials) {
             artworkLoader?.close()
             artworkCredentials = owner.credentials
-            artworkLoader = SessionArtwork(NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG), owner.credentials)
+            artworkLoader = SessionArtwork(NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = graph.networkPolicy), owner.credentials, graph.artworkCache)
         }
         if (coverId == null) return
         val loader = requireNotNull(artworkLoader)
@@ -367,7 +418,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun playbackItems(saved: ListeningSession, owner: QueueBinding): List<MediaItem> {
-        val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG)
+        val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = graph.networkPolicy)
         return saved.queue.mapIndexed { index, song ->
             CarLibrary.songItem(CarMediaIds.queued(saved.connectionId, saved.queueId, index), song).buildUpon()
                 .setUri(client.streamUri(song.id)).setTag(owner).build()
@@ -387,7 +438,7 @@ class PlaybackService : MediaLibraryService() {
     }
 
     private fun streamClient(owner: QueueBinding, client: NavidromeClient): OkHttpClient =
-        OkHttpClient.Builder()
+        graph.networkPolicy.guard(OkHttpClient.Builder()
             .followRedirects(false).followSslRedirects(false).cache(null).retryOnConnectionFailure(false)
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
             // A song can legitimately stream longer than an API request. Reads remain bounded.
@@ -413,7 +464,7 @@ class PlaybackService : MediaLibraryService() {
                     // No credential-bearing transport exception causes may enter ExoPlayer logs.
                     throw IOException("Cannot stream this song. Check your connection and retry.")
                 }
-            }.build()
+            }.build())
 
     private fun clearQueue() {
         cancelArtwork()

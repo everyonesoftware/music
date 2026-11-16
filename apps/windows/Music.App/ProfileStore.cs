@@ -17,6 +17,15 @@ internal sealed class ProfileStore
         credential.RetrievePassword();
         return credential.Password;
     }
+    public void Remove(ConnectionProfile profile)
+    {
+        var current = ReadProfile();
+        if (current?.Id != profile.Id) throw new InvalidOperationException("Connection changed.");
+        var vault = new PasswordVault();
+        try { vault.Remove(vault.Retrieve(Resource, profile.Id)); }
+        catch (System.Runtime.InteropServices.COMException e) when (e.HResult == unchecked((int)0x80070490)) { /* Already removed. */ }
+        File.Delete(ProfilePath);
+    }
     // The caller has already pinged and loaded the candidate. New profiles have
     // unique IDs so a failed write never destroys an existing working credential.
     public void Commit(ConnectionProfile profile, string password)

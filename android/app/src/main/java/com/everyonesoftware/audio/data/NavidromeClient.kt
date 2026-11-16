@@ -17,12 +17,13 @@ class NavidromeClient(
     private val credentials: Credentials,
     http: OkHttpClient = secureClient(),
     allowLocalHttp: Boolean = false,
+    networkPolicy: MusicNetworkPolicy? = null,
 ) {
     private val base = validateBaseUrl(credentials.connection.baseUrl, allowLocalHttp).toHttpUrlOrNull()!!
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .cache(null).retryOnConnectionFailure(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
-        .callTimeout(45, TimeUnit.SECONDS).build()
+        .callTimeout(45, TimeUnit.SECONDS).build().let { networkPolicy?.guard(it) ?: it }
     private val artworkHttp = this.http.newBuilder().callTimeout(10, TimeUnit.SECONDS).build()
     private val json = Json { ignoreUnknownKeys = true }
 

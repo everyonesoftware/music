@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.everyonesoftware.audio.data.Credentials
 import com.everyonesoftware.audio.data.NavidromeClient
+import com.everyonesoftware.audio.data.ArtworkCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
@@ -11,7 +12,8 @@ import java.io.ByteArrayOutputStream
 import kotlin.coroutines.coroutineContext
 
 /** One private download supplies a small embedded bitmap and a high-quality local URI. */
-internal class SessionArtwork(private val client: NavidromeClient, credentials: Credentials) {
+internal class SessionArtwork(private val client: NavidromeClient, private val credentials: Credentials,
+    private val artworkCache: ArtworkCache? = null) {
     private val owner = SessionArtworkStore.activate(credentials)
 
     fun cached(id: String): SessionArtworkImage? = SessionArtworkStore.cached(owner, id)
@@ -19,7 +21,7 @@ internal class SessionArtwork(private val client: NavidromeClient, credentials: 
 
     suspend fun load(id: String): SessionArtworkImage? {
         cached(id)?.let { return it }
-        val bytes = client.coverArt(id)
+        val bytes = if (artworkCache != null) artworkCache.load(credentials, id, retry = true) ?: return null else client.coverArt(id)
         val images = withContext(Dispatchers.Default) { images(bytes) } ?: return null
         coroutineContext.ensureActive()
         return SessionArtworkStore.publish(owner, id, images.first, images.second)

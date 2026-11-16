@@ -9,7 +9,7 @@ import okhttp3.OkHttpClient
 class AudioApplication : Application(), ImageLoaderFactory {
     val graph: AudioGraph by lazy { AudioGraph(this) }
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
-        .okHttpClient(OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).cache(null).build())
+        .okHttpClient(graph.networkPolicy.guard(OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).cache(null).build()))
         .diskCache { null }.memoryCache { null }
         .diskCachePolicy(CachePolicy.DISABLED).memoryCachePolicy(CachePolicy.DISABLED)
         .build()

@@ -43,6 +43,14 @@ public sealed class SessionStore : IDisposable
         catch (Exception ex) when (ex is JsonException or ArgumentException) { return null; }
     }
 
+    public void RemovePlayback(string connectionId)
+    {
+        using var command = database.CreateCommand();
+        command.CommandText = "PRAGMA secure_delete=ON; DELETE FROM playback WHERE connection_id=$id;";
+        command.Parameters.AddWithValue("$id", connectionId);
+        command.ExecuteNonQuery();
+    }
+
     public void SaveView(string collection, string mode)
     {
         using var command = database.CreateCommand();

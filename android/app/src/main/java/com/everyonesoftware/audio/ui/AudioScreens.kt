@@ -89,9 +89,10 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.SETTINGS -> Settings(state, actions, home)
                         Screen.QUEUE -> Queue(state, actions, artworkUrl)
                         Screen.UPDATES -> Updates(state, actions)
+                        Screen.OFFLINE -> OfflineSongs(state, actions, artworkUrl)
                     }
                 }
-                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES)) {
+                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES, Screen.OFFLINE)) {
                     MiniPlayer(state, actions, artworkUrl)
                 }
             }
@@ -434,7 +435,7 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
             }
             if (state.searchSongs.isNotEmpty()) item { Text("Songs", style = MaterialTheme.typography.titleLarge) }
             items(state.searchSongs, key = { "search-song-${it.id}" }) { song ->
-                SongRow(song, artworkUrl, enabled = !state.loading) { actions.playSong(song) }
+                SongRow(song, artworkUrl, state.storage, enabled = !state.loading, onDownload = { actions.downloadSongs(listOf(song)) }) { actions.playSong(song) }
             }
             if (term.isNotBlank() && playlists.isEmpty() && albums.isEmpty() && state.searchSongs.isEmpty() && !state.searchLoading && state.searchError == null) item { Hint("No playlists, albums, or songs match “$term”.") }
         }
@@ -442,13 +443,15 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
 }
 
 @Composable
-private fun SongRow(song: Song, artworkUrl: (String?) -> String?, enabled: Boolean, onClick: () -> Unit) {
+private fun SongRow(song: Song, artworkUrl: (String?) -> String?, storage: com.everyonesoftware.audio.data.SongCacheState, enabled: Boolean, onDownload: () -> Unit, onClick: () -> Unit) {
     Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = enabled, onClick = onClick), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Artwork(song.coverArtId, artworkUrl, Modifier.size(46.dp))
         Column(Modifier.weight(1f)) {
             Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
             Hint(song.artist)
+            OfflineBadge(song.id, storage)
         }
+        IconButton(onDownload) { Icon(Icons.Default.Download, "Download ${song.title}") }
         Hint(timeLabel(song.durationSeconds * 1000L))
     }
 }
@@ -465,6 +468,7 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
                 }
                 Text(playlist.name, style = MaterialTheme.typography.headlineSmall)
                 Hint(if (state.playlistLoading) "Loading songs…" else "${state.playlistSongs.size} songs", Modifier.padding(vertical = 8.dp))
+                TextButton({ actions.downloadPlaylist() }, enabled = !state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isNotEmpty()) { Text("Download playlist") }
                 Primary(if (state.loading) "Starting…" else "Shuffle and play", Modifier.testTag("playlist-play"), enabled = !state.loading && !state.playlistLoading && state.playlistSongs.isNotEmpty()) { actions.startPlaylist(playlist.id) }
             }
             if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -476,7 +480,7 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
             // Playlists may contain the same song more than once; retain the server's order.
             items(state.playlistSongs.size) { index ->
                 val song = state.playlistSongs[index]
-                SongRow(song, artworkUrl, enabled = !state.loading) { actions.playSong(song) }
+                SongRow(song, artworkUrl, state.storage, enabled = !state.loading, onDownload = { actions.downloadSongs(listOf(song)) }) { actions.playSong(song) }
                 HorizontalDivider()
             }
         }
@@ -493,6 +497,7 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
                 Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp))
             }
             Text(album.name, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            TextButton({ actions.downloadAlbum() }, enabled = !state.albumLoading && state.albumError == null && state.albumSongs.isNotEmpty()) { Text("Download album") }
             Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
             Primary(if (state.loading) "Starting…" else "Play album", Modifier.testTag("album-play"), enabled = !state.loading && !state.albumLoading && state.albumSongs.isNotEmpty()) {
                 actions.playAlbum(album.id)
@@ -506,7 +511,8 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
             items(state.albumSongs, key = { it.id }) { song ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 62.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Column(Modifier.weight(1f)) { Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis); Hint(song.artist) }
+                    Column(Modifier.weight(1f)) { Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis); Hint(song.artist); OfflineBadge(song.id, state.storage) }
+                    IconButton({ actions.downloadSongs(listOf(song)) }) { Icon(Icons.Default.Download, "Download ${song.title}") }
                     Hint(timeLabel(song.durationSeconds * 1000L))
                 }
                 HorizontalDivider()
@@ -549,7 +555,9 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
                 Column(Modifier.weight(1f)) {
                     Text(song.title, style = MaterialTheme.typography.headlineMedium, maxLines = if (scrollFallback) 5 else 2, overflow = TextOverflow.Ellipsis)
                     Text(song.artist, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    OfflineBadge(song.id, state.storage)
                 }
+                IconButton({ actions.downloadSongs(listOf(song)) }) { Icon(Icons.Default.Download, "Download ${song.title}") }
                 OutlinedButton({ showRating = true }, Modifier.width(64.dp).heightIn(min = 64.dp).testTag("player-rating").semantics { contentDescription = "Rate song, ${if (song.userRating == 0) "not rated" else "${song.userRating} of 5 stars"}" }, contentPadding = PaddingValues(4.dp), shape = RoundedCornerShape(12.dp)) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Icon(if (song.userRating > 0) Icons.Default.Star else Icons.Outlined.StarBorder, null)
@@ -679,6 +687,8 @@ private fun Settings(state: AudioUiState, actions: AudioUiActions, home: Screen)
                 }, Modifier.fillMaxWidth().heightIn(min = 56.dp)) { Text("Open Navidrome administration", style = MaterialTheme.typography.bodyMedium) }
                 ErrorMessage(browserError)
             }
+            HorizontalDivider()
+            StorageSettings(state, actions)
             HorizontalDivider()
             Surface(Modifier.fillMaxWidth().testTag("settings-updates").clickable { actions.showScreen(Screen.UPDATES) }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
                 Row(Modifier.heightIn(min = 72.dp).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {

@@ -31,7 +31,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT), navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT))
         setContent {
             val state by model.state.collectAsStateWithLifecycle()
-            val artwork = remember(state.connection) { { id: String? -> model.artworkUrl(id) } }
+            val artwork = remember(state.connection, state.artworkRevision) { { id: String? -> model.artworkUrl(id) } }
             AudioTheme { AudioApp(state, model, artwork) }
         }
         if (savedInstanceState == null) handlePlaybackIntent(intent)

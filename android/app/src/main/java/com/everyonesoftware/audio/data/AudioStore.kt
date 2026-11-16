@@ -46,7 +46,7 @@ internal abstract class AudioDatabase : RoomDatabase() {
 }
 
 /** Room stores metadata and encrypted envelopes; preferences contain IDs/layouts, never secrets or URLs. */
-class AudioStore(context: Context) {
+class AudioStore(context: Context, private val purgeOffline: (String) -> Unit = {}) {
     private val context = context.applicationContext
     private val dao = database(this.context).audioDao()
     private val preferences = this.context.audioPreferences
@@ -111,6 +111,7 @@ class AudioStore(context: Context) {
             if (it[selectedKey] == id) it.remove(selectedKey)
             it.remove(librariesKey(id))
         }
+        withContext(Dispatchers.IO) { purgeOffline(id) }
         dao.removeConnection(id) // FK cascade removes sessions and cached playlists atomically.
     }
     suspend fun cachePlaylists(connectionId: String, playlists: List<Playlist>) = lock.withLock {

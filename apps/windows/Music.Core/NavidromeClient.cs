@@ -13,6 +13,14 @@ public sealed class NavidromeClient : IDisposable
     private readonly Uri server;
     private readonly HttpClient http;
     private readonly bool ownsHttp;
+    private CancellationTokenSource network = new();
+    private bool offline;
+    public bool Offline
+    {
+        get => offline;
+        set { if (offline == value) return; offline = value; if (value) network.Cancel(); else network = new(); }
+    }
+    private void RequireOnline() { if (Offline) throw new NavidromeException("Offline mode is enabled. Only complete saved songs are available."); }
 
     public NavidromeClient(ConnectionProfile connection, string password, HttpClient? httpClient = null, bool allowLoopbackHttp = false)
     {
@@ -98,7 +106,44 @@ public sealed class NavidromeClient : IDisposable
     }
 
     /// <summary>Ephemeral signed URI. Never persist, log, or cache this value.</summary>
-    public Uri GetStreamUri(string songId) => Endpoint("stream", ("id", songId));
+    public Uri GetStreamUri(string songId) { RequireOnline(); return Endpoint("stream", ("id", songId), ("format", "raw")); }
+
+    /// <summary>Fetch the full original representation without exposing or retaining its signed URL.</summary>
+    public async Task<string> DownloadSongAsync(string songId, Stream output, CancellationToken cancellationToken = default)
+    {
+        RequireOnline();
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, network.Token);
+        deadline.CancelAfter(TimeSpan.FromMinutes(15));
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, GetStreamUri(songId));
+            request.Headers.CacheControl = new CacheControlHeaderValue { NoStore = true };
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+            var type = response.Content.Headers.ContentType?.MediaType;
+            if (response.StatusCode != System.Net.HttpStatusCode.OK || type is null ||
+                !(type.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) || type is "application/octet-stream" or "video/mp4" or "video/ogg"))
+                throw new NavidromeException("The server did not return playable media.");
+            const long maximum = 2L * 1024 * 1024 * 1024;
+            long? expected = response.Content.Headers.ContentLength;
+            if (expected > maximum) throw new NavidromeException("This song exceeds the per-file storage limit.");
+            await using var input = await response.Content.ReadAsStreamAsync(deadline.Token).ConfigureAwait(false);
+            byte[] buffer = new byte[65536]; long received = 0;
+            while (true)
+            {
+                int count = await input.ReadAsync(buffer, deadline.Token).ConfigureAwait(false);
+                if (count == 0) break;
+                received += count;
+                if (received > maximum) throw new NavidromeException("This song exceeds the per-file storage limit.");
+                await output.WriteAsync(buffer.AsMemory(0, count), deadline.Token).ConfigureAwait(false);
+            }
+            if (received == 0 || (expected.HasValue && received != expected.Value)) throw new NavidromeException("The song download was incomplete.");
+            return type;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { throw; }
+        catch (NavidromeException) { throw; }
+        catch (Exception e) when (e is IOException or HttpRequestException or OperationCanceledException)
+        { throw new NavidromeException("The song download was interrupted. It is not available offline yet."); }
+    }
 
     public Task<byte[]> GetCoverArtAsync(string id, CancellationToken cancellationToken = default) =>
         Download("getCoverArt", 2 * 1024 * 1024, cancellationToken, ("id", id), ("size", "1024"));
@@ -134,8 +179,9 @@ public sealed class NavidromeClient : IDisposable
 
     private async Task<byte[]> Download(string name, int limit, CancellationToken cancellationToken, params (string Key, string Value)[] parameters)
     {
+        RequireOnline();
         var callerCancellation = cancellationToken;
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, network.Token);
         var maximum = TimeSpan.FromSeconds(name == "getCoverArt" ? 10 : 45);
         deadline.CancelAfter(http.Timeout != Timeout.InfiniteTimeSpan && http.Timeout < maximum ? http.Timeout : maximum);
         cancellationToken = deadline.Token;

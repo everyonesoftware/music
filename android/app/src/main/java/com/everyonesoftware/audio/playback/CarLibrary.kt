@@ -35,9 +35,9 @@ internal class CarLibrary(private val graph: AudioGraph) {
         }
         val id = requireNotNull(CarMediaIds.parse(parentId)) { "Refresh playlists and retry." }
         require(id.kind == "playlist" && id.connection == credentials.connection.id) { "The music account changed. Refresh playlists." }
-        val songs = graph.playlists.fetchContents(credentials, id.parent).songs
+        val songs = songs(credentials, id.parent)
         checkCurrent(credentials)
-        return listOf(playable(CarMediaIds.shuffle(id.connection, id.parent), "Shuffle and play", "Start a new shuffled queue")) +
+        return listOf(playable(CarMediaIds.shuffle(id.connection, id.parent), if (graph.networkPolicy.offline) "Play in saved order" else "Shuffle and play", "Start a new queue")) +
             songs.mapIndexed { index, song -> songItem(CarMediaIds.track(id.connection, id.parent, index, song.id), song) }
     }
 
@@ -83,9 +83,9 @@ internal class CarLibrary(private val graph: AudioGraph) {
         require(id.kind == "shuffle" || id.kind == "track") { "Choose a song or shuffle action from Music." }
         val playlist = playlists(credentials).firstOrNull { it.id == id.parent }
         requireNotNull(playlist) { "This playlist is unavailable. Refresh playlists." }
-        val songs = graph.playlists.fetchContents(credentials, id.parent).songs
+        val songs = songs(credentials, id.parent)
         checkCurrent(credentials)
-        val shuffled = SessionRules.start(id.connection, playlist.id, playlist.name, songs)
+        val shuffled = SessionRules.start(id.connection, playlist.id, playlist.name, songs, shuffle = !graph.networkPolicy.offline)
         val selected = if (id.kind == "shuffle") shuffled else {
             require(id.index in songs.indices && songs[id.index!!].id == id.song) { "The playlist changed. Reopen it and choose the song again." }
             shuffled.copy(queue = songs, index = id.index, shuffle = false)
@@ -111,9 +111,9 @@ internal class CarLibrary(private val graph: AudioGraph) {
         val exact = matches.filter { it.name.equals(query.trim(), ignoreCase = true) }
         val playlist = if (exact.isNotEmpty()) exact.singleOrNull() else matches.singleOrNull()
         requireNotNull(playlist) { "Say an exact playlist name or choose a playlist in Music." }
-        val songs = graph.playlists.fetchContents(credentials, playlist.id).songs
+        val songs = songs(credentials, playlist.id)
         checkCurrent(credentials)
-        return Selection(credentials, previous, SessionRules.start(credentials.connection.id, playlist.id, playlist.name, songs))
+        return Selection(credentials, previous, SessionRules.start(credentials.connection.id, playlist.id, playlist.name, songs, shuffle = !graph.networkPolicy.offline))
     }
 
     private fun credentials() = requireNotNull(graph.credentials.value) { "Open Music on your phone and connect to Navidrome." }
@@ -122,11 +122,22 @@ internal class CarLibrary(private val graph: AudioGraph) {
         require(graph.credentials.value == credentials) { "The music account changed. Refresh playlists." }
     }
     private suspend fun playlists(credentials: Credentials, reconcileCounts: Boolean = false): List<Playlist> {
+        if (graph.networkPolicy.offline) return graph.songCache.collections(credentials).filter { it.kind == "playlist" }.map {
+            Playlist(it.id, it.name, it.songs.size, it.coverArtId)
+        }
         val catalog = graph.playlists.listing(credentials, reconcileCounts)
         checkCurrent(credentials)
         require(catalog.connectionId == credentials.connection.id) { "The music account changed. Refresh playlists." }
         if (catalog.listError != null) throw com.everyonesoftware.audio.data.NavidromeException(catalog.listError)
         return catalog.playlists
+    }
+
+    private suspend fun songs(credentials: Credentials, id: String): List<Song> {
+        if (graph.networkPolicy.offline) {
+            val snapshot = requireNotNull(graph.songCache.collection(credentials, "playlist", id)) { "This playlist is not downloaded." }
+            return snapshot.playableSongs { graph.songCache.complete(credentials, it) }
+        }
+        return graph.playlists.fetchContents(credentials, id).songs
     }
 
     companion object {
