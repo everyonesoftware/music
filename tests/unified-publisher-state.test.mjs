@@ -61,9 +61,9 @@ const inventoryReached = new Error('inventory reached');
 function publisherApi(workflow, runs, calls) {
   return (path, options) => {
     calls.push(path);
-    if (path.startsWith('actions/workflows/')) {
+    if (path === 'actions/runs?branch=main&per_page=100') {
       assert.deepEqual(options, { paginate: true });
-      return [{ workflow_runs: [] }, { workflow_runs: path.includes(`/${workflow}/`) ? runs : [] }];
+      return [{ workflow_runs: [] }, { workflow_runs: runs.map(run => ({ path: `.github/workflows/${workflow}`, ...run })) }];
     }
     assert.equal(path, 'releases?per_page=100');
     throw inventoryReached;
@@ -91,9 +91,7 @@ for (const [name, publish] of Object.entries(publishers)) {
       for (const id of [123, '123']) {
         const calls = [];
         await assert.rejects(async () => publish({ api: publisherApi(workflow, [{ id, status: 'in_progress' }], calls), currentRunId: '123' }), error => error === inventoryReached);
-        for (const expected of ['ci.yml', 'android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
-          assert.ok(calls.some(path => path.includes(`/${expected}/`)), expected);
-        }
+        assert.deepEqual(calls, ['actions/runs?branch=main&per_page=100', 'releases?per_page=100']);
       }
       for (const currentRunId of ['', '12', '1234', '0123']) {
         assert.deepEqual(await publish({ api: publisherApi(workflow, [{ id: 123, status: 'in_progress' }], []), currentRunId }), { deferred: true });
@@ -113,7 +111,7 @@ test('both publishers default to GITHUB_RUN_ID without leaking test environment'
     import { refreshDownloads } from './scripts/current-downloads.mjs';
     const reached = new Error('inventory reached');
     const api = path => {
-      if (path.startsWith('actions/workflows/')) return [{ workflow_runs: path.includes('/ci.yml/') ? [{ id: 123, status: 'in_progress' }] : [] }];
+      if (path === 'actions/runs?branch=main&per_page=100') return [{ workflow_runs: [{ id: 123, status: 'in_progress' }] }];
       throw reached;
     };
     for (const publish of [() => recoverWindowsPublications({ root: '.', repository: 'owner/music', api }), () => refreshDownloads({ repository: 'owner/music', publish: true, api })]) {

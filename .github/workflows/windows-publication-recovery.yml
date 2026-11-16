@@ -9,13 +9,6 @@ on:
 permissions:
   contents: read
 
-# Hold the Windows publisher lock for the workflow, and Android's stable-release
-# lock for the job. Neither original publisher can race recovery writes.
-concurrency:
-  group: music-windows-release-publication
-  cancel-in-progress: false
-  queue: max
-
 jobs:
   recover:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -25,7 +18,7 @@ jobs:
       contents: write
       actions: read
     concurrency:
-      group: audio-apk-publication
+      group: music-release-publication
       cancel-in-progress: false
       queue: max
     steps:

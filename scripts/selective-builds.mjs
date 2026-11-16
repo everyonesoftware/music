@@ -71,22 +71,29 @@ export function publishedBaseline(component, { api }) {
     return null;
   }
   const windows = component === 'windows';
-  const pattern = windows ? /^windows-v0\.1\.([1-9][0-9]*)$/ : /^v0\.1\.([1-9][0-9]*)$/;
+  const pattern = windows ? /^(?:windows-)?v0\.1\.([1-9][0-9]*)$/ : /^v0\.1\.([1-9][0-9]*)$/;
+  const legacyWindows = release => windows && release.tag_name.startsWith('windows-');
   const releases = api('releases?per_page=100', { paginate: true }).flat()
-    .filter(release => !release.draft && (windows ? release.prerelease === true : release.prerelease === false) && pattern.test(release.tag_name))
-    .sort((a, b) => Number(pattern.exec(b.tag_name)[1]) - Number(pattern.exec(a.tag_name)[1]));
+    .filter(release => !release.draft && pattern.test(release.tag_name) && release.prerelease === legacyWindows(release))
+    .sort((a, b) => Number(pattern.exec(b.tag_name)[1]) - Number(pattern.exec(a.tag_name)[1]) || Number(legacyWindows(a)) - Number(legacyWindows(b)));
   for (const release of releases) {
     const count = Number(pattern.exec(release.tag_name)[1]);
     if (!Number.isSafeInteger(count) || count > (windows ? 65534 : 2_100_000_000)) throw new Error('Invalid published version.');
     const version = `0.1.${count}`, tag = release.tag_name;
     const names = windows ? ['MusicWindows-win-x64-Setup.exe', `MusicWindows-${version}-win-x64-full.nupkg`, 'releases.win-x64.json', 'assets.win-x64.json', 'RELEASES-win-x64', 'windows-release.json', 'SHA256SUMS'] : [`Music-${version}.apk`, `Music-${version}.apk.sha256`, 'release.json'];
+    // Stable Windows publication includes the installer checksum in addition to
+    // the legacy Velopack inventory. EXE-only mirrors are not publications.
+    if (windows && !legacyWindows(release)) names.push('MusicWindows-win-x64-Setup.exe.sha256');
     const assets = api(`releases/${release.id}/assets?per_page=100`, { paginate: true }).flat();
     // An unpublished/incomplete platform cannot become the successful baseline.
     if (!names.every(name => assets.filter(asset => asset.name === name && asset.state === 'uploaded' && asset.size > 0).length === 1)) continue;
     const asset = assets.find(asset => asset.name === (windows ? 'windows-release.json' : 'release.json'));
     if (!Number.isSafeInteger(asset.id) || asset.id <= 0 || asset.size > 65536) throw new Error('Invalid publication manifest asset.');
     const manifest = api(`releases/assets/${asset.id}`, { binaryJson: true });
-    if (!manifest || JSON.stringify(manifest).length > 65536 || !shaPattern.test(manifest.sha) || manifest.sha !== release.target_commitish || manifest.count !== count || manifest.version !== version || manifest.tag !== tag) throw new Error('Published source metadata mismatch.');
+    // Stable publication retains the packaging tag for existing Windows clients;
+    // GitHub provenance must still resolve the actual release tag below.
+    const manifestTags = windows && !legacyWindows(release) ? [tag, `windows-v${version}`] : [tag];
+    if (!manifest || JSON.stringify(manifest).length > 65536 || !shaPattern.test(manifest.sha) || manifest.sha !== release.target_commitish || manifest.count !== count || manifest.version !== version || !manifestTags.includes(manifest.tag)) throw new Error('Published source metadata mismatch.');
     if (windows) {
       if (manifest.platform !== 'windows-x64' || manifest.signing !== 'unsigned-preview' || !Array.isArray(manifest.artifacts)) throw new Error('Invalid Windows publication manifest.');
       for (const name of names.slice(0, 5)) {

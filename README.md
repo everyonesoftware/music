@@ -46,7 +46,7 @@ The integration is tested through real Media3 and legacy platform browsers on an
 
 ## Automated APK releases
 
-`.github/workflows/android-release.yml` checks every push to `main`, builds only when Android inputs changed since its last published source (or on forced manual dispatch), tests/lints the app, signs a non-debuggable APK, and publishes it with a SHA-256 checksum and source metadata to GitHub Releases. Release jobs check out complete Git history. Android's version code is the Git commit count, with version name/tag/asset such as `0.1.42`, `v0.1.42`, and `Music-0.1.42.apk`. Windows follows its own affected-input decision; unchanged components retain their previously published versions and installers.
+`.github/workflows/ci.yml` starts one workflow per main push with four jobs: **validate → android + windows → release**. Each native platform builds only when its code/dependencies changed since its last verified publication (or on explicit manual force). Builds run in parallel; the final release job serializes publication, attachment recovery and download refresh. Signed Android APKs and unsigned Windows installers/full update feeds go into the normal Music release, not a separate Windows preview. Unchanged platforms retain their original versions and outputs. Full Git history determines the `0.1.<commit-count>` version, Android version code and exact source identity.
 
 One-time persistent signing secrets are required before publication. See [`android/RELEASING.md`](android/RELEASING.md) for the four secret names, key backup, upgrade implications, reruns and verification. Configure those secrets and push the project to `main` to activate publishing; local tests are separate from hosted release verification.
 

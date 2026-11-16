@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 
 const project = readFileSync(new URL('../apps/windows/Music.App/Music.App.csproj', import.meta.url), 'utf8');
 
@@ -48,9 +49,9 @@ test('resolved self-contained SDK payload keeps native WinUI resources without o
   assert.doesNotMatch(packages.join('\n'), /Microsoft\.WindowsAppSDK(?:\/|\.(?:AI|ML|Widgets|DWrite|Runtime)\/)/);
 });
 
-test('both Windows workflows run the package footprint regression checks', () => {
-  for (const name of ['windows-build.yml', 'windows-release.yml']) {
-    const workflow = readFileSync(new URL(`../.github/workflows/${name}`, import.meta.url), 'utf8');
-    assert.match(workflow, /node --test[^\n]*tests\/windows-package-size\.test\.mjs/);
+test('validation and native Windows packaging run the package footprint regression checks', () => {
+  const ci = readWorkflow();
+  for (const name of ['validate', 'windows']) {
+    assert.match(workflowJob(ci, name), /node --test[^\n]*tests\/windows-package-size\.test\.mjs/);
   }
 });

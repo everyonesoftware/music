@@ -1,20 +1,24 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 
-const workflow = readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
+const ci = readWorkflow();
+const workflow = workflowJob(ci, 'windows');
+const release = workflowJob(ci, 'release');
 
 test('native release subprocesses read UTF-8 source independently of the Windows locale', () => {
-  assert.match(workflow, /env:\s+(?:#[^\n]*\n\s+)?PYTHONUTF8: '1'/);
+  const globalSettings = ci.split(/^jobs:/m)[0];
+  assert.match(globalSettings + workflow, /env:\s+(?:#[^\n]*\n\s+)?PYTHONUTF8: '1'/);
 });
 
-test('reusable Windows packaging builds only when selected by the single push pipeline', () => {
-  assert.match(workflow, /workflow_call:/);
-  assert.doesNotMatch(workflow, /push:\s+branches:|workflow_dispatch:|paths:/);
-  assert.match(workflow, /publish_preview:[\s\S]*?default: false/);
-  assert.match(workflow, /needs: changes\s+if: needs.changes.outputs.windows == 'true'/);
-  assert.match(workflow, /--component windows --force "\$FORCE_COMPONENT"/);
-  assert.match(workflow, /if: github\.ref == 'refs\/heads\/main' && \(github\.event_name == 'push' \|\| inputs\.publish_preview\)/);
+test('flat Windows packaging builds only when selected by validation and cannot publish', () => {
+  assert.match(workflow, /runs-on: windows-2025/);
+  assert.match(workflow, /needs: validate/);
+  assert.match(workflow, /if:.*needs.validate.outputs.windows == 'true'/);
+  assert.match(workflow, /steps:/);
+  assert.doesNotMatch(workflow, /uses: \.\/\.github\/workflows\/|contents: write|scripts\/windows-release.py publish|scripts\/android-release.py/);
+  assert.match(release, /needs: \[validate, android, windows\]/);
+  assert.match(release, /if:.*always\(\).* !cancelled\(\).*github.ref == 'refs\/heads\/main'.*github.event_name != 'pull_request'.*!inputs.trimmed_experiment/);
 });
 
 test('real installer smoke test gates the exact artifacts used for publication', () => {
@@ -25,8 +29,11 @@ test('real installer smoke test gates the exact artifacts used for publication',
   assert.match(workflow, /-InstallerPath dist\/windows-build\/releases\/MusicWindows-win-x64-Setup\.exe/);
   assert.match(workflow, /-EvidenceDirectory dist\/windows-smoke/);
   assert.match(workflow, /name: Retain Windows smoke diagnostics\s+if: always\(\)/);
-  assert.match(workflow, /needs: \[changes, package\]/);
   assert.match(workflow, /path: dist\/windows-smoke\//);
+  assert.match(workflow, /name: music-windows-installer-\$\{\{ github.sha \}\}/);
+  assert.match(release, /name: music-windows-installer-\$\{\{ github.sha \}\}/);
+  assert.match(release, /path: dist\/windows-release/);
+  assert.match(release, /digest-mismatch: error/);
   assert.ok(workflow.includes('node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs'));
 });
 
@@ -40,19 +47,32 @@ test('failed native launches get a bounded pinned debugger diagnostic before evi
   assert.ok(workflow.includes('67a8e1d39421a5ef5309c7017327c6a70ea6215a0e56e47ec22a7e9ec3b914e6'));
   assert.ok(workflow.includes('--no-build --configuration Release --debug-output --symbols'));
   assert.match(workflow, /name: Diagnose native startup failure\s+if:[^\n]+\s+timeout-minutes: 4/);
+  assert.ok(workflow.indexOf('name: Diagnose native startup failure') < workflow.indexOf('name: Retain Windows smoke diagnostics'));
 });
 
-test('Windows publication stays unsigned and isolated from Android latest', () => {
+test('unsigned Windows packages publish to stable main releases under one serialized release job', () => {
   assert.ok(workflow.includes('--allow-unsigned'));
-  assert.ok(workflow.includes('scripts/windows-release.py publish'));
-  assert.ok(!workflow.includes('scripts/android-release.py'));
-  assert.match(workflow, /contents: write/);
-  assert.match(workflow, /group: music-windows-release-publication/);
+  assert.ok(release.includes('node scripts/publish-windows-main-release.mjs'));
+  assert.doesNotMatch(release, /scripts\/windows-release.py publish|--prerelease|node scripts\/attach-windows-installer.mjs/);
+  assert.ok(release.includes('scripts/android-release.py publish'));
+  assert.match(release, /contents: write/);
+  assert.match(release, /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
+  assert.doesNotMatch(workflow, /contents: write/);
 });
 
-test('verified Windows installer is also attached to the matching main Music release', () => {
-  const publish = workflow.indexOf('scripts/windows-release.py publish');
-  const attach = workflow.indexOf('node scripts/attach-windows-installer.mjs');
-  assert.ok(publish > 0 && attach > publish, 'Main release attachment must follow verified Windows publication');
-  assert.ok(workflow.includes('node scripts/attach-windows-installer.mjs --directory dist/windows-release --repository "$GH_REPO"'));
+test('verified Windows feed publishes to the stable main release after Android, before recovery and refresh', () => {
+  const commands = [
+    'scripts/android-release.py publish',
+    'node scripts/publish-windows-main-release.mjs',
+    'node scripts/recover-windows-publication.mjs',
+    'node scripts/current-downloads.mjs',
+  ];
+  let previous = -1;
+  for (const command of commands) {
+    const position = release.indexOf(command);
+    assert.ok(position > previous, `${command} must exist after the preceding publication stage`);
+    previous = position;
+  }
+  assert.ok(release.includes('node scripts/publish-windows-main-release.mjs --directory dist/windows-release --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED"'));
+  assert.match(release, /ANDROID_CHANGED: \$\{\{ needs.validate.outputs.android_changed \}\}/);
 });

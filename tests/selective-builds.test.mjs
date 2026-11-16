@@ -1,5 +1,6 @@
 // Unit fixtures only; no remote writes or production packages.
 import test from 'node:test';
+import { readWorkflow, workflowJob, workflowJobs } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -111,19 +112,27 @@ test('a stale rerun skips newer published source, while a diverged history fails
   assert.throws(() => decideFromBaseline({ root: h.root, component: 'android', baseline: newer }), /diverges/);
 });
 
-test('native release workflows gate expensive jobs before SDK setup and preserve manual force', () => {
+test('native CI jobs gate SDK setup on validation outputs and preserve manual component selection', () => {
+  const workflow = readWorkflow();
+  const validate = workflowJob(workflow, 'validate');
+  assert.deepEqual(Object.keys(workflowJobs(workflow)), ['validate', 'android', 'windows', 'release']);
+  assert.match(workflow, /options: \[all, android, windows, maintenance\]/);
+  assert.match(validate, /fetch-depth: 0/);
+  assert.match(validate, /inputs\.component/);
+  assert.match(validate, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(validate, /GH_TOKEN: \$\{\{ github.token \}\}/);
+  assert.match(validate, /node scripts\/ci-selection.mjs/);
+  assert.match(validate, /--target "\$TARGET_COMPONENT" --trimmed "\$TRIMMED" --github-output "\$GITHUB_OUTPUT"/);
   for (const component of ['android', 'windows']) {
-    const workflow = readFileSync(new URL(`../.github/workflows/${component}-release.yml`, import.meta.url), 'utf8');
-    assert.match(workflow, /changes:\s+name: Detect affected components/);
-    assert.match(workflow, new RegExp(`needs: changes\\s+if: needs.changes.outputs.${component} == 'true'`));
-    assert.match(workflow, /fetch-depth: 0/);
-    assert.ok(workflow.includes(`--component ${component} --force "$FORCE_COMPONENT"`));
-    assert.ok(workflow.includes(`github.event_name == 'workflow_dispatch' && '${component}' || 'none'`));
-    assert.match(workflow, /GH_TOKEN: \$\{\{ github.token \}\}/);
+    const job = workflowJob(workflow, component);
+    assert.match(job, /needs: validate/);
+    assert.ok(job.includes(`needs.validate.outputs.${component} == 'true'`));
+    assert.ok(job.indexOf(`needs.validate.outputs.${component}`) < job.indexOf('steps:'));
+    assert.doesNotMatch(job, /contents: write/);
   }
-  const windows = readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
-  assert.match(windows, /node scripts\/ensure-windows-main-release.mjs/);
-  assert.match(windows, /ANDROID_CHANGED: \$\{\{ needs.changes.outputs.android \}\}/);
+  const release = workflowJob(workflow, 'release');
+  assert.match(release, /node scripts\/publish-windows-main-release.mjs/);
+  assert.match(release, /ANDROID_CHANGED: \$\{\{ needs.validate.outputs.android_changed \}\}/);
 });
 
 test('web baselines bootstrap once and ignore PR/failure runs instead of inventing a deployed web release', async () => {
@@ -169,12 +178,14 @@ test('CLI rejects malformed options, inaccessible GitHub baselines and shallow c
   assert.throws(() => decideFromBaseline({ root: '.', component: 'android', baseline: null, run: () => ({ status: 0, stdout: 'true\n' }) }), /Full history/);
 });
 
-test('web and Windows checks gate the expensive jobs rather than relying on previous-push path filters', () => {
-  const web = readFileSync(new URL('../.github/workflows/web-build.yml', import.meta.url), 'utf8');
-  assert.match(web, /needs: changes\s+if: needs.changes.outputs.web == 'true'/);
-  assert.match(web, /--component web/);
-  assert.match(web, /actions: read/);
-  const windows = readFileSync(new URL('../.github/workflows/windows-build.yml', import.meta.url), 'utf8');
-  assert.match(windows, /needs: changes\s+if: needs.changes.outputs.windows == 'true'/);
-  assert.doesNotMatch(windows.split('workflow_dispatch:')[0], /paths:/);
+test('browser studies run selectively within validation without a separate web job or push path filters', () => {
+  const workflow = readWorkflow();
+  const validate = workflowJob(workflow, 'validate');
+  assert.ok(!Object.hasOwn(workflowJobs(workflow), 'web'));
+  assert.match(validate, /node scripts\/ci-selection.mjs/);
+  assert.match(validate, /if:.*steps\.[\w-]+\.outputs\.web == 'true'/);
+  assert.match(validate, /npm ci/);
+  assert.match(validate, /npm (?:run )?(?:test|build)/);
+  assert.match(workflow, /actions: read/);
+  assert.doesNotMatch(workflow.split('workflow_dispatch:')[0], /paths:/);
 });

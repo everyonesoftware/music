@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 
 const root = new URL('../', import.meta.url);
 const read = path => readFileSync(new URL(path, root), 'utf8');
@@ -44,16 +45,20 @@ test('Windows release parsing uses generated metadata, not the reflection overlo
   assert.match(backend, /\[JsonSerializable\(typeof\(GithubRelease\)\)\]/);
 });
 
-test('build-only native trimming is explicit and compatibility checks run in CI', () => {
-  const build = read('.github/workflows/windows-build.yml');
-  const release = read('.github/workflows/windows-release.yml');
-  assert.match(build, /trimmed_experiment:[\s\S]*?default: false/);
-  assert.match(build, /-p:MusicTrimmed=\$\{\{ inputs.trimmed_experiment == true \}\}/);
-  assert.match(build, /dotnet publish Music.TrimChecks\/Music.TrimChecks.csproj[^\n]*-p:PublishTrimmed=true/);
-  assert.match(build, /run: \.\/artifacts\/trim-checks\/Music.TrimChecks/);
-  for (const workflow of [build, release]) {
-    assert.match(workflow, /node --test[^\n]*tests\/windows-trimming\.test\.mjs/);
+test('build-only native trimming is explicit and compatibility checks run in validation', () => {
+  const ci = readWorkflow();
+  const validate = workflowJob(ci, 'validate');
+  const windows = workflowJob(ci, 'windows');
+  const release = workflowJob(ci, 'release');
+  assert.match(ci, /trimmed_experiment:[\s\S]*?type: boolean[\s\S]*?default: false/);
+  assert.match(windows, /dotnet publish apps\/windows\/Music.App\/Music.App.csproj[^\n]*-p:MusicTrimmed=\$\{\{ inputs.trimmed_experiment == true \}\}/);
+  assert.match(windows, /if:.*inputs.trimmed_experiment/);
+  assert.match(validate, /dotnet publish apps\/windows\/Music.TrimChecks\/Music.TrimChecks.csproj[^\n]*-p:PublishTrimmed=true/);
+  assert.match(validate, /run: \.\/apps\/windows\/artifacts\/trim-checks\/Music.TrimChecks/);
+  for (const job of [validate, windows]) {
+    assert.match(job, /node --test[^\n]*tests\/windows-trimming\.test\.mjs/);
   }
-  assert.doesNotMatch(release, /MusicTrimmed|trimmed_experiment/,
-    'normal releases must not silently opt into the trimming experiment');
+  assert.match(release, /if:.*!inputs.trimmed_experiment/,
+    'experimental trimmed artifacts must never be published');
+  assert.doesNotMatch(release, /dotnet publish|MusicTrimmed/);
 });

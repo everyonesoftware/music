@@ -18,12 +18,10 @@ export async function recoverWindowsPublications({ root, repository, api, run = 
     if (result.error || result.status !== 0) throw Error(`${command} failed: ${result.error?.message || result.stderr || result.status}`);
     return String(result.stdout ?? '').trim();
   };
-  // The workflow also holds the original Windows publisher's concurrency lock.
-  // Call within unified CI only AFTER its native dependencies finish. Ignore
-  // exactly that owning run (also for independent recovery), never other runs.
-  for (const workflow of ['ci.yml', 'android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
-    if (api(`actions/workflows/${workflow}/runs?branch=main&per_page=100`, { paginate: true }).some(p => p.workflow_runs.some(r => r.status !== 'completed' && !(currentRunId && String(r.id) === currentRunId)))) return { deferred: true };
-  }
+  // Hold the shared release lock and run only after this CI run's native jobs.
+  // Repository-wide discovery includes legacy reruns without resolving deleted
+  // workflow filenames. Ignore exactly the owning run, never another active run.
+  if (api('actions/runs?branch=main&per_page=100', { paginate: true }).some(p => p.workflow_runs.some(r => r.status !== 'completed' && !(currentRunId && String(r.id) === currentRunId)))) return { deferred: true };
   const previews = api('releases?per_page=100', { paginate: true }).flat().filter(r => /^windows-v0\.1\.[1-9][0-9]*$/.test(r.tag_name));
   const recovered = [];
   for (const preview of previews) {

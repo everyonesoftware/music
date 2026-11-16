@@ -67,7 +67,7 @@ test('creates a stable Windows-only main release at the exact source without mov
   assert.equal(value('--repo'), repository);
   assert.equal(value('--target'), sha);
   assert.equal(value('--title'), 'Music 0.1.42');
-  assert.match(value('--notes'), /Windows unsigned preview build/);
+  assert.match(value('--notes'), /Windows build \(unsigned installer\)/);
   assert.match(value('--notes'), /Android unchanged; see Current downloads/);
   assert.ok(args.includes('--latest=false'));
   assert.ok(args.includes('--draft=false'));

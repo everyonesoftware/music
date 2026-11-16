@@ -9,7 +9,7 @@ on:
       component:
         description: Platform to force rebuild, or maintenance without rebuilding
         type: choice
-        options: [all, android, windows, web, maintenance]
+        options: [all, android, windows, maintenance]
         default: all
         required: true
       trimmed_experiment:
@@ -22,67 +22,275 @@ permissions:
   contents: read
   actions: read
 
+env:
+  PYTHONUTF8: '1'
+
 jobs:
-  contracts:
-    name: Validate pipeline contracts
+  validate:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
+    outputs:
+      android: ${{ steps.detect.outputs.android }}
+      windows: ${{ steps.detect.outputs.windows }}
+      android_changed: ${{ steps.detect.outputs.android_changed }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
       - name: Test single-run orchestration and publication guards
-        run: node --test tests/ci-workflow.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs
-
-  web:
-    needs: contracts
-    if: github.event_name != 'workflow_dispatch' || (!inputs.trimmed_experiment && (inputs.component == 'all' || inputs.component == 'web'))
-    uses: ./.github/workflows/web-build.yml
-
-  windows:
-    needs: contracts
-    if: github.event_name != 'workflow_dispatch' || inputs.component == 'all' || inputs.component == 'windows'
-    uses: ./.github/workflows/windows-build.yml
-    with:
-      trimmed_experiment: ${{ inputs.trimmed_experiment == true }}
+        run: node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs
+      - name: Select changed platforms from verified publications
+        id: detect
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET_COMPONENT: ${{ github.event_name == 'workflow_dispatch' && inputs.component || 'auto' }}
+          TRIMMED: ${{ inputs.trimmed_experiment == true }}
+        run: node scripts/ci-selection.mjs --repository "$GH_REPO" --target "$TARGET_COMPONENT" --trimmed "$TRIMMED" --github-output "$GITHUB_OUTPUT"
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        if: steps.detect.outputs.windows == 'true'
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Run real protocol and SQLite tests
+        if: steps.detect.outputs.windows == 'true'
+        run: dotnet test apps/windows/Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Test Windows update source and controls
+        if: steps.detect.outputs.windows == 'true'
+        run: dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj --configuration Release --logger trx
+      - name: Publish reflection-disabled trimmed persistence and updater checks
+        if: steps.detect.outputs.windows == 'true'
+        run: dotnet publish apps/windows/Music.TrimChecks/Music.TrimChecks.csproj --configuration Release --runtime linux-x64 --self-contained true -p:PublishTrimmed=true --output apps/windows/artifacts/trim-checks
+      - name: Execute the actual trimmed compatibility checks
+        if: steps.detect.outputs.windows == 'true'
+        run: ./apps/windows/artifacts/trim-checks/Music.TrimChecks
+      - name: Check runtime XAML source contracts
+        if: steps.detect.outputs.windows == 'true'
+        run: python3 -m unittest discover -s apps/windows/validation -p 'test_source_contracts.py' -v
+      - name: Test request isolation and view policies
+        if: steps.detect.outputs.windows == 'true'
+        run: dotnet run --project apps/windows/validation/LogicChecks.csproj --configuration Release
+      - name: Test native release tooling
+        run: |
+          python3 -m unittest discover -s tests -p 'test_android_*.py' -v
+          python3 -m unittest discover -s tests -p 'test_windows_*.py' -v
+      - name: Test Windows workflow, visual and smoke-test contracts
+        if: steps.detect.outputs.windows == 'true'
+        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs tests/windows-branding.test.mjs tests/windows-window-integration.test.mjs tests/windows-package-size.test.mjs tests/windows-trimming.test.mjs apps/windows/validation/visual-contracts.test.mjs
+      - name: Install locked study-test dependencies
+        if: steps.detect.outputs.web == 'true'
+        run: npm ci
+      - name: Install the pinned study-test browser
+        if: steps.detect.outputs.web == 'true'
+        run: npx playwright install --with-deps chromium
+      - name: Validate preserved browser studies without a web output
+        if: steps.detect.outputs.web == 'true'
+        run: npm test
 
   android:
-    needs: contracts
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment && (github.event_name != 'workflow_dispatch' || inputs.component == 'all' || inputs.component == 'android')
-    permissions:
-      contents: write
-      actions: read
-    uses: ./.github/workflows/android-release.yml
-    secrets:
-      AUDIO_KEYSTORE_BASE64: ${{ secrets.AUDIO_KEYSTORE_BASE64 }}
-      AUDIO_KEYSTORE_PASSWORD: ${{ secrets.AUDIO_KEYSTORE_PASSWORD }}
-      AUDIO_KEY_ALIAS: ${{ secrets.AUDIO_KEY_ALIAS }}
-      AUDIO_KEY_PASSWORD: ${{ secrets.AUDIO_KEY_PASSWORD }}
+    needs: validate
+    if: needs.validate.outputs.android == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6.4.1
+      - name: Derive version from complete Git history
+        id: version
+        run: python3 scripts/android-release.py version --github-output "$GITHUB_OUTPUT"
+      - name: Install pinned Android SDK packages
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"'
+      - name: Run native unit tests and lint
+        env:
+          COMMIT_COUNT: ${{ steps.version.outputs.count }}
+        run: bash android/gradlew -p android :app:testDebugUnitTest :app:lintDebug "-PaudioCommitCount=$COMMIT_COUNT" --no-daemon
+      - name: Build and verify signed release APK
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          COMMIT_COUNT: ${{ steps.version.outputs.count }}
+          AUDIO_KEYSTORE_BASE64: ${{ secrets.AUDIO_KEYSTORE_BASE64 }}
+          AUDIO_KEYSTORE_PASSWORD: ${{ secrets.AUDIO_KEYSTORE_PASSWORD }}
+          AUDIO_KEY_ALIAS: ${{ secrets.AUDIO_KEY_ALIAS }}
+          AUDIO_KEY_PASSWORD: ${{ secrets.AUDIO_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          for name in AUDIO_KEYSTORE_BASE64 AUDIO_KEYSTORE_PASSWORD AUDIO_KEY_ALIAS AUDIO_KEY_PASSWORD; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing repository secret: $name. See android/RELEASING.md."
+              exit 1
+            fi
+          done
+          umask 077
+          export AUDIO_KEYSTORE_PATH="$RUNNER_TEMP/audio-release.jks"
+          trap 'rm -f "$AUDIO_KEYSTORE_PATH"' EXIT
+          printf '%s' "$AUDIO_KEYSTORE_BASE64" | base64 --decode > "$AUDIO_KEYSTORE_PATH"
+          bash android/gradlew -p android :app:assembleRelease "-PaudioCommitCount=$COMMIT_COUNT" --no-daemon
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose android/app/build/outputs/apk/release/app-release.apk
+          python3 scripts/android-release.py package --directory dist/android
+      - name: Retain versioned APK and checksums
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-release-${{ github.sha }}
+          path: dist/android/
+          if-no-files-found: error
+          retention-days: 30
+          overwrite: true
+          archive: true
+          include-hidden-files: false
 
-  windows-release:
-    # Wait for Android publication as well as Windows checks, so attachment never
-    # races this run's creation of the shared Music release. Android may skip.
-    needs: [windows, android]
-    if: always() && !cancelled() && needs.windows.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
-    permissions:
-      contents: write
-      actions: read
-    uses: ./.github/workflows/windows-release.yml
-    with:
-      publish_preview: ${{ github.event_name == 'workflow_dispatch' }}
+  windows:
+    needs: validate
+    if: needs.validate.outputs.windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: apps/windows/global.json
+      - name: Test Windows workflow and smoke-test contracts
+        run: node --test tests/windows-installer-smoke.test.mjs tests/windows-release-workflow.test.mjs tests/windows-shared-release.test.mjs tests/windows-branding.test.mjs tests/windows-window-integration.test.mjs tests/windows-package-size.test.mjs tests/windows-trimming.test.mjs apps/windows/validation/visual-contracts.test.mjs
+      - name: Run tests on Windows
+        run: dotnet test apps/windows/Music.Core.Tests/Music.Core.Tests.csproj --configuration Release --logger trx
+      - name: Test Windows update source and controls
+        run: dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj --configuration Release --logger trx
+      - name: Derive the Windows version from committed history
+        id: version
+        run: python scripts/windows-release.py version --github-output "$env:GITHUB_OUTPUT"
+      - name: Build experimental trimmed artifact only
+        if: inputs.trimmed_experiment
+        run: dotnet publish apps/windows/Music.App/Music.App.csproj --configuration Release --runtime win-x64 --self-contained true -p:MusicTrimmed=${{ inputs.trimmed_experiment == true }} -p:Version=${{ steps.version.outputs.version }} -p:InformationalVersion=${{ steps.version.outputs.version }}+${{ github.sha }} --output apps/windows/artifacts/windows/win-x64
+      - name: Retain experimental Windows artifact
+        if: inputs.trimmed_experiment
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-windows-trimmed-${{ github.sha }}
+          path: apps/windows/artifacts/windows/win-x64/
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: false
+      - name: Build real self-contained payload, installer and integrity manifest
+        if: ${{ !inputs.trimmed_experiment }}
+        env:
+          VPK_ICON: ${{ github.workspace }}/apps/windows/Music.App/Assets/Music.ico
+        run: python scripts/build-windows-installer.py --output-directory dist/windows-build --allow-unsigned
+      - name: Revalidate the packaged artifacts
+        if: ${{ !inputs.trimmed_experiment }}
+        run: python scripts/windows-release.py validate --directory dist/windows-build/releases
+      - name: Install, launch and uninstall the packaged Windows app
+        id: smoke
+        timeout-minutes: 5
+        if: ${{ !inputs.trimmed_experiment }}
+        run: ./scripts/test-windows-installer.ps1 -InstallerPath dist/windows-build/releases/MusicWindows-win-x64-Setup.exe -EvidenceDirectory dist/windows-smoke
+      - name: Diagnose native startup failure
+        if: failure() && steps.smoke.outcome == 'failure' && hashFiles('dist/windows-smoke/app-exit.json') != ''
+        timeout-minutes: 4
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolDirectory = Join-Path $env:RUNNER_TEMP 'winapp-0.8.0'
+          $archive = Join-Path $env:RUNNER_TEMP 'winappcli-x64.zip'
+          Invoke-WebRequest 'https://github.com/microsoft/winappCli/releases/download/v0.8.0/winappcli-x64.zip' -OutFile $archive
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne '67a8e1d39421a5ef5309c7017327c6a70ea6215a0e56e47ec22a7e9ec3b914e6') {
+            throw 'WinApp diagnostic tool checksum mismatch'
+          }
+          Expand-Archive $archive -DestinationPath $toolDirectory
+          try {
+            & "$toolDirectory/winapp.exe" run apps/windows/Music.App/Music.App.csproj --no-build --configuration Release --debug-output --symbols 2>&1 | Tee-Object dist/windows-smoke/native-debugger.txt
+          } finally {
+            $logs = Join-Path $env:TEMP 'winapp-dumps'
+            if (Test-Path $logs) { Copy-Item "$logs/*.log" dist/windows-smoke/ -ErrorAction Continue }
+          }
+      - name: Retain Windows smoke diagnostics
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-windows-smoke-${{ github.sha }}
+          path: dist/windows-smoke/
+          if-no-files-found: warn
+          retention-days: 30
+          include-hidden-files: false
+      - name: Retain the installer and update packages
+        if: success() && !inputs.trimmed_experiment
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: music-windows-installer-${{ github.sha }}
+          path: dist/windows-build/releases/*
+          if-no-files-found: error
+          retention-days: 30
+          include-hidden-files: false
 
-  recovery:
-    needs: [android, windows, windows-release]
-    if: always() && !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+  release:
+    needs: [validate, android, windows]
+    if: always() && !cancelled() && needs.validate.result == 'success' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
     permissions:
       contents: write
       actions: read
-    uses: ./.github/workflows/windows-publication-recovery.yml
-
-  downloads:
-    needs: [android, windows, windows-release, recovery]
-    if: always() && !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && !inputs.trimmed_experiment
-    permissions:
-      contents: write
-      actions: read
-    uses: ./.github/workflows/current-downloads.yml
+    concurrency:
+      group: music-release-publication
+      cancel-in-progress: false
+      queue: max
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Check out the exact source and full history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Download this run's signed Android package
+        id: android_download
+        if: ${{ !cancelled() && needs.android.result == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: music-release-${{ github.sha }}
+          path: dist/android
+          digest-mismatch: error
+      - name: Publish and read back Android release assets
+        id: android_publish
+        if: ${{ !cancelled() && steps.android_download.outcome == 'success' }}
+        run: python3 scripts/android-release.py publish --directory dist/android --repository "$GH_REPO"
+      - name: Download this run's verified Windows inventory
+        id: windows_download
+        if: ${{ !cancelled() && needs.windows.result == 'success' }}
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: music-windows-installer-${{ github.sha }}
+          path: dist/windows-release
+          digest-mismatch: error
+      - name: Publish Windows installer and full update feed in the Music release
+        if: ${{ !cancelled() && steps.windows_download.outcome == 'success' }}
+        env:
+          ANDROID_CHANGED: ${{ needs.validate.outputs.android_changed }}
+          ANDROID_PUBLISH_OUTCOME: ${{ steps.android_publish.outcome }}
+          WINDOWS_DOWNLOAD_OUTCOME: ${{ steps.windows_download.outcome }}
+        run: |
+          node scripts/windows-publication-policy.mjs
+          node scripts/publish-windows-main-release.mjs --directory dist/windows-release --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED"
+      - name: Check out trusted default-branch recovery tooling
+        id: trusted
+        if: always() && !cancelled()
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Repair historical Windows attachments without rebuilding
+        if: always() && !cancelled() && steps.trusted.outcome == 'success'
+        run: node scripts/recover-windows-publication.mjs --repository "$GH_REPO"
+      - name: Refresh README and release download tables
+        if: always() && !cancelled() && steps.trusted.outcome == 'success'
+        run: node scripts/current-downloads.mjs --repository "$GH_REPO" --publish

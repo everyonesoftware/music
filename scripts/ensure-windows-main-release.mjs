@@ -61,7 +61,7 @@ export async function main(argv = process.argv.slice(2), { root = resolve(dirnam
       // --target does not retarget an existing tag. Reject a conflict before writing.
       verifyTag(true);
       const response = boundedRun('gh', ['release', 'create', tag, '--repo', repository, '--target', source.sha,
-        '--title', `Music ${source.version}`, '--notes', 'Windows unsigned preview build (unsigned installer). Android unchanged; see Current downloads for the current Android and Windows installers.',
+        '--title', `Music ${source.version}`, '--notes', 'Windows build (unsigned installer). Android unchanged; see Current downloads for the current Android and Windows installers.',
         '--latest=false', '--draft=false', '--prerelease=false'], { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
       if (response.error || response.status !== 0) throw new Error('GitHub release creation failed: ' + (response.error?.message || response.stderr || `exit ${response.status}`));
       verify(api(`releases/tags/${tag}`));

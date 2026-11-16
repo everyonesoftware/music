@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const app = new URL('../apps/windows/Music.App/', import.meta.url);
@@ -21,9 +22,10 @@ test('window and titlebar use the shared Android artwork, not a text-note substi
 });
 
 test('new updater suites are wired into build and installer validation', () => {
-  const build = readFileSync(new URL('../.github/workflows/windows-build.yml', import.meta.url), 'utf8');
-  const release = readFileSync(new URL('../.github/workflows/windows-release.yml', import.meta.url), 'utf8');
-  assert.match(build, /dotnet test Music.Update.Tests\/Music.Update.Tests.csproj/);
-  assert.match(build, /node --test validation\/visual-contracts.test.mjs/);
-  assert.match(release, /dotnet test apps\/windows\/Music.Update.Tests\/Music.Update.Tests.csproj/);
+  const ci = readWorkflow();
+  const validate = workflowJob(ci, 'validate');
+  const windows = workflowJob(ci, 'windows');
+  assert.match(validate, /dotnet test apps\/windows\/Music.Update.Tests\/Music.Update.Tests.csproj/);
+  assert.match(validate, /node --test[^\n]*apps\/windows\/validation\/visual-contracts.test.mjs/);
+  assert.match(windows, /dotnet test apps\/windows\/Music.Update.Tests\/Music.Update.Tests.csproj/);
 });

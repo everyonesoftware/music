@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -28,7 +29,7 @@ test('failed main creation is repaired from original preview at same SHA without
   let failAttach = false;
   const events = [];
   const api = (path) => {
-    if (path.startsWith('actions/workflows/')) return [{ workflow_runs: [] }];
+    if (path.startsWith('actions/runs?')) return [{ workflow_runs: [] }];
     if (path === 'releases?per_page=100') return [[preview]];
     if (path === 'releases/tags/windows-v0.1.1') return preview;
     if (path === 'git/ref/tags/windows-v0.1.1') return { object: { type: 'commit', sha } };
@@ -91,7 +92,7 @@ test('failed main creation is repaired from original preview at same SHA without
   await recoverWindowsPublications(options);
   assert.deepEqual(events, [], 'complete attachment needs metadata reads only');
   for (const workflow of ['android-release.yml', 'windows-release.yml']) {
-    const result = await recoverWindowsPublications({ ...options, api: path => path.startsWith(`actions/workflows/${workflow}/`) ? [{ workflow_runs: [{ status: 'in_progress' }] }] : api(path) });
+    const result = await recoverWindowsPublications({ ...options, api: path => path.startsWith('actions/runs?') ? [{ workflow_runs: [{ path: `.github/workflows/${workflow}`, status: 'in_progress' }] }] : api(path) });
     assert.equal(result.deferred, true);
     assert.deepEqual(events, []);
   }
@@ -102,17 +103,15 @@ test('failed main creation is repaired from original preview at same SHA without
   assert.deepEqual(events, []);
 });
 
-test('recovery is independent of native affectedness and shares the Android stable publisher lock', () => {
+test('historical preview recovery is independent of affectedness and shares the centralized release lock', () => {
   const text = readFileSync(new URL('../.github/workflows/windows-publication-recovery.yml', import.meta.url), 'utf8');
   assert.match(text, /workflow_call:/);
   assert.doesNotMatch(text, /workflow_run:|push:/);
   assert.match(text, /schedule:/);
-  assert.match(text, /group: audio-apk-publication/);
-  assert.match(text, /\nconcurrency:\n  group: music-windows-release-publication\n  cancel-in-progress: false/);
-  assert.equal((text.match(/queue: max/g) ?? []).length, 2);
-  for (const file of ['android-release.yml', 'windows-release.yml']) {
-    assert.match(readFileSync(new URL(`../.github/workflows/${file}`, import.meta.url), 'utf8'), /queue: max/);
-  }
+  assert.doesNotMatch(text, /^concurrency:/m, 'maintenance must not hold a workflow-level lock while waiting for its job');
+  assert.match(workflowJob(text, 'recover'), /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
+  assert.equal((text.match(/queue: max/g) ?? []).length, 1);
+  assert.match(workflowJob(readWorkflow(), 'release'), /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
   assert.doesNotMatch(text, /needs:|outputs.windows|build-windows-installer/);
   assert.match(text, /node scripts\/recover-windows-publication.mjs/);
   const scripts = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).scripts;

@@ -1,10 +1,10 @@
 # Music APK releases and Git-count versions
 
-Workflow: `.github/workflows/android-release.yml`.
+Workflow: `.github/workflows/ci.yml`, with four jobs: `validate`, `android`, `windows`, `release`.
 
 ## What runs
 
-A push to `main` first compares Android inputs against the last successfully published APK source; only affected Android changes build and publish a signed release. Docs-only, Windows-only, and browser-study-only changes skip Android unless an earlier Android change is still unpublished. You can also select **Actions → Build and release Android APK → Run workflow**, choosing `main`, to force a build. Other branches and pull requests cannot run the signing/publication jobs. See [selective builds](../docs/SELECTIVE-BUILDS.md) for shared inputs, failed-publication recovery, and version behavior.
+A push to `main` compares Android inputs against the last verified published APK source. Only affected Android changes build a signed output; docs-only, Windows-only and browser-study-only changes skip Android unless an earlier Android change is still unpublished. Manually dispatch **Music CI** on `main` with `component=android` (or `all`) to force it. Android and Windows builds run in parallel; the final release job serializes all GitHub writes. Pull requests run changed-platform tests without signing/publication. See [selective builds](../docs/SELECTIVE-BUILDS.md).
 
 The workflow checks out full history, derives the version, installs Java 21 and the pinned Android SDK packages, runs release-tool tests plus native JVM tests/lint, and builds/verifies `assembleRelease`. It does not run Android emulator instrumentation in CI; that suite remains a separate local verification step.
 
@@ -14,7 +14,7 @@ The resulting GitHub release contains:
 - `Music-0.1.<count>.apk.sha256` — its SHA-256 checksum.
 - `release.json` — exact source commit, Git count, version, APK filename, size and checksum.
 
-A 30-day workflow artifact also retains those three files. GitHub release assets do not use that artifact expiration policy. A new release is drafted, its uploaded bytes are downloaded and checked, then it is published and verified. Only a release for the current `main` tip is promoted to Latest. Publication is serialized; GitHub may coalesce intermediate pending publication jobs during a burst of pushes. The built artifacts remain available, and a workflow can be rerun if needed.
+A 30-day workflow artifact retains those three files. GitHub release assets do not use that expiration policy. The release job drafts a new Android release, downloads/checks uploaded bytes, then publishes and verifies it. Only the current `main` tip is promoted to Latest. All publication/recovery/download-description writes share the queued `music-release-publication` lock. Changed Windows builds add their complete installer/update inventory to this same release; unchanged Windows outputs remain at their original version.
 
 ## Version rule
 

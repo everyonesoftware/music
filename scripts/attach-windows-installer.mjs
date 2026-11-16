@@ -2,7 +2,7 @@
 // Attach only the verified installer and its dedicated checksum to an existing release.
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { lstatSync, readFileSync, mkdtempSync, writeFileSync, rmSync, openSync, closeSync } from 'node:fs';
+import { lstatSync, readFileSync, mkdtempSync, writeFileSync, rmSync, openSync, closeSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -50,13 +50,43 @@ export function validateLocal(directory, source) {
   if (!Number.isSafeInteger(entry.bytes) || entry.bytes <= 0 || entry.bytes !== info.size || !/^[a-f0-9]{64}$/.test(entry.sha256) || entry.sha256 !== sha256) throw new Error('Installer size/hash mismatch.');
   return { path, bytes: info.size, sha256, checksum: `${sha256}  ${INSTALLER}\n` };
 }
-export async function attachWindowsInstaller({ directory, repository, source, run = spawnSync, clock = () => performance.now(), sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 600_000, pollMs = 5_000 }) {
+// The legacy tag/signing fields are packaging compatibility metadata, not the publication tag/state.
+export function validateFullPackage(directory, root, { run = spawnSync } = {}) {
+  const clean = invoke(run, 'git', ['-C', resolve(root), 'status', '--porcelain', '--untracked-files=all'], { timeout: 120_000 });
+  if (clean) throw new Error('Publication requires a clean Git checkout.');
+  invoke(run, process.platform === 'win32' ? 'python' : 'python3', [join(resolve(root), 'scripts/windows-release.py'), 'validate', '--root', resolve(root), '--directory', resolve(directory)], { timeout: 120_000 });
+}
+export function fullInventory(directory, source) {
+  validateLocal(directory, source);
+  directory = resolve(directory);
+  const names = [`MusicWindows-${source.version}-win-x64-full.nupkg`, INSTALLER, 'releases.win-x64.json', 'assets.win-x64.json', 'RELEASES-win-x64', 'windows-release.json', 'SHA256SUMS'];
+  if (!isDeepStrictEqual(readdirSync(directory).sort(), [...names].sort())) throw new Error('Unexpected or missing full Windows inventory.');
+  const manifest = JSON.parse(readFileSync(join(directory, 'windows-release.json'), 'utf8'));
+  if (manifest.artifacts.length !== 5 || new Set(manifest.artifacts.map(a => a.name)).size !== 5 || manifest.artifacts.some(a => !names.slice(0, 5).includes(a.name))) throw new Error('Invalid full Windows artifact inventory.');
+  return names.map(name => {
+    const path = join(directory, name), info = regular(path);
+    const sha256 = createHash('sha256').update(readFileSync(path)).digest('hex');
+    const entry = manifest.artifacts.find(a => a.name === name);
+    if (entry && (entry.bytes !== info.size || entry.sha256 !== sha256)) throw new Error('Full Windows inventory size/hash mismatch: ' + name);
+    return { name, path, bytes: info.size, sha256 };
+  });
+}
+export async function attachWindowsInstaller({ directory, repository, source, includeUpdateFeed = false, root = resolve(dirname(fileURLToPath(import.meta.url)), '..'), run = spawnSync, clock = () => performance.now(), sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 600_000, pollMs = 5_000 }) {
   if (typeof repository !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(repository) || repository.split('/').some(p => p === '.' || p === '..')) throw new Error('Invalid GitHub repository.');
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 600_000 || !Number.isFinite(pollMs) || pollMs <= 0) throw new Error('Invalid bounded wait.');
+  if (includeUpdateFeed) {
+    const originalRun = run;
+    run = (command, args, extra) => originalRun(command, args, { ...extra, shell: false, timeout: 120_000 });
+    validateFullPackage(directory, root, { run });
+  }
   const local = validateLocal(directory, source);
+  const inventory = includeUpdateFeed ? fullInventory(directory, source) : [];
+  const expectedFiles = new Map(inventory.map(item => [item.name, item]));
+  expectedFiles.set(INSTALLER, local);
+  expectedFiles.set(`${INSTALLER}.sha256`, { bytes: Buffer.byteLength(local.checksum), sha256: createHash('sha256').update(local.checksum).digest('hex') });
   const tag = `v${source.version}`;
   const prefix = `repos/${repository}`;
-  const names = [INSTALLER, `${INSTALLER}.sha256`];
+  const names = includeUpdateFeed ? [...inventory.map(item => item.name), `${INSTALLER}.sha256`] : [INSTALLER, `${INSTALLER}.sha256`];
   const api = (path, { optional = false, ...extra } = {}) => {
     const args = ['api', `${prefix}/${path}`];
     const result = run('gh', args, { encoding: 'utf8', shell: false, maxBuffer: 16 * 1024 * 1024, ...extra });
@@ -80,6 +110,7 @@ export async function attachWindowsInstaller({ directory, repository, source, ru
     return items;
   };
   const identity = release => {
+    if (includeUpdateFeed && (release?.prerelease !== false || typeof release?.published_at !== 'string' || !Number.isFinite(Date.parse(release.published_at)))) throw new Error('Expected published stable main release.');
     if (!release || release.draft !== false || release.tag_name !== tag || release.target_commitish !== source.sha) throw new Error('Main release source/commit/draft mismatch.');
     let object = api(`git/ref/tags/${tag}`).object;
     const seen = new Set();
@@ -97,6 +128,7 @@ export async function attachWindowsInstaller({ directory, repository, source, ru
     initial = view(true);
     if (initial && initial.target_commitish !== source.sha) throw new Error('Main release source/commit mismatch.');
     if (initial && initial.draft === false) break;
+    if (includeUpdateFeed) throw new Error('Expected existing published stable main release (missing/draft).');
     const remaining = deadline - clock();
     if (remaining <= 0) throw new Error('Timed out waiting for published main release (missing/draft).');
     await sleep(Math.min(pollMs, remaining));
@@ -116,10 +148,18 @@ export async function attachWindowsInstaller({ directory, repository, source, ru
     const staged = readFileSync(local.path);
     if (staged.length !== local.bytes || createHash('sha256').update(staged).digest('hex') !== local.sha256) throw new Error('Local installer changed before upload.');
     writeFileSync(join(temporary, INSTALLER), staged, { flag: 'wx' });
-    writeFileSync(join(temporary, names[1]), local.checksum, { flag: 'wx' });
+    writeFileSync(join(temporary, `${INSTALLER}.sha256`), local.checksum, { flag: 'wx' });
+    if (includeUpdateFeed) {
+      if (!isDeepStrictEqual(fullInventory(directory, source), inventory)) throw new Error('Local inventory changed before upload.');
+      for (const item of inventory.filter(item => item.name !== INSTALLER)) {
+        const bytes = readFileSync(item.path);
+        if (bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error('Local inventory changed before upload.');
+        writeFileSync(join(temporary, item.name), bytes, { flag: 'wx' });
+      }
+    }
     const verifyAsset = asset => {
       if (asset.state !== 'uploaded') throw new Error('Remote asset is not completely uploaded.');
-      const expected = asset.name === INSTALLER ? { bytes: local.bytes, sha256: local.sha256 } : { bytes: Buffer.byteLength(local.checksum), sha256: createHash('sha256').update(local.checksum).digest('hex') };
+      const expected = expectedFiles.get(asset.name);
       if (asset.size !== expected.bytes) throw new Error('Remote asset size conflict: ' + asset.name);
       const destination = join(temporary, `download-${asset.id}`);
       const fd = openSync(destination, 'w');
@@ -127,7 +167,7 @@ export async function attachWindowsInstaller({ directory, repository, source, ru
         invoke(run, 'gh', ['api', `${prefix}/releases/assets/${asset.id}`, '-H', 'Accept: application/octet-stream'], { encoding: null, stdio: ['ignore', fd, 'pipe'] });
       } finally { closeSync(fd); }
       const bytes = readFileSync(destination);
-      if (bytes.length !== expected.bytes || createHash('sha256').update(bytes).digest('hex') !== expected.sha256 || (asset.name === names[1] && !bytes.equals(Buffer.from(local.checksum)))) throw new Error('Remote asset bytes/checksum conflict: ' + asset.name);
+      if (bytes.length !== expected.bytes || createHash('sha256').update(bytes).digest('hex') !== expected.sha256 || (asset.name === `${INSTALLER}.sha256` && !bytes.equals(Buffer.from(local.checksum)))) throw new Error('Remote asset bytes/checksum conflict: ' + asset.name);
     };
     // Check all existing bytes before any write: a missing checksum is repairable, a conflict is not.
     for (const asset of before.filter(a => names.includes(a.name))) verifyAsset(asset);

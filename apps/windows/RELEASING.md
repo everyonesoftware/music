@@ -3,9 +3,10 @@
 ## What is available
 
 - `scripts/build-windows-installer.py`: Windows-only orchestration of tests, a real self-contained x64 publish, pinned Velopack packaging, and integrity metadata.
-- `scripts/windows-release.py`: commit-count versioning, package validation, checksum generation, and guarded GitHub publication.
+- `scripts/windows-release.py`: existing commit-count versioning, package validation and checksum generation. Its legacy preview publisher is no longer used by CI.
 - `apps/windows/.config/dotnet-tools.json`: pins `vpk` to **1.2.161**, matching the app's Velopack NuGet package.
-- `.github/workflows/windows-release.yml`: detect affected Windows inputs on every `main` push, selectively build/smoke-test and publish the Windows prerelease, then attach the verified unsigned installer to the matching main **Music** release; manual force build-only runs remain available.
+- `.github/workflows/ci.yml`: exactly four jobs (`validate`, `android`, `windows`, `release`). Validation selects changed platforms; Android and Windows build in parallel; one final release job serializes all publication/recovery/download refresh.
+- `scripts/publish-windows-main-release.mjs`: validate and add the complete Windows installer/feed/package inventory to the same-version, same-source stable **Music** release. It creates no Windows preview release.
 - `scripts/attach-windows-installer.mjs`: add the installer and its dedicated checksum to the same-version, same-source `v0.1.<count>` release without replacing Android assets.
 - `scripts/test-windows-installer.ps1`: exercise the packaged install → native-window launch → uninstall lifecycle on Windows, retaining diagnostic evidence.
 
@@ -23,7 +24,7 @@ Run `dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj -c Re
 
 Full package builds must run on Windows. The release builder refuses Linux and refuses uncommitted release source. It also rejects compile-only payloads that lack the self-contained .NET and native Windows App SDK files. Publication requires the packaged installer to pass the Windows install/launch/uninstall smoke test. This is not proof of audio, hardware routing, authenticated use, or upgrade behavior; those still require separate acceptance testing.
 
-The current pipeline deliberately creates **unsigned previews only**. No code-signing certificate has been configured. Windows security tools may flag an unsigned installer. SHA-256 checks verify file integrity, not publisher identity. Signed/stable distribution remains a separate setup and verification step; the metadata tool refuses to claim signing has happened.
+Windows installers remain **unsigned**, but future GitHub publication uses the normal stable Music release, not a separate unsigned-preview prerelease. No code-signing certificate is configured. Windows security tools may warn; SHA-256 proves file integrity, not publisher identity. Stable GitHub release status is independent of signing. Existing validator metadata retains its legacy `unsigned-preview` schema field for compatibility and does not create a GitHub prerelease.
 
 No credentials, signing passwords, or certificates belong in command arguments, this repository, or chat. Publication in Actions uses its scoped `GITHUB_TOKEN` automatically; no personal token is embedded in Music.
 
@@ -37,7 +38,7 @@ From the repository root:
 # Inspect commands; this does not create an installer or contact GitHub.
 python scripts/build-windows-installer.py --plan
 
-# Explicitly acknowledge unsigned-preview packaging.
+# Explicitly acknowledge unsigned installer packaging.
 # vpk 1.2.161 reads VPK_ICON as its --icon option; inherited by the Python runner.
 $env:VPK_ICON = (Resolve-Path apps/windows/Music.App/Assets/Music.ico).Path
 python scripts/build-windows-installer.py --allow-unsigned
@@ -75,7 +76,7 @@ Run `node --test tests/windows-package-size.test.mjs` from the repository root
 with the pinned .NET SDK available. It restores the real dependencies and checks
 the SDK's resolved native-file inventory, including required DLLs and PRI inputs,
 and rejects the optional components and full-runtime package. Both Windows
-workflows run these checks. The native installer lifecycle gate still verifies
+jobs run these checks. The native installer lifecycle gate still verifies
 the generated merged PRI, actual launch, and uninstall before publication.
 
 File-inventory size comparisons are not installer measurements. Measure the
@@ -144,23 +145,20 @@ even when a gate fails; no result authorizes publishing a trimmed release.
 
 Commit and push the tooling and application only when ready and authorized. Nothing is published merely by adding these files locally.
 
-Every push to `main` starts **Package and release Windows installer** with a lightweight comparison against the last published Windows package's source. Expensive tests, packaging and publication are skipped when Windows inputs are unchanged, while previously unpublished Windows changes are retried. Unknown/shared inputs conservatively select both native platforms. Publication still requires packaging, integrity validation, and install/launch/uninstall success. See [selective builds](../../docs/SELECTIVE-BUILDS.md).
+Every main push starts one **Music CI** workflow. Validation compares each native platform with its last verified publication, accepting complete Windows inventories from stable main releases or historical preview feeds. Windows tests/packaging skip when inputs are unchanged; unpublished changes are retried. Unknown/shared inputs conservatively select both platforms. Publication requires packaging, integrity validation and real install/launch/uninstall success. See [selective builds](../../docs/SELECTIVE-BUILDS.md).
 
-The main release named **Music 0.1.&lt;count&gt;** (`v0.1.<count>`) receives `MusicWindows-win-x64-Setup.exe` and `MusicWindows-win-x64-Setup.exe.sha256`. If both native components changed, these sit alongside the new APK; if only Windows changed, `scripts/ensure-windows-main-release.mjs` creates the exact-source main release with `latest=false`, without copying or rebuilding Android. This preserves the Latest endpoint required by existing Android updaters. The full Windows feed/package/integrity inventory remains in the separate `windows-v0.1.<count>` prerelease. When Android changed, the attachment step waits up to ten minutes for Android's matching main release to become published. The attachment itself refuses mismatched source/tags and never edits release metadata. Authentication/network failures are not treated as a release still being built.
+The stable main **Music 0.1.&lt;count&gt;** release receives the Windows installer, its dedicated checksum and all seven original Windows package/feed/integrity files. If Android changed, its verified release is published first and Windows preserves its assets/metadata. For Windows-only changes, the helper creates an exact-source stable main release with `latest=false` so older Android clients still find a matching APK at Latest; no Android binary is copied/rebuilt. No new `windows-v` tag/prerelease is created. Keep existing `windows-v0.1.43` and older feeds: the 0.1.43 client supports stable main feeds and serves as the legacy-client bridge. Feed/source compatibility is tested; actual installed-app upgrade behavior still needs native acceptance.
 
-For an explicit manual run, choose **Package and release Windows installer**:
-
-1. Leave **publish_preview** off to build and retain a downloadable installer artifact only.
-2. Enable **publish_preview** to build, validate, publish the Windows prerelease, and attach its installer to the matching main Music release. Publication is restricted to `main`.
+For an explicit manual run, choose **Music CI**, `component=windows` on `main`. It forces Windows tests, packaging and stable-main publication. For the existing build-only trimming experiment, also set `trimmed_experiment=true`; this disables packaging/publication and retains only the experimental artifact. `component=maintenance` runs historical attachment recovery and download refresh without native rebuilds.
 
 Equivalent commands after the workflow exists on GitHub:
 
 ```sh
-gh workflow run windows-release.yml --ref main -f publish_preview=false
-gh workflow run windows-release.yml --ref main -f publish_preview=true
+gh workflow run ci.yml --ref main -f component=windows
+gh workflow run ci.yml --ref main -f component=windows -f trimmed_experiment=true
 ```
 
-Do not run both commands unless you intentionally want two builds. Monitor the selected run to completion and inspect its installer artifact and metadata. The general `windows-build.yml` workflow continues running code/tests on applicable pushes and pull requests; it does not automatically publish releases.
+Do not run both commands unless you intentionally want two builds. Monitor the selected run and inspect its artifact/metadata. Pull requests use the same four-job entry point but cannot publish or access signing material.
 
 The smoke test runs the actual setup executable, not the loose publish output, and fails closed when the native window cannot be verified. Its logs, screenshot, and structured result are retained in the `music-windows-smoke-<sha>` Actions artifact even when the test fails. Only a successful package job provides the installer artifact to the publish job. Do not bypass a failed smoke test to publish.
 
@@ -172,15 +170,15 @@ Run the workflow and smoke-script contract checks locally with `node --test test
 
 ## Version and platform isolation
 
-A full-history commit count determines `0.1.<count>`, with a Windows tag `windows-v0.1.<count>`. The count is restricted to **1–65534** because C# AssemblyVersion does not accept 65535 as a component. A shallow/unborn checkout is rejected. The app's published version and informational source SHA are set explicitly.
+A full-history commit count determines `0.1.<count>`, published under the shared `v0.1.<count>` tag. The existing package manifest retains its internal `windows-v0.1.<count>` packaging label without creating that GitHub tag. The count is restricted to **1–65534** because C# AssemblyVersion does not accept 65535. Shallow/unborn checkouts are rejected. Version and source SHA are explicit.
 
-Windows uses package ID `MusicWindows`, runtime/channel `win-x64`, and Windows-only filenames. Android tags and APK assets are untouched. The Windows-specific release sets `prerelease=true` and `latest=false`; attaching the installer to the main Music release does not change its title, notes, publication flags, or latest-release status.
+Windows retains package ID `MusicWindows`, runtime/channel `win-x64` and platform-specific filenames. Adding Windows output to an existing stable Music release preserves its Android assets, title, notes and publication/latest policy. Existing historical Windows preview releases remain untouched.
 
 ## Publication safety
 
 The publisher validates package/channel/version identity, x64 PE headers, native Windows and .NET payload completeness, package/runtime JSON metadata, feed hashes/sizes, the legacy index, NuGet metadata, and the complete asset inventory. Unsafe zip paths, symlinks, duplicate names, extra assets, missing assets, and tampering are rejected.
 
-It creates or repairs only a matching unpublished draft, downloads and verifies the uploaded bytes, then publishes and reads back the exact release/tag/source SHA and bytes again. Published assets are immutable to this tool: reruns verify the retained original artifacts, never overwrite them. Use a new commit/version for changed binaries. Authentication/network errors do not count as a missing release.
+The stable Node publisher validates the complete original package with the existing validator before network writes, verifies the stable main tag/source, stages immutable bytes, uploads only missing assets without replacement, downloads every owned asset and verifies exact bytes/hash/source and untouched metadata again. Reruns verify retained original artifacts; conflicting bytes fail rather than overwrite. Use a new commit/version for changed binaries. Authentication/network failures do not count as a missing release.
 
 The main-release attachment helper adds only missing installer/checksum assets without `--clobber`. Matching existing bytes are verified, conflicting bytes are rejected, and a partial attachment can be resumed. It downloads the uploaded installer/checksum to verify their exact bytes and reads back the source identity and existing unrelated assets before reporting success. It does not rebuild an older version under a newer commit identity.
 
@@ -188,7 +186,7 @@ For a previously built package, publication can be invoked separately from a cle
 
 ```powershell
 python scripts/windows-release.py validate --directory dist/windows/<version>/releases
-python scripts/windows-release.py publish --directory dist/windows/<version>/releases --repository everyonesoftware/music
+node scripts/publish-windows-main-release.mjs --directory dist/windows/<version>/releases --repository everyonesoftware/music --android-changed false
 ```
 
 Replace `<version>` with the actual metadata value. A changed HEAD cannot publish an earlier package under a new source identity. No publication command was run while creating this tooling.

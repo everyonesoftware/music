@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -24,7 +25,7 @@ test('executable and runtime branding assets are included in build and publish',
   }
 });
 test('release packaging passes the shared ICO through the pinned VPK_ICON option', () => {
-  const workflow = readFileSync(new URL('.github/workflows/windows-release.yml', root), 'utf8');
+  const workflow = workflowJob(readWorkflow(), 'windows');
   const build = workflow.split('- name: Build real self-contained payload, installer and integrity manifest')[1]?.split('\n      - name:')[0];
   assert.ok(build, 'native installer build step must exist');
   assert.match(build, /VPK_ICON:.*github\.workspace.*\/apps\/windows\/Music\.App\/Assets\/Music\.ico/);

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
+import { workflowJobs } from './helpers/workflow.mjs';
 
 const directory = new URL('../.github/workflows/', import.meta.url);
 const read = name => readFileSync(new URL(name, directory), 'utf8');
@@ -15,39 +16,55 @@ test('one workflow owns main pushes and pull requests without completion-trigger
   for (const file of files) assert.doesNotMatch(triggers(read(file)), /workflow_run:/, file);
 });
 
-test('the single pipeline calls reusable platform jobs and explicitly grants publication permissions', () => {
-  const ci = read('ci.yml');
-  for (const name of ['web-build', 'windows-build', 'android-release', 'windows-release', 'windows-publication-recovery', 'current-downloads']) {
-    assert.ok(ci.includes(`uses: ./.github/workflows/${name}.yml`), name);
-    assert.match(triggers(read(`${name}.yml`)), /workflow_call:/, name);
-  }
+test('the pipeline has exactly four real jobs with parallel read-only native builds', () => {
+  const ci = read('ci.yml'), jobs = workflowJobs(ci);
+  assert.deepEqual(Object.keys(jobs), ['validate', 'android', 'windows', 'release']);
+  assert.doesNotMatch(ci, /uses: \.\/\.github\/workflows\//);
   assert.match(ci, /AUDIO_KEYSTORE_BASE64: \$\{\{ secrets.AUDIO_KEYSTORE_BASE64 \}\}/);
-  assert.doesNotMatch(ci, /secrets: inherit/);
   assert.match(ci, /permissions:\n  contents: read\n  actions: read/);
-  assert.match(ci, /android:\n[\s\S]*?permissions:\n      contents: write/);
-  assert.match(ci, /windows-release:\n[\s\S]*?permissions:\n      contents: write/);
+  for (const platform of ['android', 'windows']) {
+    assert.match(jobs[platform], /needs: validate/);
+    assert.doesNotMatch(jobs[platform], /contents: write|needs:.*(?:android|windows)/);
+    assert.ok(jobs[platform].includes(`needs.validate.outputs.${platform} == 'true'`));
+  }
+  assert.match(jobs.release, /contents: write/);
 });
 
-test('reconciliation and refresh wait for native jobs even when an unchanged platform is skipped', () => {
-  const ci = read('ci.yml');
-  const recovery = ci.split('\n  recovery:\n')[1]?.split('\n  downloads:\n')[0] ?? '';
-  assert.match(recovery, /needs: \[android, windows, windows-release\]/);
-  assert.match(recovery, /always\(\) && !cancelled\(\)/);
-  assert.match(recovery, /github.ref == 'refs\/heads\/main'/);
-  assert.match(recovery, /github.event_name != 'pull_request'/);
-  const downloads = ci.split('\n  downloads:\n')[1] ?? '';
-  assert.match(downloads, /needs: \[android, windows, windows-release, recovery\]/);
-  assert.match(downloads, /always\(\) && !cancelled\(\)/);
-  assert.match(downloads, /github.event_name != 'pull_request'/);
-  assert.doesNotMatch(read('current-downloads.yml'), /workflow_run:/);
-  assert.match(read('windows-publication-recovery.yml'), /schedule:/);
+test('serialized release runs after native jobs even when an unchanged platform is skipped', () => {
+  const release = workflowJobs(read('ci.yml')).release ?? '';
+  assert.match(release, /needs: \[validate, android, windows\]/);
+  assert.match(release, /always\(\) && !cancelled\(\)/);
+  assert.match(release, /needs.validate.result == 'success'/);
+  assert.match(release, /github.ref == 'refs\/heads\/main'/);
+  assert.match(release, /github.event_name != 'pull_request'/);
+  const commands = ['scripts/android-release.py publish', 'scripts/publish-windows-main-release.mjs', 'scripts/recover-windows-publication.mjs', 'scripts/current-downloads.mjs'];
+  let previous = -1;
+  for (const command of commands) {
+    const index = release.indexOf(command);
+    assert.ok(index > previous, command);
+    previous = index;
+  }
+  for (const workflow of ['ci.yml', 'current-downloads.yml', 'windows-publication-recovery.yml']) {
+    const text = read(workflow);
+    assert.match(text, /group: music-release-publication/);
+    assert.match(text, /queue: max/);
+    assert.doesNotMatch(text, /^concurrency:/m);
+  }
 });
 
 test('manual platform targeting and build-only trimming remain available', () => {
   const ci = read('ci.yml');
-  assert.match(ci, /component:[\s\S]*?options: \[all, android, windows, web, maintenance\]/);
+  assert.match(ci, /component:[\s\S]*?options: \[all, android, windows, maintenance\]/);
   assert.match(ci, /trimmed_experiment:[\s\S]*?type: boolean/);
-  assert.match(ci, /trimmed_experiment: \$\{\{ inputs.trimmed_experiment == true \}\}/);
+  assert.match(ci, /-p:MusicTrimmed=\$\{\{ inputs.trimmed_experiment == true \}\}/);
   assert.match(ci, /!inputs.trimmed_experiment/);
   assert.match(ci, /node --test tests\/ci-workflow.test.mjs/);
+});
+
+test('native acceptance remains mandatory and no Windows preview publication path remains', () => {
+  const ci = read('ci.yml'), jobs = workflowJobs(ci);
+  assert.doesNotMatch(ci, /windows-release.py publish|--prerelease|web-build.yml|container:/);
+  assert.match(jobs.windows ?? '', /scripts\/test-windows-installer.ps1/);
+  assert.match(jobs.release ?? '', /needs.android.result == 'success'/);
+  assert.match(jobs.release ?? '', /needs.windows.result == 'success'/);
 });

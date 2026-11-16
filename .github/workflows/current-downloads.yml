@@ -10,10 +10,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: music-current-downloads
-  cancel-in-progress: false
-
 jobs:
   refresh:
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
@@ -22,6 +18,10 @@ jobs:
     permissions:
       contents: write
       actions: read
+    concurrency:
+      group: music-release-publication
+      cancel-in-progress: false
+      queue: max
     steps:
       # Never execute code/artifacts from the triggering run with a write token.
       - name: Check out trusted default-branch tooling

@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -24,7 +25,8 @@ test('selects each platform independently, retaining older installers across pla
   const table = renderDownloads(inventory);
   assert.match(table, /v0\.1\.9\/MusicWindows-win-x64-Setup.exe/);
   assert.match(table, /v0\.1\.10\/Music-0.1.10.apk/);
-  assert.match(table, /unsigned preview/i);
+  assert.match(table, /unsigned.*security warning/i);
+  assert.doesNotMatch(table, /unsigned preview/i);
   assert.match(table, /No released web app/);
   assert.doesNotMatch(table, /latest\/download/);
   const original = '# Music\n\nExisting documentation.\n';
@@ -59,7 +61,7 @@ function remote({ windowsOnly = false } = {}) {
   const api = (path, options = {}) => {
     if (options.method) writes.push({ path, ...options });
     if (path === '') return { default_branch: 'main' };
-    if (path.startsWith('actions/workflows/')) return [{ workflow_runs: [] }];
+    if (path.startsWith('actions/runs?')) return [{ workflow_runs: [] }];
     if (path === 'releases?per_page=100') return [releases.map(r => ({ ...r, assets: [] }))];
     if (/^releases\/\d+\/assets/.test(path)) return [releases.find(r => r.id === Number(path.split('/')[1])).assets];
     if (path === 'releases/latest') return { ...releases.find(r => r.id === 10), body, draft: false, prerelease: false };
@@ -104,7 +106,7 @@ test('preview is read-only and active publishers defer writes to avoid installer
   const r = remote();
   assert.match(refreshDownloads({ repository, api: r.api }).releaseNotes, /Current downloads/);
   assert.equal(r.writes.length, 0);
-  const result = refreshDownloads({ repository, publish: true, api: (path, opts) => path.startsWith('actions/workflows/') ? [{ workflow_runs: [{ status: 'in_progress' }] }] : r.api(path, opts) });
+  const result = refreshDownloads({ repository, publish: true, api: (path, opts) => path.startsWith('actions/runs?') ? [{ workflow_runs: [{ status: 'in_progress' }] }] : r.api(path, opts) });
   assert.equal(result.deferred, true);
   assert.equal(r.writes.length, 0);
 });
@@ -122,7 +124,7 @@ test('observable human body changes before PATCH are rejected without writes', a
 test('active independent recovery defers download-description writers', async () => {
   const { refreshDownloads } = await import('../scripts/current-downloads.mjs');
   const r = remote();
-  const result = refreshDownloads({ repository, publish: true, api: (path, opts) => path.startsWith('actions/workflows/windows-publication-recovery.yml/') ? [{ workflow_runs: [{ status: 'in_progress' }] }] : r.api(path, opts) });
+  const result = refreshDownloads({ repository, publish: true, api: (path, opts) => path.startsWith('actions/runs?') ? [{ workflow_runs: [{ path: '.github/workflows/windows-publication-recovery.yml', status: 'in_progress' }] }] : r.api(path, opts) });
   assert.equal(result.deferred, true);
   assert.equal(r.writes.length, 0);
 });
@@ -176,6 +178,9 @@ test('reusable refresh checks trusted default-branch code without completion-tri
   const workflow = readFileSync(new URL('../.github/workflows/current-downloads.yml', import.meta.url), 'utf8');
   assert.match(workflow, /workflow_call:/);
   assert.match(workflow, /schedule:/);
+  assert.doesNotMatch(workflow, /^concurrency:/m, 'refresh must not acquire a workflow lock before its job lock');
+  assert.match(workflowJob(workflow, 'refresh'), /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
+  assert.match(workflowJob(readWorkflow(), 'release'), /node scripts\/current-downloads.mjs --repository "\$GH_REPO" --publish/);
   assert.doesNotMatch(workflow, /workflow_run:|push:/);
   assert.match(workflow, /ref: \$\{\{ github.event.repository.default_branch \}\}/);
   assert.match(workflow, /persist-credentials: false/);

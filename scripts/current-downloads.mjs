@@ -45,7 +45,7 @@ export function renderDownloads(inventory) {
     'Choose your platform. Each link points to its latest published installer, which may come from a different release.', '',
     '| Platform | Version | Download | Status |',
     '| --- | --- | --- | --- |',
-    row('windows', 'Windows x64', 'Download installer (.exe)', 'Unsigned preview; Windows may display a security warning.'),
+    row('windows', 'Windows x64', 'Download installer (.exe)', 'Unsigned installer; Windows may display a security warning.'),
     row('android', 'Android', 'Download APK', 'Signed alpha; install manually on your device.'),
     '| Web | — | No released web app | Browser design studies only; not a working web player. |', '',
     'Unchanged platforms keep their existing installers; a new project release does not necessarily mean a new version for every platform.',
@@ -71,12 +71,10 @@ export function replaceDownloads(text, table, { readme = false } = {}) {
 export function refreshDownloads({ repository, api, publish = false, localReadme, currentRunId = process.env.GITHUB_RUN_ID ?? '' }) {
   validateRepository(repository);
   if (publish) {
-    // Nested CI/recovery refresh runs only after native publication/recovery.
-    // Its owning run remains active in the API; all other runs must still defer.
-    for (const workflow of ['ci.yml', 'android-release.yml', 'windows-release.yml', 'windows-publication-recovery.yml']) {
-      const pages = api(`actions/workflows/${workflow}/runs?branch=main&per_page=100`, { paginate: true });
-      if (pages.some(page => page.workflow_runs.some(run => run.status !== 'completed' && !(currentRunId && String(run.id) === currentRunId)))) return { deferred: true };
-    }
+    // Repository-wide discovery survives deleted legacy workflow filenames.
+    // Conservatively defer any other active main run; never ignore API failures.
+    const pages = api('actions/runs?branch=main&per_page=100', { paginate: true });
+    if (pages.some(page => page.workflow_runs.some(run => run.status !== 'completed' && !(currentRunId && String(run.id) === currentRunId)))) return { deferred: true };
   }
   const releases = api('releases?per_page=100', { paginate: true }).flat()
     .filter(r => !r.draft && versionOf(r))
