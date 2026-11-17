@@ -435,11 +435,30 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 12 };
         if (page == "library")
         {
-            var header = new Grid();
-            header.Children.Add(Text(title, 21));
-            var all = new HyperlinkButton { Content = "View all " + title.ToLowerInvariant() + "  ›", HorizontalAlignment = HorizontalAlignment.Right, Foreground = Sage };
-            all.Click += async (_, _) => await NavigateAsync(target);
-            header.Children.Add(all); panel.Children.Add(header);
+            if (target is "playlists" or "albums")
+            {
+                var heading = new HyperlinkButton
+                {
+                    Content = title, FontSize = 21, Foreground = Sage,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    HorizontalAlignment = HorizontalAlignment.Left, Padding = new Thickness(0), MinHeight = 32
+                };
+                // The native template replaces Foreground in these visual states.
+                heading.Resources["HyperlinkButtonForegroundPointerOver"] = Sage;
+                heading.Resources["HyperlinkButtonForegroundPressed"] = Sage;
+                AutomationProperties.SetName(heading, "Open all " + title.ToLowerInvariant());
+                AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level2);
+                heading.Click += async (_, _) => await NavigateAsync(target);
+                panel.Children.Add(CreateLibraryShelfHeader(heading, title));
+            }
+            else
+            {
+                var header = new Grid();
+                header.Children.Add(Text(title, 21));
+                var all = new HyperlinkButton { Content = "View all " + title.ToLowerInvariant() + "  ›", HorizontalAlignment = HorizontalAlignment.Right, Foreground = Sage };
+                all.Click += async (_, _) => await NavigateAsync(target);
+                header.Children.Add(all); panel.Children.Add(header);
+            }
         }
         return panel;
     }
@@ -456,7 +475,8 @@ public sealed partial class MainWindow : Window
         {
             view.ItemsPanel = (ItemsPanelTemplate)root.Resources["LibraryRowPanel"];
             ScrollViewer.SetHorizontalScrollMode(view, ScrollMode.Enabled);
-            ScrollViewer.SetHorizontalScrollBarVisibility(view, ScrollBarVisibility.Auto);
+            ScrollViewer.SetHorizontalScrollBarVisibility(view, ScrollBarVisibility.Hidden);
+            BindLibraryShelf(section, view);
         }
         foreach (var card in cards) view.Items.Add(CardElement(card, layout == "row" ? "grid" : layout, token));
         view.ItemClick += async (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement item) await OpenCollectionAsync(item.Tag); };

@@ -1,5 +1,74 @@
 # Windows implementation checkpoint — validation
 
+## Library linked headings and header-arrow shelves — November 17, 2026
+
+Native source now uses sage Playlists/Albums heading links (UI Automation level-2
+headings), with compact, right-aligned, named previous/next buttons instead of
+separate View all links and full-width horizontal scrollbars. Dedicated collection
+layouts, playlist-first order, query-aware Songs visibility, and offline rendering
+are unchanged.
+
+Wheel routing is deliberately attached with `AddHandler(..., handledEventsToo:
+true)` to the internal ScrollViewer's **content**, below the ScrollViewer in the
+bubble route. A ListView-level handler would be too late to stop the internal
+viewer from converting the wheel first. Each row registers one wheel handler,
+marks the event handled even at a boundary, and detaches on unload. Ordinary
+vertical wheel updates MainScroll; Shift+wheel and genuine horizontal wheel
+update the row without moving focus. Pending targets preserve successive small
+wheel deltas while ChangeView is pending; horizontal snap points are disabled.
+Touch/precision-touchpad DirectManipulation and native keyboard/bring-into-view
+remain untouched; precision gestures are not necessarily PointerWheelChanged
+input. Arrow states use actual offset/scrollable width on view, size, and layout
+changes, including extent changes without viewport resizing.
+
+Executed locally:
+
+- Test-first red: new policy tests failed to compile because the policy did not
+  exist; then **16 executable policy cases passed**, covering ordinary/Shift/
+  horizontal wheel direction, repeated 20-unit deltas, clamping, and boundaries.
+- Rendering-source red: **3 failed, 11 passed** before native implementation
+  (linked headings, hidden scrollbars, and shelf event/arrow wiring). A further
+  heading-state assertion failed before adding sage hover/pressed resources,
+  after inspecting the pinned WinUI `DefaultHyperlinkButtonStyle` template.
+- Final visual/offline source contracts: **31 passed, 0 failed, 0 skipped**.
+- Full Core suite: **184 passed, 0 failed, 0 skipped**. TRX:
+  `artifacts/test-results/library-shelves-core.trx`.
+- LogicChecks: **23 assertions passed**.
+- Real Windows-targeted cross-build: **0 warnings, 0 errors**. Artifact:
+  `Music.App/bin/Release/net10.0-windows10.0.19041.0/win-x64/Music.dll`;
+  its PE signature and AMD64 machine header were inspected. This is a
+  **compile-only library**, not a distributable app or installer. Existing Linux
+  overrides were supplied only on the command line; release defaults are intact.
+- `git diff --check` passed. No Python source, release tooling, commits, pushes,
+  publications, or hosted workflows were changed/run for this implementation.
+
+Primary API references checked against Microsoft Learn:
+
+- [Routed AddHandler and handledEventsToo](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.uielement.addhandler)
+- [PointerWheelChanged and class handling](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.uielement.pointerwheelchanged)
+- [MouseWheelDelta direction](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.input.pointerpointproperties.mousewheeldelta)
+- [ScrollBarVisibility.Hidden retains scrolling](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.scrollbarvisibility)
+- [ChangeView offsets and animation flag](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.controls.scrollviewer.changeview)
+- [UI Automation heading level](https://learn.microsoft.com/en-us/windows/windows-app-sdk/api/winrt/microsoft.ui.xaml.automation.automationproperties.setheadinglevel)
+
+**Native runtime acceptance is not executed.** This WSL environment exposes
+neither `cmd.exe` nor `powershell.exe`. Source contracts establish wiring, not
+actual event order, template realization, rendered geometry, or device behavior.
+Before release, on an audio-capable Windows machine:
+
+- [ ] At restored/maximized sizes and high DPI, inspect the approved sage layout,
+  heading hover/focus, header-arrow alignment, and absence of horizontal bars.
+- [ ] Hover artwork without focusing it: ordinary wheel moves only MainScroll;
+  Shift+wheel and horizontal wheel move only that shelf. Repeat five small deltas
+  in each direction, rapidly and with pauses; verify accumulation and no snapping.
+- [ ] Verify first/end/no-overflow arrows, resize from overflowing to fitting and
+  back, keyboard activation, focus navigation, and touch/precision-trackpad pans.
+- [ ] Navigate via each heading, search/clear, change dedicated grid/list choices,
+  and reconnect/re-render repeatedly; verify no duplicate wheel handling or stale
+  handlers and no empty-search Songs section.
+- [ ] Verify existing Offline & recent filtering/playback and native audio gates.
+
+
 ## Opt-in trimming experiment
 
 The normal build/release remains untrimmed; `MusicTrimmed=true` is experimental.

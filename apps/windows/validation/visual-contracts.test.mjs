@@ -1,10 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 
 // Linux source contracts, not a substitute for native WinUI layout acceptance.
 const app = new URL('../Music.App/', import.meta.url);
-const source = readFileSync(new URL('MainWindow.cs', app), 'utf8');
+const source = readFileSync(new URL('MainWindow.cs', app), 'utf8').replaceAll('\r\n', '\n');
+const shelfFile = new URL('MainWindow.LibraryShelves.cs', app);
+const shelves = existsSync(shelfFile) ? readFileSync(shelfFile, 'utf8').replaceAll('\r\n', '\n') : '';
 const shell = readFileSync(new URL('Shell.xaml', app), 'utf8');
 function method(name) {
   const start = source.search(new RegExp(`private [^\\n]*\\b${name}\\(`));
@@ -17,6 +19,22 @@ function method(name) {
   }
   return source.slice(open + 1, end - 1);
 }
+
+test('library shelf headings are the sage collection links, with heading semantics and no redundant View all', () => {
+  const section = method('NewSection');
+  assert.match(section, /target is "playlists" or "albums"/);
+  assert.match(section, /new HyperlinkButton[\s\S]*?Content = title/);
+  assert.match(section, /Foreground = Sage/);
+  for (const state of ['PointerOver', 'Pressed']) {
+    assert.match(section, new RegExp(`heading.Resources\\["HyperlinkButtonForeground${state}"\\] = Sage`));
+  }
+  const linkedHeadingBranch = section.slice(section.indexOf('if (target is'), section.indexOf('\n            else'));
+  assert.doesNotMatch(linkedHeadingBranch, /View all/);
+  assert.match(section, /SetHeadingLevel\(heading,.*Level2\)/);
+  assert.match(section, /heading.Click \+= async .*NavigateAsync\(target\)/);
+  assert.match(section, /CreateLibraryShelfHeader\(heading, title\)/);
+  assert.match(section, /else[\s\S]*?View all/); // Songs search retains its existing header.
+});
 
 test('library renders the playlists row before albums', () => {
   const browse = method('RenderBrowse');
@@ -37,12 +55,36 @@ test('library collections use one horizontally scrolling row without the eight-c
   assert.match(collection, /if \(layout == "row"\)/);
   assert.match(collection, /view.ItemsPanel = \(ItemsPanelTemplate\)root.Resources\["LibraryRowPanel"\]/);
   assert.match(collection, /SetHorizontalScrollMode\(view, ScrollMode.Enabled\)/);
-  assert.match(collection, /SetHorizontalScrollBarVisibility\(view, ScrollBarVisibility.Auto\)/);
+  assert.match(collection, /SetHorizontalScrollBarVisibility\(view, ScrollBarVisibility.Hidden\)/);
+  assert.match(collection, /BindLibraryShelf\(section, view\)/);
   assert.match(collection, /SetVerticalScrollMode\(view, ScrollMode.Disabled\)/);
   assert.match(collection, /foreach \(var card in cards\)/);
   assert.match(collection, /CardElement\(card, layout == "row" \? "grid" : layout, token\)/);
   assert.doesNotMatch(collection, /cards.Take\(/);
   assert.match(shell, /<ItemsPanelTemplate x:Key="LibraryRowPanel">\s*<ItemsStackPanel Orientation="Horizontal"\s*\/>\s*<\/ItemsPanelTemplate>/);
+});
+
+test('shelf arrows track real scroll and resize boundaries; wheel interception precedes the internal ScrollViewer', () => {
+  assert.match(shelves, /HorizontalAlignment = HorizontalAlignment.Right/);
+  assert.match(shelves, /"Previous " \+ title.ToLowerInvariant\(\)/);
+  assert.match(shelves, /"Next " \+ title.ToLowerInvariant\(\)/);
+  assert.match(shelves, /LibraryShelfScrollPolicy.Boundaries\(/);
+  assert.match(shelves, /Previous.IsEnabled = state.Previous/);
+  assert.match(shelves, /Next.IsEnabled = state.Next/);
+  assert.match(shelves, /scroller.ViewChanged \+=/);
+  assert.match(shelves, /scroller.SizeChanged \+=/);
+  assert.match(shelves, /scroller.LayoutUpdated \+=/);
+  assert.match(shelves, /HorizontalSnapPointsType = SnapPointsType.None/);
+  assert.match(shelves, /scroller.Content is (?:not )?UIElement wheelSurface/);
+  assert.match(shelves, /wheelSurface.AddHandler\(UIElement.PointerWheelChangedEvent, wheelHandler, true\)/);
+  assert.match(shelves, /wheelSurface.RemoveHandler\(UIElement.PointerWheelChangedEvent, wheelHandler\)/);
+  assert.doesNotMatch(shelves, /view.AddHandler\(UIElement.PointerWheelChangedEvent/);
+  assert.match(shelves, /LibraryShelfScrollPolicy.Wheel\(properties.MouseWheelDelta,[\s\S]*?VirtualKeyModifiers.Shift[\s\S]*?properties.IsHorizontalMouseWheel\)/);
+  assert.match(shelves, /e.Handled = true/);
+  assert.match(shelves, /C<ScrollViewer>\("MainScroll"\)/);
+  assert.match(shelves, /horizontalTarget \?\? scroller.HorizontalOffset/);
+  assert.match(shelves, /ChangeView\(horizontalTarget, null, null, true\)/);
+  assert.doesNotMatch(shelves, /\.Focus\(|ManipulationMode\s*=/);
 });
 
 test('library song results are query-aware and keep the song search request', () => {
