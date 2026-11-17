@@ -115,17 +115,6 @@
           </StackPanel>
           <StackPanel x:Name="BrowsePanel" Spacing="24" Visibility="Collapsed"/>
           <StackPanel x:Name="SettingsPanel" Spacing="22" Visibility="Collapsed" MaxWidth="720" HorizontalAlignment="Stretch">
-            <StackPanel Spacing="12"><TextBlock Text="Connection" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Connect to your Navidrome server over HTTPS. Your password is stored in Windows Credential Locker, never in the profile file." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
-                <TextBox x:Name="ConnectionName" Header="Connection name" PlaceholderText="Name"/>
-                <TextBox x:Name="ServerAddress" Header="Server address" PlaceholderText="https://" InputScope="Url"/>
-                <TextBox x:Name="Username" Header="Username"/>
-                <PasswordBox x:Name="Password" Header="Password"/>
-                <StackPanel Orientation="Horizontal" Spacing="10"><Button x:Name="ConnectButton" Content="Connect"/><Button x:Name="CancelConnectButton" Content="Cancel" Visibility="Collapsed"/></StackPanel>
-                <TextBlock x:Name="ConnectionStatus" Text="Not connected" TextWrapping="Wrap" Foreground="{StaticResource Muted}"/>
-              </StackPanel></Border>
-            </StackPanel>
-            <StackPanel Spacing="10"><TextBlock Text="Connection info" FontSize="21" FontWeight="SemiBold"/><Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="8"><TextBlock x:Name="ConnectionInfo" Text="No saved connection." TextWrapping="Wrap"/><Button x:Name="TestConnectionButton" Content="Test connection" IsEnabled="False" HorizontalAlignment="Left"/></StackPanel></Border></StackPanel>
             <StackPanel Spacing="10"><TextBlock Text="Updates" FontSize="21" FontWeight="SemiBold"/>
               <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
                 <TextBlock x:Name="VersionText" Text="Music for Windows"/>
@@ -140,6 +129,17 @@
                 </StackPanel>
               </StackPanel></Border>
             </StackPanel>
+            <StackPanel Spacing="12"><TextBlock Text="Connection" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Connect to your Navidrome server over HTTPS. Your password is stored in Windows Credential Locker, never in the profile file." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
+              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
+                <TextBox x:Name="ConnectionName" Header="Connection name" PlaceholderText="Name"/>
+                <TextBox x:Name="ServerAddress" Header="Server address" PlaceholderText="https://" InputScope="Url"/>
+                <TextBox x:Name="Username" Header="Username"/>
+                <PasswordBox x:Name="Password" Header="Password"/>
+                <StackPanel Orientation="Horizontal" Spacing="10"><Button x:Name="ConnectButton" Content="Connect"/><Button x:Name="CancelConnectButton" Content="Cancel" Visibility="Collapsed"/></StackPanel>
+                <TextBlock x:Name="ConnectionStatus" Text="Not connected" TextWrapping="Wrap" Foreground="{StaticResource Muted}"/>
+              </StackPanel></Border>
+            </StackPanel>
+            <StackPanel Spacing="10"><TextBlock Text="Connection info" FontSize="21" FontWeight="SemiBold"/><Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="8"><TextBlock x:Name="ConnectionInfo" Text="No saved connection." TextWrapping="Wrap"/><Button x:Name="TestConnectionButton" Content="Test connection" IsEnabled="False" HorizontalAlignment="Left"/></StackPanel></Border></StackPanel>
           </StackPanel>
         </StackPanel>
       </ScrollViewer>

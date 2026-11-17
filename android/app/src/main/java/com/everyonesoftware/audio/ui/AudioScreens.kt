@@ -657,6 +657,16 @@ private fun Settings(state: AudioUiState, actions: AudioUiActions, home: Screen)
     Column(Modifier.fillMaxSize()) {
         Header("Server & libraries", "Connection settings", back = { actions.showScreen(state.backDestination) })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Surface(Modifier.fillMaxWidth().testTag("settings-updates").clickable { actions.showScreen(Screen.UPDATES) }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+                Row(Modifier.heightIn(min = 72.dp).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Updates", style = MaterialTheme.typography.titleMedium)
+                        Hint(if (state.updates.release != null) "A new version is available" else "Music ${state.updates.installedVersion}")
+                    }
+                    Icon(Icons.Default.ChevronRight, null)
+                }
+            }
+            HorizontalDivider()
             Hint("Connections on this device. Listening sessions stay separate for each server.")
             state.connections.forEach { connection ->
                 Surface(shape = RoundedCornerShape(10.dp), border = BorderStroke(1.dp, if (connection.id == state.connection?.id) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline)) {
@@ -689,16 +699,6 @@ private fun Settings(state: AudioUiState, actions: AudioUiActions, home: Screen)
             }
             HorizontalDivider()
             StorageSettings(state, actions)
-            HorizontalDivider()
-            Surface(Modifier.fillMaxWidth().testTag("settings-updates").clickable { actions.showScreen(Screen.UPDATES) }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-                Row(Modifier.heightIn(min = 72.dp).padding(horizontal = 14.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Updates", style = MaterialTheme.typography.titleMedium)
-                        Hint(if (state.updates.release != null) "A new version is available" else "Music ${state.updates.installedVersion}")
-                    }
-                    Icon(Icons.Default.ChevronRight, null)
-                }
-            }
             ErrorMessage(state.error)
             Spacer(Modifier.height(8.dp))
         }
