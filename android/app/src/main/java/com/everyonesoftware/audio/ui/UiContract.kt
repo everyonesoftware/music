@@ -107,6 +107,7 @@ interface AudioUiActions {
     fun setCollectionQuery(kind: CollectionKind, query: String) = Unit
     fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) = Unit
     fun refreshCollection(kind: CollectionKind) = Unit
+    fun refreshCurrentPage() = Unit
     fun downloadAlbum() = Unit
     fun downloadPlaylist() = Unit
     fun openOfflineCollection(kind: String, id: String) = Unit

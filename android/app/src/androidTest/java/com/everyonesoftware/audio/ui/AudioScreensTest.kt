@@ -17,6 +17,8 @@ import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
@@ -49,6 +51,58 @@ import org.junit.runner.RunWith
 /** Real native UI; all account/media fixtures and action spies live only in androidTest. */
 @RunWith(AndroidJUnit4::class)
 class AudioScreensTest {
+    @Test fun pullToRefreshWorksOnBrowsePagesIncludingEmptyCollectionsButNotDownloads() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLISTS,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song),
+            selectedAlbum = Album("a", "Album", "Artist"), albumSongs = listOf(song)))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val cases = listOf(
+            Screen.PLAYLISTS to "library-content",
+            Screen.ALL_PLAYLISTS to "collection-empty",
+            Screen.ALL_ALBUMS to "collection-empty",
+            Screen.PLAYLIST to "playlist-songs",
+            Screen.ALBUM to "album-songs",
+            Screen.SEARCH to "search-results",
+        )
+        for ((index, case) in cases.withIndex()) {
+            compose.runOnIdle { state.value = state.value.copy(screen = case.first) }
+            compose.onNodeWithTag(case.second).performTouchInput { swipeDown() }
+            compose.runOnIdle { assertEquals("Refresh ${case.first}", index + 1, actions.pageRefreshes) }
+        }
+        for (screen in listOf(Screen.OFFLINE, Screen.SETTINGS, Screen.PLAYER, Screen.QUEUE)) {
+            compose.runOnIdle { state.value = state.value.copy(screen = screen) }
+            compose.onNodeWithTag("page-refresh").assertDoesNotExist()
+        }
+        compose.runOnIdle {
+            assertEquals(0, actions.playToggles)
+            assertTrue(actions.startedPlaylists.isEmpty())
+            assertTrue(actions.playedAlbums.isEmpty())
+        }
+    }
+
+    @Test fun pullToRefreshWorksWithPopulatedCollectionGridsAndListsAndIsDisabledOffline() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.ALL_PLAYLISTS,
+            playlists = listOf(Playlist("p", "Playlist")), albums = listOf(Album("a", "Album", "Artist"))))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        var expected = 0
+        for (screen in listOf(Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS)) {
+            for (layout in CollectionLayout.entries) {
+                compose.runOnIdle { state.value = state.value.copy(screen = screen, playlistCollectionLayout = layout, albumCollectionLayout = layout) }
+                compose.onNodeWithTag(if (layout == CollectionLayout.GRID) "collection-grid" else "collection-list")
+                    .performTouchInput { swipeDown() }
+                compose.runOnIdle { assertEquals(++expected, actions.pageRefreshes) }
+            }
+        }
+        compose.runOnIdle { state.value = state.value.copy(storage = state.value.storage.copy(settings = state.value.storage.settings.copy(offline = true))) }
+        compose.onNodeWithTag("page-refresh").assertDoesNotExist()
+    }
+
+    @Test fun libraryRefreshDoesNotShowHorizontalProgressBar() {
+        render(playerState().copy(screen = Screen.PLAYLISTS, playlistsRefreshing = true, albumsRefreshing = true))
+        compose.onNodeWithContentDescription("Refreshing library").assertDoesNotExist()
+        compose.onNodeWithTag("view-all-playlists").assertIsDisplayed()
+    }
+
     @Test fun albumCollectionSearchesArtistsAndShowsLoadingEmptyErrorAndRetry() {
         val state = mutableStateOf(playerState().copy(screen = Screen.ALL_ALBUMS,
             albums = listOf(Album("a", "Journey", "Austin Wintory"), Album("b", "Celeste", "Lena Raine")),
@@ -618,6 +672,8 @@ class AudioScreensTest {
         val collectionQueries = mutableListOf<Pair<CollectionKind, String>>()
         val collectionLayouts = mutableListOf<Pair<CollectionKind, CollectionLayout>>()
         val collectionRefreshes = mutableListOf<CollectionKind>()
+        var pageRefreshes = 0
+        override fun refreshCurrentPage() { pageRefreshes++ }
         override fun refreshCollection(kind: CollectionKind) { collectionRefreshes += kind }
         override fun setCollectionQuery(kind: CollectionKind, query: String) { collectionQueries += kind to query }
         override fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) { collectionLayouts += kind to layout }

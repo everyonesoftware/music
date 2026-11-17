@@ -16,6 +16,220 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AudioViewModelTest {
+    @Test fun currentPageDetailRefreshRetainsSongsCoalescesRequestsAndPreservesPlaybackAndDownloads() = runBlocking {
+        for (album in listOf(false, true)) withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val revision = java.util.concurrent.atomic.AtomicInteger(0)
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    val path = request.requestUrl!!.encodedPath
+                    requests.add(path)
+                    if (path.endsWith("getAlbumList2.view")) return ok(""", "albumList2":{"album":[{"id":"a","name":"Album"}]}""")
+                    if (!path.endsWith(if (album) "getAlbum.view" else "getPlaylist.view")) return MockResponse().setResponseCode(404)
+                    val version = revision.get()
+                    if (version == 1) {
+                        entered.countDown()
+                        check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    }
+                    if (version == 2) return MockResponse().setResponseCode(503)
+                    return if (album) ok(""", "album":{"id":"a","name":"Album $version","song":[{"id":"song-$version","title":"Track $version"}]}""")
+                    else ok(""", "playlist":{"entry":[{"id":"song-$version","title":"Track $version"}]}""")
+                }
+            }
+            fun songs() = if (album) model.state.value.albumSongs else model.state.value.playlistSongs
+            fun loading() = if (album) model.state.value.albumLoading else model.state.value.playlistLoading
+            fun error() = if (album) model.state.value.albumError else model.state.value.playlistDetailError
+            try {
+                if (album) {
+                    onMain { model.refreshCollection(CollectionKind.ALBUMS) }
+                    until { !model.state.value.albumsRefreshing && model.state.value.albums.isNotEmpty() }
+                }
+                onMain {
+                    model.showScreen(if (album) Screen.ALL_ALBUMS else Screen.ALL_PLAYLISTS)
+                    if (album) model.openAlbum("a") else model.openPlaylist("p")
+                }
+                until { !loading() && songs().singleOrNull()?.id == "song-0" }
+                val before = model.state.value
+                val session = graph.session.value
+                val storage = graph.songCache.state.value
+                requests.clear()
+                revision.set(1)
+                onMain { model.refreshCurrentPage(); model.refreshCurrentPage() }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                assertTrue(loading())
+                assertEquals(before.screen, model.state.value.screen)
+                assertEquals(before.backDestination, model.state.value.backDestination)
+                assertEquals("song-0", songs().single().id)
+                release.countDown()
+                until { !loading() && songs().singleOrNull()?.id == "song-1" }
+                revision.set(2)
+                onMain { model.refreshCurrentPage() }
+                until { !loading() && error() != null }
+                assertEquals("song-1", songs().single().id)
+                assertEquals(before.screen, model.state.value.screen)
+                assertEquals(before.backDestination, model.state.value.backDestination)
+                assertEquals(session, graph.session.value)
+                assertEquals(session, graph.store.session("vm-browse-fixture"))
+                assertEquals(storage, graph.songCache.state.value)
+                assertFalse(model.state.value.playing)
+                val detailPath = if (album) "/rest/getAlbum.view" else "/rest/getPlaylist.view"
+                assertEquals(listOf(detailPath, detailPath), requests.toList())
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun currentPageRefreshDispatchesOnlyMetadataForItsCollectionAndIgnoresOtherPages() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    val path = request.requestUrl!!.encodedPath
+                    requests.add(path)
+                    return when {
+                        path.endsWith("getAlbumList2.view") -> ok(""", "albumList2":{"album":[{"id":"new","name":"New album"}]}""")
+                        path.endsWith("getPlaylists.view") -> ok(""", "playlists":{"playlist":[{"id":"p","name":"Updated playlist"}]}""")
+                        path.endsWith("getPlaylist.view") -> ok(""", "playlist":{"entry":[{"id":"updated","title":"Updated"}]}""")
+                        else -> MockResponse().setResponseCode(404)
+                    }
+                }
+            }
+            val session = graph.session.value
+            val storage = graph.songCache.state.value
+            for (screen in listOf(Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLISTS)) {
+                onMain { model.showScreen(screen) }
+                until { !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+                requests.clear()
+                onMain { model.refreshCurrentPage() }
+                until { requests.isNotEmpty() && !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+                val expected = when (screen) {
+                    Screen.ALL_PLAYLISTS -> setOf("/rest/getPlaylists.view", "/rest/getPlaylist.view")
+                    Screen.ALL_ALBUMS -> setOf("/rest/getAlbumList2.view")
+                    else -> setOf("/rest/getPlaylists.view", "/rest/getPlaylist.view", "/rest/getAlbumList2.view")
+                }
+                assertEquals(expected, requests.toSet())
+                assertEquals(expected.size, requests.size)
+                assertEquals(screen, model.state.value.screen)
+                assertEquals("Updated playlist", model.state.value.playlists.single().name)
+                if (screen != Screen.ALL_PLAYLISTS) assertEquals("new", model.state.value.albums.single().id)
+            }
+            for (screen in listOf(Screen.OFFLINE, Screen.SETTINGS, Screen.PLAYER, Screen.QUEUE)) {
+                onMain { model.showScreen(screen) }
+                requests.clear()
+                val before = model.state.value
+                onMain { model.refreshCurrentPage() }
+                Thread.sleep(100)
+                assertTrue(requests.isEmpty())
+                assertEquals(before, model.state.value)
+            }
+            assertEquals(session, graph.session.value)
+            assertEquals(storage, graph.songCache.state.value)
+            assertFalse(model.state.value.playing)
+        }
+    }
+
+    @Test fun currentPageSearchRefreshRetainsResultsAndQueryOnFailureWithoutDuplicateRequests() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            onMain { model.showScreen(Screen.SEARCH) }
+            until { !model.state.value.albumsRefreshing }
+            val requests = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val revision = java.util.concurrent.atomic.AtomicInteger(0)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    requests.add(request.requestUrl!!.queryParameter("query") ?: "unexpected")
+                    val version = revision.get()
+                    return if (version == 2) MockResponse().setResponseCode(503)
+                    else ok(""", "searchResult3":{"song":[{"id":"result-$version","title":"Result $version"}]}""")
+                        .setBodyDelay(200, java.util.concurrent.TimeUnit.MILLISECONDS)
+                }
+            }
+            val session = graph.session.value
+            val storage = graph.songCache.state.value
+            onMain { model.search("  artist  ") }
+            until { !model.state.value.searchLoading && model.state.value.searchSongs.isNotEmpty() }
+            requests.clear()
+            revision.set(1)
+            onMain { model.refreshCurrentPage(); model.refreshCurrentPage() }
+            assertEquals("result-0", model.state.value.searchSongs.single().id)
+            until { !model.state.value.searchLoading && model.state.value.searchSongs.singleOrNull()?.id == "result-1" }
+            revision.set(2)
+            onMain { model.refreshCurrentPage() }
+            until { !model.state.value.searchLoading && model.state.value.searchError != null }
+            assertEquals("result-1", model.state.value.searchSongs.single().id)
+            assertEquals("  artist  ", model.state.value.searchQuery)
+            assertEquals(Screen.SEARCH, model.state.value.screen)
+            assertEquals(listOf("artist", "artist"), requests.toList())
+            assertEquals(session, graph.session.value)
+            assertEquals(storage, graph.songCache.state.value)
+            graph.networkPolicy.offline = true
+            try {
+                val before = model.state.value
+                onMain { model.refreshCurrentPage() }
+                Thread.sleep(100)
+                assertEquals(before, model.state.value)
+                assertEquals(listOf("artist", "artist"), requests.toList())
+            } finally { graph.networkPolicy.offline = false }
+            onMain { model.search("   ") }
+            val blank = model.state.value
+            onMain { model.refreshCurrentPage() }
+            Thread.sleep(100)
+            assertEquals(blank, model.state.value)
+            assertEquals(listOf("artist", "artist"), requests.toList())
+        }
+    }
+
+    @Test fun pendingDetailRefreshCannotPublishAfterAccountSwitch() = runBlocking {
+        for (album in listOf(false, true)) withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val refreshing = java.util.concurrent.atomic.AtomicBoolean(false)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    val path = request.requestUrl!!.encodedPath
+                    if (path.endsWith("getAlbumList2.view")) return ok(""", "albumList2":{"album":[{"id":"a","name":"Album"}]}""")
+                    if (path.endsWith("getPlaylists.view")) return ok(""", "playlists":{}""")
+                    if (refreshing.get()) {
+                        entered.countDown()
+                        check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    }
+                    return if (album) ok(""", "album":{"id":"a","name":"Old account","song":[{"id":"old-account","title":"Old"}]}""")
+                    else ok(""", "playlist":{"entry":[{"id":"old-account","title":"Old"}]}""")
+                }
+            }
+            val second = "vm-refresh-second"
+            try {
+                if (album) {
+                    onMain { model.loadAlbums() }
+                    until { !model.state.value.albumsRefreshing && model.state.value.albums.isNotEmpty() }
+                }
+                onMain { if (album) model.openAlbum("a") else model.openPlaylist("p") }
+                until { if (album) !model.state.value.albumLoading else !model.state.value.playlistLoading }
+                refreshing.set(true)
+                onMain { model.refreshCurrentPage() }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                graph.store.saveConnection(Credentials(Connection(second, "Second", server.url("/").toString(), "vm-refresh-second-user"), "test-only-password"))
+                val session = ListeningSession(second, "second", "Second", listOf(Song("second", "Second", "Fixture")))
+                graph.store.saveSession(session)
+                onMain { model.switchConnection(second) }
+                until { model.state.value.connection?.id == second && !model.state.value.loading }
+                release.countDown()
+                Thread.sleep(300)
+                assertNull(model.state.value.selectedAlbum)
+                assertNull(model.state.value.selectedPlaylist)
+                assertTrue(model.state.value.albumSongs.isEmpty())
+                assertTrue(model.state.value.playlistSongs.isEmpty())
+                assertFalse(model.state.value.albumLoading)
+                assertFalse(model.state.value.playlistLoading)
+                assertEquals(session, graph.session.value)
+            } finally { release.countDown(); graph.store.removeConnection(second) }
+        }
+    }
+
     @Test fun collectionNavigationPreservesQueriesLayoutsAndSessionAndRestoresLayoutsInNewModel() = runBlocking {
         withBrowseFixture { model, graph, _ ->
             val originalLayout = graph.store.collectionLayout(CollectionKind.PLAYLISTS)

@@ -28,6 +28,7 @@ import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.StarBorder
 import androidx.compose.material3.*
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -71,7 +72,7 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                     CircularProgressIndicator(Modifier.semantics { contentDescription = "Restoring your listening session" })
                 }
             } else {
-                Box(Modifier.weight(1f).fillMaxWidth()
+                RefreshablePage(state, actions, Modifier.weight(1f).fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
                     .padding(horizontal = 18.dp)) {
                     when (state.screen) {
@@ -98,6 +99,34 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
             }
         }
     }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun RefreshablePage(state: AudioUiState, actions: AudioUiActions, modifier: Modifier, content: @Composable BoxScope.() -> Unit) {
+    val refreshing = when (state.screen) {
+        Screen.PLAYLISTS -> state.playlistsRefreshing || state.albumsRefreshing
+        Screen.ALL_PLAYLISTS -> state.playlistsRefreshing
+        Screen.ALL_ALBUMS -> state.albumsRefreshing
+        Screen.PLAYLIST -> state.playlistLoading
+        Screen.ALBUM -> state.albumLoading
+        Screen.SEARCH -> state.searchLoading
+        else -> null
+    }
+    if (refreshing == null || state.connection == null || state.storage.settings.offline) {
+        Box(modifier, content = content)
+    } else {
+        // Reset the gesture on navigation/account changes, outside the persistent mini-player.
+        key(state.screen, state.connection.id) {
+            PullToRefreshBox(isRefreshing = refreshing, onRefresh = actions::refreshCurrentPage,
+                modifier = modifier.testTag("page-refresh").semantics {
+                    customActions = listOf(CustomAccessibilityAction("Refresh page") {
+                        if (!refreshing) actions.refreshCurrentPage()
+                        true
+                    })
+                }, content = content)
+        }
     }
 }
 
@@ -267,8 +296,8 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
         ErrorMessage(state.error)
         ErrorMessage(state.playlistError)
         ErrorMessage(state.albumsError)
-        if (state.playlistsRefreshing || state.albumsRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 8.dp).semantics { contentDescription = "Refreshing library" })
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(top = 10.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("library-content"), contentPadding = PaddingValues(top = 10.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
             item {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                     Text("Playlists", style = MaterialTheme.typography.titleLarge)
@@ -342,7 +371,7 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
         if (error != null) TextButton({ actions.refreshCollection(kind) }, enabled = !refreshing) { Text("Retry $noun") }
         if (refreshing) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading $noun" })
         if (entries.isEmpty()) {
-            Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Column(Modifier.weight(1f).fillMaxWidth().testTag("collection-empty").verticalScroll(rememberScrollState()).padding(vertical = 24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 when {
                     refreshing -> Hint("Loading $noun…")
                     error != null -> Hint("Unable to load $noun. Check your connection and retry.")
@@ -413,7 +442,7 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
         ErrorMessage(state.searchError)
         if (state.searchError != null) TextButton({ actions.search(state.searchQuery) }) { Text("Retry song search") }
         if (state.searchLoading) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Searching songs" })
-        LazyColumn(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
+        LazyColumn(Modifier.weight(1f).testTag("search-results"), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (term.isBlank()) item { Hint("Search your playlists, albums, and songs by name or artist.") }
             if (playlists.isNotEmpty()) item { Text("Playlists", style = MaterialTheme.typography.titleLarge) }
             items(playlists, key = { "search-playlist-${it.id}" }) { playlist ->
@@ -461,7 +490,7 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
     val playlist = state.selectedPlaylist
     Column(Modifier.fillMaxSize()) {
         Header(playlist?.name ?: "Playlist", "Playlist", back = { actions.showScreen(state.backDestination) })
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("playlist-songs"), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (playlist != null) item {
                 Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
                     Artwork(playlist.coverArtId, artworkUrl, Modifier.size(180.dp))
@@ -492,22 +521,24 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
     val album = state.selectedAlbum
     Column(Modifier.fillMaxSize()) {
         Header(album?.name ?: "Album", album?.artist.orEmpty(), back = { actions.showScreen(state.backDestination) })
-        if (album != null) {
-            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp))
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("album-songs"), contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp)) {
+            if (album != null) item {
+                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
+                    Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp))
+                }
+                Text(album.name, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                TextButton({ actions.downloadAlbum() }, enabled = !state.albumLoading && state.albumError == null && state.albumSongs.isNotEmpty()) { Text("Download album") }
+                Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
+                Primary(if (state.loading) "Starting…" else "Play album", Modifier.testTag("album-play"), enabled = !state.loading && !state.albumLoading && state.albumSongs.isNotEmpty()) {
+                    actions.playAlbum(album.id)
+                }
             }
-            Text(album.name, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-            TextButton({ actions.downloadAlbum() }, enabled = !state.albumLoading && state.albumError == null && state.albumSongs.isNotEmpty()) { Text("Download album") }
-            Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
-            Primary(if (state.loading) "Starting…" else "Play album", Modifier.testTag("album-play"), enabled = !state.loading && !state.albumLoading && state.albumSongs.isNotEmpty()) {
-                actions.playAlbum(album.id)
+            if (state.albumLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp)) }
+            item {
+                ErrorMessage(state.albumError)
+                if (state.albumError != null && album != null) TextButton({ actions.openAlbum(album.id) }) { Text("Retry album") }
+                if (!state.albumLoading && state.albumError == null && state.albumSongs.isEmpty()) Hint("This album has no songs.")
             }
-        }
-        if (state.albumLoading) LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp))
-        ErrorMessage(state.albumError)
-        if (state.albumError != null && album != null) TextButton({ actions.openAlbum(album.id) }) { Text("Retry album") }
-        if (!state.albumLoading && state.albumError == null && state.albumSongs.isEmpty()) Hint("This album has no songs.")
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp)) {
             items(state.albumSongs, key = { it.id }) { song ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 62.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)

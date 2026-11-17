@@ -16,6 +16,7 @@ import com.everyonesoftware.audio.data.Connection
 import com.everyonesoftware.audio.data.CollectionKind
 import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.data.AlbumContents
+import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.OfflineCollection
 import com.everyonesoftware.audio.data.Song
 import com.everyonesoftware.audio.data.Credentials
@@ -58,6 +59,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private var playlistDetailOperation: Job? = null
     private var playlistDetailGeneration = 0L
     private var albumDetailOperation: Job? = null
+    private var albumDetailGeneration = 0L
     private val initialization: Job
     private var generation = 0L
     private var firstLibrarySetup = false
@@ -129,6 +131,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         searchOperation?.cancel()
         albumsOperation?.cancel()
         albumsInitialized = false
+        ++albumDetailGeneration
         albumDetailOperation?.cancel()
         val connection = graph.credentials.value?.connection
         val playlists = connection?.let { graph.store.cachedPlaylists(it.id) }.orEmpty()
@@ -259,7 +262,33 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun refreshCollection(kind: CollectionKind) {
         when (kind) {
             CollectionKind.ALBUMS -> loadAlbums()
-            CollectionKind.PLAYLISTS -> viewModelScope.launch { initialization.join(); graph.playlists.refresh() }
+            CollectionKind.PLAYLISTS -> {
+                val credentials = graph.credentials.value ?: return
+                viewModelScope.launch {
+                    initialization.join()
+                    if (graph.credentials.value == credentials) graph.playlists.refresh()
+                }
+            }
+        }
+    }
+
+    /** Refresh server metadata in place; never navigate, alter playback, or schedule downloads. */
+    override fun refreshCurrentPage() {
+        if (graph.networkPolicy.offline) return
+        val credentials = graph.credentials.value ?: return
+        val page = current.value
+        if (page.connection != credentials.connection) return
+        when (page.screen) {
+            Screen.PLAYLISTS -> {
+                refreshCollection(CollectionKind.PLAYLISTS)
+                loadAlbums()
+            }
+            Screen.ALL_PLAYLISTS -> refreshCollection(CollectionKind.PLAYLISTS)
+            Screen.ALL_ALBUMS -> loadAlbums()
+            Screen.PLAYLIST -> if (!page.playlistLoading) page.selectedPlaylist?.let { loadPlaylistDetail(it) }
+            Screen.ALBUM -> if (!page.albumLoading) page.selectedAlbum?.let { loadAlbumDetail(it.id) }
+            Screen.SEARCH -> if (page.searchQuery.isNotBlank()) loadSearch(page.searchQuery, retainResults = true)
+            else -> Unit
         }
     }
 
@@ -286,19 +315,26 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
 
     override fun openAlbum(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("album", id); return }
-        val credentials = graph.credentials.value ?: return
+        if (graph.credentials.value == null) return
         val album = current.value.albums.firstOrNull { it.id == id } ?: return
-        albumDetailOperation?.cancel()
         current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
+        loadAlbumDetail(id)
+    }
+
+    private fun loadAlbumDetail(id: String) {
+        val credentials = graph.credentials.value ?: return
+        val ticket = ++albumDetailGeneration
+        albumDetailOperation?.cancel()
+        current.update { it.copy(albumLoading = true, albumError = null) }
         albumDetailOperation = viewModelScope.launch {
             try {
                 val result = graph.clientFor(credentials).album(id)
-                if (graph.credentials.value == credentials && current.value.selectedAlbum?.id == id) {
+                if (ticket == albumDetailGeneration && graph.credentials.value == credentials && current.value.selectedAlbum?.id == id) {
                     current.update { it.copy(selectedAlbum = result.album, albumSongs = result.songs, albumLoading = false) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                if (graph.credentials.value == credentials && current.value.selectedAlbum?.id == id) {
+                if (ticket == albumDetailGeneration && graph.credentials.value == credentials && current.value.selectedAlbum?.id == id) {
                     current.update { it.copy(albumLoading = false, albumError = safeMessage(error)) }
                 }
             }
@@ -496,16 +532,19 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
-    override fun search(query: String) {
+    override fun search(query: String) = loadSearch(query, retainResults = false)
+
+    private fun loadSearch(query: String, retainResults: Boolean) {
+        if (retainResults && current.value.searchLoading) return
         val ticket = ++searchGeneration
         searchOperation?.cancel()
         val credentials = graph.credentials.value
-        current.update { it.copy(searchQuery = query, searchSongs = emptyList(),
+        current.update { it.copy(searchQuery = query, searchSongs = if (retainResults) it.searchSongs else emptyList(),
             searchLoading = credentials != null && query.isNotBlank(), searchError = null) }
         if (credentials == null || query.isBlank()) return
         searchOperation = viewModelScope.launch {
             try {
-                delay(300)
+                if (!retainResults) delay(300)
                 val songs = graph.clientFor(credentials).searchSongs(query.trim())
                 if (ticket == searchGeneration && graph.credentials.value == credentials) {
                     current.update { it.copy(searchSongs = songs, searchLoading = false) }
@@ -521,22 +560,29 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
 
     override fun openPlaylist(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("playlist", id); return }
-        val credentials = graph.credentials.value ?: return
+        if (graph.credentials.value == null) return
         val playlist = current.value.playlists.firstOrNull { it.id == id } ?: return
-        val ticket = ++playlistDetailGeneration
-        playlistDetailOperation?.cancel()
         current.update { it.navigateTo(Screen.PLAYLIST).copy(selectedPlaylist = playlist, playlistSongs = emptyList(),
             playlistLoading = true, playlistDetailError = null) }
+        loadPlaylistDetail(playlist)
+    }
+
+    private fun loadPlaylistDetail(playlist: Playlist) {
+        val credentials = graph.credentials.value ?: return
+        val id = playlist.id
+        val ticket = ++playlistDetailGeneration
+        playlistDetailOperation?.cancel()
+        current.update { it.copy(playlistLoading = true, playlistDetailError = null) }
         playlistDetailOperation = viewModelScope.launch {
             try {
                 val result = graph.playlists.fetchContents(credentials, id)
-                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials) {
+                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
                     current.update { it.copy(selectedPlaylist = playlist.copy(songCount = result.songs.size),
                         playlistSongs = result.songs, playlistLoading = false) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
-                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials) {
+                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
                     current.update { it.copy(playlistLoading = false, playlistDetailError = safeMessage(error)) }
                 }
             }
