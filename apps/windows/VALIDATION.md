@@ -1,5 +1,50 @@
 # Windows implementation checkpoint — validation
 
+## Song artwork in collection details and Queue — November 17, 2026
+
+Native list rows now show 40 × 40 artwork beside the title/artist, using the
+approved sage mockup in `mockups/windows-song-artwork/index.html`. The same cell
+is used by Queue with a 10px gap (12px in the main list). Queue rows are 60px;
+main rows retain the existing 56px minimum and proportional columns. Title
+headings are inset to align with the text rather than the artwork. Shared list
+rendering also brings artwork to album details, Songs list mode, and offline
+song rows without changing their playback or download actions.
+
+A musical-note placeholder remains when artwork is missing or cannot load.
+Artwork loading starts on the cover's Loaded event, not while the full collection
+is materialized. Unloaded cancels that row's work and clears its decoded image so
+retained queue items do not accumulate bitmaps; Loaded restores it when realized
+again. Linked caller/connection tokens invalidate superseded requests. The existing bounded authenticated-byte loader is
+reused, with no signed URLs assigned to image properties. Offline mode does not
+start artwork requests; this change does not introduce persistent offline artwork.
+Queue selection keeps a direct reference to its title instead of assuming the
+title is the first visual child, and same-queue playback changes reuse the rows.
+
+Local evidence:
+
+- New list/queue rendering-source tests failed before their implementation, then
+  passed. Visual/offline source contracts: 36 passed; native-driver source
+  contracts: 7 passed. These are source checks, not native rendering tests.
+- Core: 184 passed; updater: 31 passed; LogicChecks: 23 assertions passed; existing
+  runtime-XAML/source contracts: 10 passed.
+- Windows-targeted compile-only build: 0 warnings, 0 errors. The output is a
+  library for compilation validation, not a distributable installer.
+- `npm run test` passed with an external preload selecting installed Chromium;
+  no unrelated test source was changed to select a browser.
+
+Native Windows acceptance remains required; this WSL session has no Windows
+executable host. No installer, publication, or installed-app validation is claimed.
+
+- [ ] Compare playlist and Queue with the approved mockup at restored/maximized
+  sizes and high DPI. Check 40px covers, title/artist ellipses, aligned headings,
+  current-track color, selected background, and the missing/failed-art placeholder.
+- [ ] Rapidly scroll/recycle a large playlist; navigate away while covers load.
+  Confirm covers belong to the correct songs and requests follow realized rows.
+- [ ] Open/close Queue, select duplicate song occurrences, use Next/Previous and
+  local playback handoff; confirm the right queue index and selected title update.
+- [ ] Switch/remove accounts during artwork loading and toggle Offline mode.
+  Confirm no old-account artwork appears and offline rows retain safe placeholders.
+
 ## Large playlist/album opening — November 17, 2026
 
 Collection details now use a dedicated, height-constrained ListView outside

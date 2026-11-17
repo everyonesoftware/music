@@ -529,6 +529,7 @@ public sealed partial class MainWindow : Window
             for (int column = 0; column < headings.Length; column++)
             {
                 var heading = Text(headings[column], 12, true);
+                if (column == 1) heading.Margin = new Thickness(52, 0, 0, 0);
                 if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
                 Grid.SetColumn(heading, column); header.Children.Add(heading);
             }
@@ -555,7 +556,8 @@ public sealed partial class MainWindow : Window
             var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
             copy.Children.Add(SongTitle(song, 14)); copy.Children.Add(Text(song.Artist, 12, true));
             ToolTipService.SetToolTip(copy, song.Title + "\n" + song.Artist);
-            Grid.SetColumn(copy, 1); grid.Children.Add(copy);
+            var cell = SongCell(song, copy, token, owner);
+            Grid.SetColumn(cell, 1); grid.Children.Add(cell);
             var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
             var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
             AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
@@ -705,6 +707,7 @@ public sealed partial class MainWindow : Window
         for (int column = 0; column < headings.Length; column++)
         {
             var heading = Text(headings[column], 12, true);
+            if (column == 1) heading.Margin = new Thickness(52, 0, 0, 0);
             if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
             Grid.SetColumn(heading, column); header.Children.Add(heading);
         }
@@ -852,18 +855,31 @@ public sealed partial class MainWindow : Window
         }
         SelectTrack(playbackOrder!.MovePrevious(), true);
     }
+    private sealed class QueueSongRow(TextBlock title) : Grid
+    {
+        public TextBlock Title { get; } = title;
+    }
     private void RenderQueue()
     {
         var list = C<ListView>("QueueList");
         if (ReferenceEquals(renderedQueue, queue) && renderedQueueCount == queue.Count)
         { UpdateQueueSelection(list); return; }
         list.Items.Clear();
+        var itemStyle = new Style(typeof(ListViewItem));
+        itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
+        list.ItemContainerStyle = itemStyle;
         for (int i = 0; i < queue.Count; i++)
         {
             var song = queue[i];
-            var row = new StackPanel { Tag = i, Spacing = 4, Margin = new Thickness(0, 6, 0, 6) };
             var title = SongTitle(song, 14); if (i == queueIndex) title.Foreground = Sage;
-            row.Children.Add(title); row.Children.Add(Text(song.Artist, 12, true)); list.Items.Add(row);
+            var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+            copy.Children.Add(title); copy.Children.Add(Text(song.Artist, 12, true));
+            var row = new QueueSongRow(title) { Tag = i, MinHeight = 60, Padding = new Thickness(8, 10, 8, 10) };
+            row.Children.Add(SongCell(song, copy, CancellationToken.None, connectionLease, 10));
+            AutomationProperties.SetName(row, song.Title + SongAvailability(song) + ", " + song.Artist);
+            ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
+            list.Items.Add(row);
         }
         renderedQueue = queue; renderedQueueCount = queue.Count;
         renderedSelection = -1;
@@ -871,10 +887,10 @@ public sealed partial class MainWindow : Window
     }
     private void UpdateQueueSelection(ListView list)
     {
-        if (renderedSelection >= 0 && renderedSelection < list.Items.Count && list.Items[renderedSelection] is StackPanel oldRow && oldRow.Children[0] is TextBlock oldTitle)
-            oldTitle.Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233));
-        if (queueIndex >= 0 && queueIndex < list.Items.Count && list.Items[queueIndex] is StackPanel row && row.Children[0] is TextBlock title)
-            title.Foreground = Sage;
+        if (renderedSelection >= 0 && renderedSelection < list.Items.Count && list.Items[renderedSelection] is QueueSongRow oldRow)
+            oldRow.Title.Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233));
+        if (queueIndex >= 0 && queueIndex < list.Items.Count && list.Items[queueIndex] is QueueSongRow row)
+            row.Title.Foreground = Sage;
         renderedSelection = queueIndex;
         list.SelectedIndex = queueIndex;
     }

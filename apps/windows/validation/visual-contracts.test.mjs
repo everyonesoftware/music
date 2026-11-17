@@ -161,6 +161,57 @@ test('track list shares responsive columns with its headings and stretches item 
   assert.doesNotMatch(grid, /new GridLength\(160\)/);
 });
 
+test('list songs include 40px artwork beside the title while headings retain text alignment', () => {
+  const artworkFile = new URL('MainWindow.SongArtwork.cs', app);
+  const artwork = existsSync(artworkFile) ? readFileSync(artworkFile, 'utf8').replaceAll('\r\n', '\n') : '';
+  assert.match(method('SongRow'), /SongCell\(song, copy, token, owner\)/);
+  assert.match(artwork, /new GridLength\(40\)/);
+  assert.match(artwork, /Width = 40, Height = 40/);
+  assert.match(artwork, /ColumnSpacing = spacing/);
+  assert.match(artwork, /SongArtwork\(song.CoverArtId, token, owner\)/);
+  assert.match(artwork, /Stretch = Stretch.UniformToFill/);
+  assert.match(artwork, /CornerRadius = new CornerRadius\(4\)/);
+  assert.match(artwork, /Glyph = "\\uE8D6"/);
+  assert.match(artwork, /No artwork available/);
+  assert.match(artwork, /cover.Loaded \+= async/);
+  assert.match(artwork, /closed \|\| offlineSettings.Offline \|\| target is null/);
+  assert.match(artwork, /connectionGate.IsCurrent\(owner\)/);
+  assert.match(artwork, /CreateLinkedTokenSource\(token, owner.Token\)/);
+  assert.match(artwork, /artwork.SetAsync\(image, id, target, load.Token\)/);
+  assert.match(artwork, /cover.Unloaded \+= .*pending\?\.Cancel\(\)/);
+  assert.match(artwork, /load.Dispose\(\)/);
+  for (const name of ['AddSongs', 'RenderDetail']) {
+    assert.match(method(name), /column == 1.*heading.Margin = new Thickness\(52, 0, 0, 0\)/);
+  }
+});
+
+test('unrealized song covers release decoded images and restore their placeholder', () => {
+  const artwork = readFileSync(new URL('MainWindow.SongArtwork.cs', app), 'utf8').replaceAll('\r\n', '\n');
+  const unloaded = artwork.slice(artwork.indexOf('cover.Unloaded +='), artwork.indexOf('return cover;'));
+  assert.match(unloaded, /pending\?\.Cancel\(\)/);
+  assert.match(unloaded, /image.Source = null/);
+  assert.match(unloaded, /fallback.Visibility = Visibility.Visible/);
+});
+
+test('queue rows share artwork layout without breaking selection, reuse, or occurrence indices', () => {
+  const queue = method('RenderQueue');
+  assert.match(queue, /SongCell\(song, copy, CancellationToken.None, connectionLease, 10\)/);
+  assert.match(queue, /new QueueSongRow\(title\).*Tag = i/);
+  assert.match(queue, /MinHeight = 60/);
+  assert.match(queue, /Padding = new Thickness\(8, 10, 8, 10\)/);
+  assert.match(queue, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
+  assert.match(queue, /PaddingProperty, new Thickness\(0\)/);
+  assert.match(queue, /AutomationProperties.SetName\(row, song.Title/);
+  assert.match(queue, /ReferenceEquals\(renderedQueue, queue\)/);
+  const selection = method('UpdateQueueSelection');
+  assert.match(selection, /is QueueSongRow oldRow/);
+  assert.match(selection, /oldRow.Title.Foreground =/);
+  assert.match(selection, /is QueueSongRow row/);
+  assert.match(selection, /row.Title.Foreground = Sage/);
+  assert.match(selection, /list.SelectedIndex = queueIndex/);
+  assert.match(source, /Tag: int index.*SelectTrack\(index, true\)/);
+});
+
 test('sidebar uses borderless navigation rather than default outlined buttons', () => {
   const style = shell.match(/<Style x:Key="NavigationButtonStyle"[\s\S]*?<\/Style>/)?.[0] ?? '';
   assert.match(style, /Property="BorderThickness" Value="0"/);
