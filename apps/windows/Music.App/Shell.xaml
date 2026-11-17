@@ -3,6 +3,9 @@
     <ItemsPanelTemplate x:Key="LibraryRowPanel">
       <ItemsStackPanel Orientation="Horizontal"/>
     </ItemsPanelTemplate>
+    <DataTemplate x:Key="DetailRowTemplate">
+      <Grid/>
+    </DataTemplate>
     <SolidColorBrush x:Key="Sage" Color="#c0d7ae"/>
     <SolidColorBrush x:Key="Muted" Color="#acb8ae"/>
     <!-- Override the native Slider template resources, not only Foreground. -->
@@ -143,6 +146,15 @@
           </StackPanel>
         </StackPanel>
       </ScrollViewer>
+      <!-- A finite viewport is required for native row virtualization. -->
+      <Grid Grid.Row="3" x:Name="DetailHost" Visibility="Collapsed">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <StackPanel x:Name="DetailHeader" Spacing="12"/>
+        <ListView Grid.Row="1" x:Name="DetailList" SelectionMode="None" IsItemClickEnabled="True"
+                  ItemTemplate="{StaticResource DetailRowTemplate}" Padding="0"
+                  ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                  AutomationProperties.Name="Collection songs"/>
+      </Grid>
     </Grid>
     <Border Grid.Column="2" x:Name="QueuePane" Width="292" Visibility="Collapsed" BorderBrush="#39453d" BorderThickness="1,0,0,0" Background="#242c28" Padding="16">
       <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Grid Margin="0,0,0,12"><TextBlock Text="Queue" FontSize="20" FontWeight="SemiBold"/><Button x:Name="CloseQueueButton" Content="&#xE8BB;" Style="{StaticResource TransportButtonStyle}" HorizontalAlignment="Right" AutomationProperties.Name="Close queue"/></Grid><ListView Grid.Row="1" x:Name="QueueList" SelectionMode="Single" IsItemClickEnabled="True"/></Grid>

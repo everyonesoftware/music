@@ -1,5 +1,50 @@
 # Windows implementation checkpoint — validation
 
+## Large playlist/album opening — November 17, 2026
+
+Collection details now use a dedicated, height-constrained ListView outside
+MainScroll. Its ItemsSource contains lightweight indexed song records; native
+ContainerContentChanging creates song controls only for realized containers and
+clears recycled content. All songs and repeated playlist entries remain in server
+order, and clicking a row starts the full collection at that occurrence's index.
+The action/column header remains above the scrolling rows.
+
+Opening a collection renders its title and Back action before awaiting the server.
+Static `Loading songs…` text replaces the animated BusyBar for this path; an empty
+ItemContainerTransitions collection removes the detail rows' entrance transitions.
+Play/Download stay disabled until songs arrive. Navigation and connection changes
+clear the detail host; request-generation checks reject superseded responses.
+Retrieval still requests the full collection: this removes eager native control
+creation, not server/network latency, and introduces no stale collection cache.
+
+Local evidence:
+
+- New rendering-source assertions failed before implementing the bounded list and
+  immediate header, then passed. Visual/offline Node contracts: 33 passed.
+- Existing runtime-XAML/source checks: 10 passed. Core tests: 184 passed;
+  LogicChecks: 23 assertions passed.
+- Windows-targeted compile-only build: 0 warnings, 0 errors. No installer was built
+  or published, and no native timing improvement is claimed from these checks.
+- Repository `npm run test` passed using an external Playwright preload to select
+  the installed Chromium (no unrelated test-source edits).
+
+Native Windows acceptance remains required (no Windows executable host is exposed
+in this WSL session):
+
+- [ ] Open a representative large playlist and album, cold and warm; record click
+  to header, response completion, and first usable rows separately. Compare with
+  the prior build using the same server/collection. Confirm no loading bar or row
+  entrance animation on this path.
+- [ ] Inspect realized containers with a 10,000-song fixture: container/control
+  count should follow the viewport/cache, not the collection length. Resize,
+  maximize, scroll rapidly and jump to the end; check row content and geometry.
+- [ ] Click repeated occurrences of one song and verify queue index, full queue
+  order, Play, Download, context menus, downloaded badges, keyboard navigation and
+  screen-reader names. Recycled rows must not retain the previous song's actions.
+- [ ] Back out while a request is pending; navigate to Settings/another collection,
+  replace/remove the account, toggle Offline mode, and simulate a failed response.
+  Late responses must not restore abandoned detail views or old account handlers.
+
 ## Library linked headings and header-arrow shelves — November 17, 2026
 
 Native source now uses sage Playlists/Albums heading links (UI Automation level-2

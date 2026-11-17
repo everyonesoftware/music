@@ -105,6 +105,7 @@ public sealed partial class MainWindow : Window
         C<Button>("QueueButton").Click += (_, _) => C<Border>("QueuePane").Visibility = C<Border>("QueuePane").Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
         C<Button>("CloseQueueButton").Click += (_, _) => { C<Border>("QueuePane").Visibility = Visibility.Collapsed; C<Button>("QueueButton").Focus(FocusState.Programmatic); };
         C<ListView>("QueueList").ItemClick += (_, e) => { if (e.ClickedItem is FrameworkElement { Tag: int index }) SelectTrack(index, true); };
+        InitializeDetailList();
         player.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(UpdateTransport);
         player.MediaEnded += (_, _) =>
         {
@@ -294,6 +295,7 @@ public sealed partial class MainWindow : Window
         browseGate.Cancel(); testGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel();
         connectionLease = connectionGate.Begin();
         C<StackPanel>("BrowsePanel").Children.Clear();
+        ClearDetail();
         detailSongs.Clear(); detailTitle = "";
         StopPlayback();
         client?.Dispose();
@@ -322,6 +324,7 @@ public sealed partial class MainWindow : Window
     private async Task NavigateAsync(string target)
     {
         browseGate.Cancel(); artworkGate.Cancel();
+        ClearDetail();
         page = target; query = "";
         C<TextBox>("SearchBox").Text = "";
         C<TextBlock>("PageTitle").Text = char.ToUpperInvariant(target[0]) + target[1..];
@@ -604,34 +607,85 @@ public sealed partial class MainWindow : Window
 
     private string detailTitle = "";
     private List<Song> detailSongs = new();
+    private bool detailLoading;
+    private sealed record DetailSong(Song Song, int Index);
+    private void InitializeDetailList()
+    {
+        var view = C<ListView>("DetailList");
+        var itemStyle = new Style(typeof(ListViewItem));
+        itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
+        itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
+        itemStyle.Setters.Add(new Setter(FrameworkElement.MinHeightProperty, 0d));
+        view.ItemContainerStyle = itemStyle;
+        view.ContainerContentChanging += (_, args) =>
+        {
+            if (args.ItemContainer.ContentTemplateRoot is not Grid host) return;
+            host.Children.Clear();
+            AutomationProperties.SetName(args.ItemContainer, "");
+            if (args.InRecycleQueue || closed || page != "detail" || args.Item is not DetailSong item) return;
+            var row = SongRow(item.Song, item.Index, "list", CancellationToken.None, connectionLease);
+            AutomationProperties.SetName(args.ItemContainer, AutomationProperties.GetName(row));
+            host.Children.Add(row);
+            args.Handled = true;
+        };
+        view.ItemClick += (_, args) =>
+        {
+            if (closed || page != "detail" || args.ClickedItem is not DetailSong item ||
+                item.Index >= detailSongs.Count || !ReferenceEquals(detailSongs[item.Index], item.Song)) return;
+            int index = item.Index;
+            StartQueue(detailSongs, index);
+        };
+    }
+    private void ClearDetail()
+    {
+        C<ListView>("DetailList").ItemsSource = null;
+        C<StackPanel>("DetailHeader").Children.Clear();
+        C<Grid>("DetailHost").Visibility = Visibility.Collapsed;
+        C<ScrollViewer>("MainScroll").Visibility = Visibility.Visible;
+        detailLoading = false;
+    }
     private async Task OpenCollectionAsync(object? value)
     {
         if (client is null) return;
         if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
+        string title = value switch { Album album => album.Name, Playlist playlist => playlist.Name, _ => "" };
+        if (value is not Album and not Playlist) return;
         var lease = browseGate.Begin(); var target = client;
-        C<ProgressBar>("BusyBar").Visibility = Visibility.Visible;
+        browsePending = false; browseResultsVersion++;
+        C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;
+        page = "detail"; detailTitle = title; detailSongs = new(); detailLoading = true;
+        C<TextBlock>("PageTitle").Text = title;
+        C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
+        C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
+        SetNavigation();
+        RenderDetail();
         try
         {
             IReadOnlyList<Song> tracks;
-            string title;
-            if (value is Album album) { title = album.Name; tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token); }
-            else if (value is Playlist playlist) { title = playlist.Name; tracks = await target.GetPlaylistSongsAsync(playlist.Id, lease.Token); }
+            if (value is Album album) tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token);
+            else if (value is Playlist playlist) tracks = await target.GetPlaylistSongsAsync(playlist.Id, lease.Token);
             else return;
             if (!browseGate.IsCurrent(lease) || target != client || closed) return;
-            page = "detail"; detailTitle = title; detailSongs = tracks.ToList();
-            C<TextBlock>("PageTitle").Text = title;
-            C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
-            C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
+            detailLoading = false; detailSongs = tracks.ToList();
             RenderDetail();
         }
         catch (OperationCanceledException) { }
-        catch { if (browseGate.IsCurrent(lease) && !closed) ShowError("Could not open this collection. Check the connection and try again."); }
-        finally { if (browseGate.IsCurrent(lease) && !closed) C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed; }
+        catch
+        {
+            if (browseGate.IsCurrent(lease) && target == client && !closed)
+            {
+                detailLoading = false; RenderDetail();
+                ShowError("Could not open this collection. Return to Library and try again.");
+            }
+        }
     }
     private void RenderDetail()
     {
-        var lease = artworkGate.Begin();
-        var panel = C<StackPanel>("BrowsePanel"); panel.Children.Clear(); panel.Spacing = 12;
+        artworkGate.Cancel();
+        C<StackPanel>("BrowsePanel").Children.Clear();
+        C<ScrollViewer>("MainScroll").Visibility = Visibility.Collapsed;
+        C<Grid>("DetailHost").Visibility = Visibility.Visible;
+        var panel = C<StackPanel>("DetailHeader"); panel.Children.Clear(); panel.Spacing = 12;
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
         var back = new Button { Content = "←  Library", Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), Padding = new Thickness(0, 8, 12, 8) };
         back.Click += async (_, _) => await NavigateAsync("library"); actions.Children.Add(back);
@@ -639,14 +693,25 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(play, "Play " + detailTitle);
         play.Click += (_, _) => StartQueue(detailSongs, 0); actions.Children.Add(play);
         var download = new Button { Content = "Download " + detailTitle };
+        download.IsEnabled = !detailLoading && detailSongs.Count > 0;
         var owner = connectionLease;
         var capturedSongs = detailSongs.ToArray();
         download.Click += async (_, _) => { if (connectionGate.IsCurrent(owner)) await DownloadSongs(capturedSongs); };
         actions.Children.Add(download);
-        actions.Children.Add(Text($"{detailSongs.Count} songs", 13, true));
+        actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs", 13, true));
         panel.Children.Add(actions);
-        AddSongs(panel, detailSongs, "list", lease.Token);
-        C<ScrollViewer>("MainScroll").ChangeView(null, 0, null);
+        var header = SongGrid(); header.MinHeight = 32;
+        string[] headings = { "#", "Title / artist", "Album", "Time" };
+        for (int column = 0; column < headings.Length; column++)
+        {
+            var heading = Text(headings[column], 12, true);
+            if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
+            Grid.SetColumn(heading, column); header.Children.Add(heading);
+        }
+        panel.Children.Add(header);
+        var view = C<ListView>("DetailList");
+        view.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
+        view.ItemsSource = detailSongs.Select((song, index) => new DetailSong(song, index)).ToArray();
     }
 
     private static TextBlock Text(string text, double size, bool muted = false) => new() { Text = text, FontSize = size, Foreground = muted ? Muted : new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233)), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, FontFamily = new FontFamily("Segoe UI") };

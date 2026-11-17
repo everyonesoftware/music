@@ -92,6 +92,42 @@ test('library song results are query-aware and keep the song search request', ()
   assert.match(method('LoadBrowseAsync'), /requestedPage is "library" or "songs".*SearchSongsAsync\(requestedQuery,/);
 });
 
+test('collection detail virtualizes data rows in a bounded viewport without entrance animations', () => {
+  const mainScrollEnd = shell.indexOf('</ScrollViewer>', shell.indexOf('x:Name="MainScroll"'));
+  const detailHost = shell.indexOf('x:Name="DetailHost"');
+  assert.ok(detailHost > mainScrollEnd, 'detail list must be outside the unbounded browse ScrollViewer');
+  assert.match(shell.slice(detailHost), /RowDefinition Height="Auto"\/><RowDefinition Height="\*"/);
+  assert.match(shell, /<ListView[^>]*Grid.Row="1"[^>]*x:Name="DetailList"/);
+  assert.match(shell, /<DataTemplate x:Key="DetailRowTemplate">\s*<Grid\/>\s*<\/DataTemplate>/);
+  const detail = method('RenderDetail');
+  assert.doesNotMatch(detail, /AddSongs\(|SongRow\(|\.Items.Add\(/);
+  assert.match(detail, /view.ItemsSource = detailSongs/);
+  assert.match(detail, /Select\(\(song, index\) => new DetailSong\(song, index\)\)\.ToArray\(\)/);
+  assert.doesNotMatch(detail, /\.Take\(|Distinct/);
+  assert.match(detail, /view.ItemContainerTransitions = new .*TransitionCollection\(\)/);
+  assert.match(source, /ContainerContentChanging \+=/);
+  assert.match(source, /args.InRecycleQueue/);
+  assert.match(source, /ContentTemplateRoot is not Grid/);
+  assert.match(source, /SongRow\(item.Song, item.Index, "list"/);
+  assert.match(source, /StartQueue\(detailSongs, index\)/);
+  assert.match(method('InitializeDetailList'), /AutomationProperties.SetName\(args.ItemContainer,/);
+});
+
+test('collection opens its header before awaiting the server and uses static loading feedback', () => {
+  const open = method('OpenCollectionAsync');
+  assert.ok(open.indexOf('RenderDetail();') < open.indexOf('await target.GetAlbumSongsAsync'), 'header must render before collection retrieval');
+  assert.match(open, /detailLoading = true/);
+  assert.doesNotMatch(open, /BusyBar.*Visibility.Visible/);
+  assert.match(open, /browseGate.IsCurrent\(lease\).*target != client.*closed/);
+  assert.match(open, /detailLoading = false/);
+  assert.match(open, /Could not open this collection/);
+  const detail = method('RenderDetail');
+  assert.match(detail, /Loading songs…/);
+  assert.match(detail, /download.IsEnabled = !detailLoading/);
+  assert.match(method('NavigateAsync'), /ClearDetail\(\)/);
+  assert.match(method('ActivateConnection'), /ClearDetail\(\)/);
+});
+
 test('collection detail keeps back, play, and count in one compact action row', () => {
   const detail = method('RenderDetail');
   assert.match(detail, /Orientation = Orientation.Horizontal/);
