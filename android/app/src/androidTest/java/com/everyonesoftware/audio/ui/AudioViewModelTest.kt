@@ -639,6 +639,94 @@ class AudioViewModelTest {
         }
     }
 
+    @Test fun loadedCollectionPlayDoesNotRefetchMetadataBeforeConnectingToThePlayer() = runBlocking {
+        for (album in listOf(false, true)) withAlbumFixture { model, graph, server ->
+            if (!album) {
+                server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                    override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                        ok(""", "playlist":{"entry":[{"id":"remote","title":"Remote song"}]}""")
+                }
+            }
+            onMain { if (album) model.openAlbum("a") else model.openPlaylist("p") }
+            until { if (album) !model.state.value.albumLoading else !model.state.value.playlistLoading }
+            val before = server.requestCount
+            val previous = graph.session.value
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { if (album) model.playAlbum("a", false) else model.playPlaylist("p", false) }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals("Play must use the displayed songs, not wait for a second metadata request", before, server.requestCount)
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
+    @Test fun downloadedCollectionOpensAndStartsLocallyEvenWhenOnline() = runBlocking {
+        for (album in listOf(false, true)) withAlbumFixture { model, graph, server ->
+            val credentials = graph.credentials.value!!
+            val kind = if (album) "album" else "playlist"
+            val id = if (album) "a" else "p"
+            val songs = listOf(Song("saved", "Saved song", "Artist"), Song("saved", "Saved song", "Artist"))
+            cacheSong(graph, credentials, songs.first())
+            graph.songCache.downloadCollection(credentials, OfflineCollection(kind, id, "Saved collection", songs = songs))
+            val before = server.requestCount
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { if (album) model.openAlbum(id) else model.openPlaylist(id) }
+            until { if (album) !model.state.value.albumLoading else !model.state.value.playlistLoading }
+            assertEquals("Downloaded details must not wait for the server", before, server.requestCount)
+            assertEquals(songs, if (album) model.state.value.albumSongs else model.state.value.playlistSongs)
+            val previous = graph.session.value
+            onMain { if (album) model.playAlbum(id, true) else model.playPlaylist(id, true) }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals(before, server.requestCount)
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
+    @Test fun downloadedCollectionExplicitRefreshLoadsServerDetailsWithoutReplacingTheSavedSnapshot() = runBlocking {
+        for (album in listOf(false, true)) withAlbumFixture { model, graph, server ->
+            val credentials = graph.credentials.value!!
+            val kind = if (album) "album" else "playlist"
+            val id = if (album) "a" else "p"
+            val song = Song("saved", "Saved", "Artist")
+            cacheSong(graph, credentials, song)
+            val saved = OfflineCollection(kind, id, "Saved", songs = listOf(song))
+            graph.songCache.downloadCollection(credentials, saved)
+            onMain { if (album) model.openAlbum(id) else model.openPlaylist(id) }
+            until { if (album) !model.state.value.albumLoading else !model.state.value.playlistLoading }
+            assertEquals(listOf(song), if (album) model.state.value.albumSongs else model.state.value.playlistSongs)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = if (album)
+                    ok(""", "album":{"id":"a","name":"Updated","song":[{"id":"new","title":"New"}]}""")
+                else ok(""", "playlist":{"entry":[{"id":"new","title":"New"}]}""")
+            }
+            val before = server.requestCount
+            onMain { model.refreshCurrentPage() }
+            until { if (album) !model.state.value.albumLoading else !model.state.value.playlistLoading }
+            assertEquals(before + 1, server.requestCount)
+            assertEquals("new", (if (album) model.state.value.albumSongs else model.state.value.playlistSongs).single().id)
+            assertEquals(saved, graph.songCache.collection(credentials, kind, id))
+        }
+    }
+
+    @Test fun downloadedPlaylistShortcutDoesNotRefetchBeforeConnectingToThePlayer() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val credentials = graph.credentials.value!!
+            val song = Song("saved", "Saved", "Artist")
+            cacheSong(graph, credentials, song)
+            graph.songCache.downloadCollection(credentials, OfflineCollection("playlist", "p", "Saved", songs = listOf(song)))
+            val before = server.requestCount
+            val previous = graph.session.value
+            onMain { model.startPlaylist("p") }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals("Downloaded shortcut must not request playlist contents", before, server.requestCount)
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
     @Test fun detailPlaylistPlayRequiresAControllerBeforeReplacingTheSession() = runBlocking {
         withBrowseFixture { model, graph, _ ->
             onMain { model.openPlaylist("p") }
@@ -729,6 +817,16 @@ class AudioViewModelTest {
             assertEquals(previous, graph.session.value)
             assertEquals(previous, graph.store.session("vm-browse-fixture"))
         }
+    }
+
+    private fun cacheSong(graph: AudioGraph, credentials: Credentials, song: Song) {
+        val source = graph.songCache.factory(credentials, song, androidx.media3.datasource.DataSource.Factory {
+            androidx.media3.datasource.ByteArrayDataSource(ByteArray(1024))
+        }).createDataSource()
+        source.open(androidx.media3.datasource.DataSpec.Builder().setUri("https://fixture.invalid/audio").build())
+        try { val buffer = ByteArray(1024); while (source.read(buffer, 0, buffer.size) != -1) { } }
+        finally { source.close() }
+        assertTrue(graph.songCache.complete(credentials, song.id))
     }
 
     private suspend fun withAlbumFixture(block: suspend (AudioViewModel, AudioGraph, MockWebServer) -> Unit) {

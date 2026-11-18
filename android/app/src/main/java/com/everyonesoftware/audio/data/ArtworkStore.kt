@@ -101,8 +101,8 @@ class ArtworkStore(private val directory: File, private val automaticLimit: Long
         val bytes = try { image(key).readBytes() } catch (_: Exception) { return null }
         if (bytes.size.toLong() != entry.bytes || digest(bytes) != entry.digest) return null
         disk = disk.copy(entries = disk.entries.map { if (it.key == key) it.copy(touched = timestamp()) else it })
-        // Readable saved artwork must remain usable when recency cannot be persisted.
-        runCatching { save(disk) }
+        // Recency is in-memory until the next mutation persists the index. Cache hits
+        // must not serialize and fsync the entire catalog (every visible cover does this).
         return bytes
     }
     @Synchronized fun file(connection: Connection, id: String): File? = if (read(connection, id) != null) image(key(connection, id)) else null

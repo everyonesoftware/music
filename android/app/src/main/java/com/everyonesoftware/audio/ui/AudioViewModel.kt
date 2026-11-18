@@ -13,6 +13,8 @@ import com.everyonesoftware.audio.AudioApplication
 import com.everyonesoftware.audio.AudioGraph
 import com.everyonesoftware.audio.BuildConfig
 import com.everyonesoftware.audio.data.Connection
+import com.everyonesoftware.audio.data.Album
+import com.everyonesoftware.audio.data.AlbumContents
 import com.everyonesoftware.audio.data.CollectionKind
 import com.everyonesoftware.audio.data.CollectionLayout
 import com.everyonesoftware.audio.data.Playlist
@@ -34,10 +36,12 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -315,19 +319,23 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun openAlbum(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("album", id); return }
         if (graph.credentials.value == null) return
-        val album = current.value.albums.firstOrNull { it.id == id } ?: return
+        val saved = current.value.storage.collections.firstOrNull { it.kind == "album" && it.id == id }
+        val album = current.value.albums.firstOrNull { it.id == id }
+            ?: saved?.let { Album(it.id, it.name, it.artist, it.coverArtId, it.songs.size, it.year) } ?: return
         current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
-        loadAlbumDetail(id)
+        loadAlbumDetail(id, preferSaved = true)
     }
 
-    private fun loadAlbumDetail(id: String) {
+    private fun loadAlbumDetail(id: String, preferSaved: Boolean = false) {
         val credentials = graph.credentials.value ?: return
         val ticket = ++albumDetailGeneration
         albumDetailOperation?.cancel()
         current.update { it.copy(albumLoading = true, albumError = null) }
         albumDetailOperation = viewModelScope.launch {
             try {
-                val result = graph.clientFor(credentials).album(id)
+                val saved = if (preferSaved) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "album", id) } else null
+                val result = saved?.let { AlbumContents(Album(it.id, it.name, it.artist, it.coverArtId, it.songs.size, it.year), it.songs) }
+                    ?: graph.clientFor(credentials).album(id)
                 if (ticket == albumDetailGeneration && graph.credentials.value == credentials && current.value.selectedAlbum?.id == id) {
                     current.update { it.copy(selectedAlbum = result.album, albumSongs = result.songs, albumLoading = false) }
                 }
@@ -346,14 +354,13 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             detail.albumSongs.isEmpty() || graph.networkPolicy.offline) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
-            val result = graph.clientFor(credentials).album(id)
-            val album = result.album
+            val album = requireNotNull(detail.selectedAlbum)
             val previous = graph.session.value
-            val session = SessionRules.start(credentials.connection.id, album.id, album.name, result.songs, sourceType = "album", shuffle = shuffle)
+            val session = SessionRules.start(credentials.connection.id, album.id, album.name, detail.albumSongs, sourceType = "album", shuffle = shuffle)
             val controller = controller()
             graph.setSession(session, credentials, previous)
             controller.play()
-            current.update { it.copy(screen = Screen.PLAYER, selectedAlbum = album, albumSongs = result.songs, ratingError = null) }
+            current.update { it.copy(screen = Screen.PLAYER, ratingError = null) }
         }
     }
 
@@ -559,13 +566,15 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun openPlaylist(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("playlist", id); return }
         if (graph.credentials.value == null) return
-        val playlist = current.value.playlists.firstOrNull { it.id == id } ?: return
+        val saved = current.value.storage.collections.firstOrNull { it.kind == "playlist" && it.id == id }
+        val playlist = current.value.playlists.firstOrNull { it.id == id }
+            ?: saved?.let { Playlist(it.id, it.name, it.songs.size, it.coverArtId) } ?: return
         current.update { it.navigateTo(Screen.PLAYLIST).copy(selectedPlaylist = playlist, playlistSongs = emptyList(),
             playlistLoading = true, playlistDetailError = null) }
-        loadPlaylistDetail(playlist)
+        loadPlaylistDetail(playlist, preferSaved = true)
     }
 
-    private fun loadPlaylistDetail(playlist: Playlist) {
+    private fun loadPlaylistDetail(playlist: Playlist, preferSaved: Boolean = false) {
         val credentials = graph.credentials.value ?: return
         val id = playlist.id
         val ticket = ++playlistDetailGeneration
@@ -573,10 +582,11 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         current.update { it.copy(playlistLoading = true, playlistDetailError = null) }
         playlistDetailOperation = viewModelScope.launch {
             try {
-                val result = graph.playlists.fetchContents(credentials, id)
+                val saved = if (preferSaved) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
+                val songs = saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
                 if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
-                    current.update { it.copy(selectedPlaylist = playlist.copy(songCount = result.songs.size),
-                        playlistSongs = result.songs, playlistLoading = false) }
+                    current.update { it.copy(selectedPlaylist = playlist.copy(songCount = songs.size),
+                        playlistSongs = songs, playlistLoading = false) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -593,18 +603,22 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val detail = current.value
         if (detail.selectedPlaylist?.id != id || detail.playlistLoading || detail.playlistDetailError != null ||
             detail.playlistSongs.isEmpty() || graph.networkPolicy.offline) return
-        startPlaylistQueue(id, shuffle)
+        startPlaylistQueue(id, shuffle, detail.playlistSongs)
     }
 
-    private fun startPlaylistQueue(id: String, shuffle: Boolean) {
+    private fun startPlaylistQueue(id: String, shuffle: Boolean, loadedSongs: List<Song>? = null) {
         if (graph.networkPolicy.offline) { playOfflineCollection("playlist", id); return }
         if (current.value.loading) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
             val connection = credentials.connection
             val previous = graph.session.value
-            val playlist = current.value.playlists.firstOrNull { it.id == id } ?: error("Refresh playlists and retry.")
-            val songs = graph.playlists.fetchContents(credentials, id).songs
+            val saved = if (loadedSongs == null) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
+            val playlist = current.value.playlists.firstOrNull { it.id == id }
+                ?: current.value.selectedPlaylist?.takeIf { it.id == id }
+                ?: saved?.let { Playlist(it.id, it.name, it.songs.size, it.coverArtId) }
+                ?: error("Refresh playlists and retry.")
+            val songs = loadedSongs ?: saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
             val session = SessionRules.start(connection.id, playlist.id, playlist.name, songs, shuffle = shuffle)
             val controller = controller()
             graph.setSession(session, credentials, previous)

@@ -7,6 +7,18 @@ import java.nio.file.Files
 class ArtworkStoreTest {
     private val connection = Connection("account", "Music", "https://music.example", "alice")
 
+    @Test fun `cached reads do not rewrite the durable index`() {
+        val root = Files.createTempDirectory("artwork-read-amplification").toFile()
+        try {
+            val store = ArtworkStore(root)
+            store.put(connection, "cover", byteArrayOf(1, 2, 3))
+            val catalog = java.io.File(root, "artwork.json")
+            val before = catalog.readText()
+            repeat(100) { assertNotNull(store.read(connection, "cover")) }
+            assertEquals("Cache hits must not serialize and fsync the index", before, catalog.readText())
+        } finally { root.deleteRecursively() }
+    }
+
     @Test fun `authoritative download snapshot removes obsolete collection pins after reopen`() {
         val root = Files.createTempDirectory("artwork-reconcile").toFile()
         try {

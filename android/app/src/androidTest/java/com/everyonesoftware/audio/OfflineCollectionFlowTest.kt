@@ -47,26 +47,31 @@ class OfflineCollectionFlowTest {
         val previous = graph.credentials.value
         val originalSettings = graph.songCache.state.value.settings
         val server = MockWebServer()
+        val collectionRequests = java.util.concurrent.CopyOnWriteArrayList<String>()
         val bitmap = Bitmap.createBitmap(32, 32, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.GREEN) }
         val png = try { ByteArrayOutputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it); it.toByteArray() } }
             finally { bitmap.recycle() }
         server.dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse =
-                if (request.requestUrl?.encodedPath?.endsWith("/getCoverArt.view") == true)
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                val path = request.requestUrl!!.encodedPath
+                if (path.substringAfterLast('/') in setOf("getPlaylist.view", "getAlbum.view", "stream.view")) collectionRequests.add(path)
+                return if (path.endsWith("/getCoverArt.view"))
                     MockResponse().setHeader("Content-Type", "image/png").setBody(Buffer().write(png))
                 else MockResponse().setResponseCode(503)
+            }
         }
         server.start()
         val credentials = Credentials(Connection("collection-flow-${System.nanoTime()}", "Collection fixture", server.url("/").toString(), "fixture"), "test-only-password")
-        val first = Song("first", "First fixture", "Artist", coverArtId = "cover", durationSeconds = 30)
-        val second = Song("second", "Second fixture", "Artist", coverArtId = "cover", durationSeconds = 30)
+        val durationSeconds = 180
+        val first = Song("first", "First fixture", "Artist", coverArtId = "cover", durationSeconds = durationSeconds)
+        val second = Song("second", "Second fixture", "Artist", coverArtId = "cover", durationSeconds = durationSeconds)
         val collection = OfflineCollection("playlist", "driving", "Driving offline", coverArtId = "cover", songs = listOf(second, first, second))
         var scenario: ActivityScenario<MainActivity>? = null
         try {
             graph.songCache.setSettings(originalSettings.copy(offline = false, autoSave = true, prefetch = 0))
             graph.store.saveConnection(credentials)
             graph.activate(credentials.connection.id)
-            val dataBytes = 30 * 8000 * 2
+            val dataBytes = durationSeconds * 8000 * 2
             val wav = ByteBuffer.allocate(44 + dataBytes).order(ByteOrder.LITTLE_ENDIAN).apply {
                 put("RIFF".toByteArray()); putInt(36 + dataBytes); put("WAVEfmt ".toByteArray()); putInt(16)
                 putShort(1); putShort(1); putInt(8000); putInt(16000); putShort(2); putShort(16)
@@ -79,6 +84,7 @@ class OfflineCollectionFlowTest {
                 finally { source.close() }
             }
             graph.songCache.downloadCollection(credentials, collection)
+            graph.songCache.downloadCollection(credentials, collection.copy(kind = "album"))
             assertNotNull(graph.artworkCache.load(credentials, "cover"))
             graph.songCache.setSettings(originalSettings.copy(offline = true))
             val requestsBeforeOffline = server.requestCount
@@ -117,6 +123,33 @@ class OfflineCollectionFlowTest {
             compose.onNodeWithTag("player-toggle").performClick()
             compose.waitUntil(10_000) { !graph.playback.value.playing }
             assertEquals("Offline collection/artwork contacted the server", requestsBeforeOffline, server.requestCount)
+            // Normal online browsing must use downloaded snapshots too, not only Saved music.
+            // Metadata requests deliberately return 503; complete audio must still play locally.
+            graph.songCache.setSettings(originalSettings.copy(offline = false, prefetch = 0))
+            for (kind in listOf("playlist", "album")) {
+                scenario?.close()
+                scenario = ActivityScenario.launch(MainActivity::class.java)
+                lateinit var model: AudioViewModel
+                scenario.onActivity { model = ViewModelProvider(it)[AudioViewModel::class.java] }
+                compose.waitUntil(20_000) { !model.state.value.booting && !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+                val before = collectionRequests.toList()
+                scenario.onActivity {
+                    if (kind == "album") model.openAlbum(collection.id) else model.openPlaylist(collection.id)
+                }
+                compose.waitUntil(10_000) { if (kind == "album") !model.state.value.albumLoading else !model.state.value.playlistLoading }
+                assertEquals(collection.songs, if (kind == "album") model.state.value.albumSongs else model.state.value.playlistSongs)
+                val start = android.os.SystemClock.elapsedRealtime()
+                scenario.onActivity {
+                    if (kind == "album") model.playAlbum(collection.id, false) else model.playPlaylist(collection.id, false)
+                }
+                compose.waitUntil(10_000) { graph.playback.value.playing && graph.session.value?.sourceType == kind }
+                assertEquals(collection.songs.map { it.id }, graph.session.value!!.queue.map { it.id })
+                assertFalse(graph.session.value!!.shuffle)
+                assertEquals("Downloaded $kind playback requested collection metadata or audio while online", before, collectionRequests.toList())
+                android.util.Log.i("CollectionStartupTest", "$kind cached startupMs=${android.os.SystemClock.elapsedRealtime() - start}")
+                scenario.onActivity { model.togglePlay() }
+                compose.waitUntil(10_000) { !graph.playback.value.playing }
+            }
         } finally {
             scenario?.close()
             androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().runOnMainSync { app.stopService(Intent(app, PlaybackService::class.java)) }

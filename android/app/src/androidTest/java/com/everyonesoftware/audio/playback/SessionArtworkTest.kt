@@ -240,7 +240,11 @@ class SessionArtworkTest {
         Thread.sleep(500)
         assertNull(artwork())
         onMain { assertNull(browser.mediaMetadata.artworkUri); assertTrue(browser.isPlaying); assertNull(browser.playerError) }
+        // Controller metadata is immediate; the graph publishes its index after the
+        // asynchronous Room progress write. Wait for that boundary, not a fixed 500ms.
+        until { graph.session.value?.index == 2 }
         assertEquals(2, graph.session.value!!.index)
+        assertEquals(2, runBlocking { graph.store.session(credentials.connection.id) }!!.index)
     }
 
     @Test fun cacheReusesCoverAndDoesNotAttachImagesToTheWholeQueue() {

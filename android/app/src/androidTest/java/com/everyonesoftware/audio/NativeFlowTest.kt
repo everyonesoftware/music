@@ -157,8 +157,11 @@ class NativeFlowTest {
         compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-card-routine").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithTag("album-card-fixture-album").performScrollTo().performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithTag("album-play").fetchSemanticsNodes().isNotEmpty() }
+        val albumRequestsBeforePlay = requests.count { it.requestUrl?.encodedPath?.endsWith("/getAlbum.view") == true }
         compose.onNodeWithTag("album-play").performScrollTo().performClick()
         compose.waitUntil(20_000) { graph.playback.value.playing }
+        Assert.assertEquals("Album Play must not refetch loaded details", albumRequestsBeforePlay,
+            requests.count { it.requestUrl?.encodedPath?.endsWith("/getAlbum.view") == true })
         val ordered = graph.session.value!!
         Assert.assertEquals("album", ordered.sourceType)
         Assert.assertEquals("fixture-album", ordered.playlistId)
@@ -263,8 +266,11 @@ class NativeFlowTest {
         Assert.assertEquals(beforeBrowsing?.copy(positionMs = graph.session.value!!.positionMs), graph.session.value)
         Assert.assertFalse(graph.playback.value.playing)
         capture("native-playlist-details")
+        val playlistRequestsBeforePlay = requests.count { it.requestUrl?.encodedPath?.endsWith("/getPlaylist.view") == true }
         compose.onNodeWithTag("playlist-play").performScrollTo().performClick()
         compose.waitUntil(20_000) { graph.playback.value.playing }
+        Assert.assertEquals("Playlist Play must not refetch loaded details", playlistRequestsBeforePlay,
+            requests.count { it.requestUrl?.encodedPath?.endsWith("/getPlaylist.view") == true })
         val ordered = graph.session.value!!
         Assert.assertEquals("playlist", ordered.sourceType)
         Assert.assertEquals(listOf("s1", "s2", "s1", "s3"), ordered.queue.map { it.id })

@@ -11,6 +11,9 @@ import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
@@ -19,6 +22,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
@@ -30,6 +34,7 @@ class ArtworkCache(
     private val networkPolicy: MusicNetworkPolicy,
     private val activeCredentials: () -> Credentials?,
     private val directory: File = File(context.filesDir, "offline-artwork"),
+    private val io: CoroutineDispatcher = Dispatchers.IO,
     private val fetch: suspend (Credentials, String) -> ByteArray = { credentials, id ->
         NavidromeClient(credentials, allowLocalHttp = com.everyonesoftware.audio.BuildConfig.DEBUG,
             networkPolicy = networkPolicy).coverArt(id)
@@ -37,13 +42,22 @@ class ArtworkCache(
 ) {
     private val store = ArtworkStore(directory)
     private val gate = Any()
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    // Admission never takes the storage monitor: Compose must not wait for IO.
+    private val queueGate = Any()
+    private val scope = CoroutineScope(SupervisorJob() + io)
     private val slots = Semaphore(2)
+    // Download backlogs may use one slot; the other remains available to browsing.
+    private val downloadSlot = Semaphore(1)
     private val pending = mutableMapOf<String, Deferred<ByteArray?>>()
+    private val lookups = mutableMapOf<String, Job>()
+    private val downloads = mutableMapOf<String, Job>()
     private val resolved = ConcurrentHashMap<String, String>()
+    private val lookupKeys = ConcurrentHashMap<Pair<Connection, String>, String>()
+    private fun key(connection: Connection, id: String): String =
+        lookupKeys.computeIfAbsent(connection to id) { OfflineIndex.key(connection, id, "artwork-v1") }
     private val failedUntil = ConcurrentHashMap<String, Long>()
-    private val removed = mutableSetOf<String>()
-    private var generation = 0L
+    private val removed = ConcurrentHashMap.newKeySet<String>()
+    @Volatile private var generation = 0L
     private val mutable = MutableStateFlow(0L)
     val state = mutable.asStateFlow()
     private val errors = MutableStateFlow<String?>(null)
@@ -56,17 +70,17 @@ class ArtworkCache(
 
     fun cachedUri(credentials: Credentials, id: String): String? {
         if (credentials != activeCredentials() || !safeId(id)) return null
-        return resolved[OfflineIndex.key(credentials.connection, id, "artwork-v1")]
+        return resolved[key(credentials.connection, id)]
     }
     private fun resolve(key: String) {
         val uri = Uri.fromFile(File(directory, "$key.image")).toString()
         if (resolved.put(key, uri) != uri) changed()
     }
 
-    suspend fun load(credentials: Credentials, id: String, retry: Boolean = false): ByteArray? = withContext(Dispatchers.IO) {
+    suspend fun load(credentials: Credentials, id: String, retry: Boolean = false): ByteArray? = withContext(io) {
         val work = synchronized(gate) {
             if (!allowed(credentials) || !safeId(id)) return@withContext null
-            val key = OfflineIndex.key(credentials.connection, id, "artwork-v1")
+            val key = key(credentials.connection, id)
             store.read(credentials.connection, id)?.let { resolve(key); return@withContext it }
             if (resolved.remove(key) != null) changed()
             if (networkPolicy.offline) return@withContext null
@@ -92,8 +106,13 @@ class ArtworkCache(
                     }
                 } catch (cancelled: CancellationException) { throw cancelled }
                 catch (_: Exception) {
-                    failedUntil[key] = System.currentTimeMillis() + 30_000
-                    errors.value = "Some artwork could not be saved. Reconnect or check available storage, then retry."
+                    val caller = currentCoroutineContext()
+                    synchronized(gate) {
+                        if (allowed(credentials, epoch) && caller.isActive) {
+                            failedUntil[key] = System.currentTimeMillis() + 30_000
+                            errors.value = "Some artwork could not be saved. Reconnect or check available storage, then retry."
+                        }
+                    }
                     null
                 }
             }.also { deferred ->
@@ -113,7 +132,28 @@ class ArtworkCache(
             try { store.replaceOwner(credentials.connection, pinOwner, safe); changed() }
             catch (_: Exception) { errors.value = "Artwork download preferences could not be saved. Check available storage." }
         }
-        safe.forEach { id -> scope.launch { load(credentials, id) } }
+        safe.forEach { id -> enqueue(credentials, id, background = pinOwner != null) }
+    }
+
+    private fun enqueue(credentials: Credentials, id: String, background: Boolean = false) {
+        val key = key(credentials.connection, id)
+        // Recomposition must not enqueue disk reads, hashing or recency writes for
+        // already-resolved covers, nor create one coroutine per repeated lookup.
+        if (resolved.containsKey(key) || (failedUntil[key] ?: 0) > System.currentTimeMillis()) return
+        val job = synchronized(queueGate) {
+            if (!allowed(credentials) || resolved.containsKey(key)) return
+            val requests = if (background) downloads else lookups
+            requests[key]?.let { return }
+            scope.launch(start = CoroutineStart.LAZY) {
+                if (background) downloadSlot.withPermit {
+                    if (!resolved.containsKey(key)) load(credentials, id)
+                } else load(credentials, id)
+            }.also { work ->
+                requests[key] = work
+                work.invokeOnCompletion { synchronized(queueGate) { if (requests[key] === work) requests.remove(key) } }
+            }
+        }
+        job.start()
     }
 
     /** Replace every owner from the authoritative download snapshot, dropping obsolete pins. */
@@ -124,7 +164,7 @@ class ArtworkCache(
             try { store.syncOwners(credentials.connection, safe) }
             catch (_: Exception) { errors.value = "Artwork download preferences could not be saved. Check available storage." }
         }
-        prefetch(credentials, safe.values.flatten().distinct())
+        safe.values.flatten().distinct().forEach { enqueue(credentials, it, background = true) }
     }
 
     fun removeOwner(credentials: Credentials, owner: String) = synchronized(gate) {
@@ -134,24 +174,36 @@ class ArtworkCache(
         removed.add(connectionId)
         generation++
         pending.values.toList().forEach { it.cancel() }; pending.clear()
+        cancelQueued()
         store.removeConnection(connectionId)
         resolved.clear()
+        lookupKeys.clear()
         changed()
     }
     fun accountChanged() = synchronized(gate) {
         generation++
         pending.values.toList().forEach { it.cancel() }; pending.clear()
+        cancelQueued()
         failedUntil.clear()
         resolved.clear()
+        lookupKeys.clear()
         changed()
     }
     fun clearAutomatic() = synchronized(gate) {
         val pinned = store.pinnedKeys()
         pending.filterKeys { it !in pinned }.values.toList().forEach { it.cancel() }
         pending.keys.retainAll(pinned)
+        cancelQueued(pinned)
         store.clearAutomatic()
         resolved.keys.retainAll(store.keys())
         changed()
+    }
+    /** Called under gate, including work admitted but not dispatched yet. */
+    private fun cancelQueued(keep: Set<String> = emptySet()) = synchronized(queueGate) {
+        listOf(lookups, downloads).forEach { requests ->
+            requests.filterKeys { it !in keep }.values.toList().forEach { it.cancel() }
+            requests.keys.retainAll(keep)
+        }
     }
     fun close() { scope.cancel() }
 
