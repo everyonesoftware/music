@@ -43,6 +43,8 @@ class NativeFlowTest {
     private val server = MockWebServer()
     private val app get() = ApplicationProvider.getApplicationContext<AudioApplication>()
     private val graph get() = app.graph
+    // Two-phase arguments are supported only with the original playback method selector;
+    // see android/README.md. The album test needs its own live server and clean account.
     private val coldProbe get() = InstrumentationRegistry.getArguments().getString("coldRestoreOnly") == "true"
     private val preserveFixture get() = InstrumentationRegistry.getArguments().getString("preserveSession") == "true"
     // Native software-emulator UI/capture steps can exceed 30 seconds while audio keeps playing.
@@ -102,7 +104,8 @@ class NativeFlowTest {
                 if (url.queryParameter("u") != "native-fixture-user" || url.queryParameter("t").isNullOrBlank() || url.queryParameter("p") != null) return MockResponse().setResponseCode(401)
                 return when (url.encodedPath.substringAfterLast('/')) {
                     "ping.view" -> ok()
-                    "getAlbumList2.view" -> ok(",\"albumList2\":{\"album\":[]}")
+                    "getAlbumList2.view" -> ok(",\"albumList2\":{\"album\":[{\"id\":\"fixture-album\",\"name\":\"Fixture album\",\"artist\":\"Audio test\",\"songCount\":4}]}")
+                    "getAlbum.view" -> ok(",\"album\":{\"id\":\"fixture-album\",\"name\":\"Fixture album\",\"artist\":\"Audio test\",\"song\":[${listOf("s1", "s2", "s1", "s3").joinToString(",") { song(it) }}]}")
                     "search3.view" -> ok(",\"searchResult3\":{\"song\":[${song("s1")}]}")
                     "getMusicFolders.view" -> ok(",\"musicFolders\":{\"musicFolder\":[{\"id\":\"main\",\"name\":\"Fixture library\"}]}")
                     "getPlaylists.view" -> ok(",\"playlists\":{\"playlist\":[{\"id\":\"routine\",\"name\":\"Fixture routine\",\"songCount\":3}]}")
@@ -126,6 +129,75 @@ class NativeFlowTest {
             Assert.assertTrue("Removed account retained active credentials", graph.credentials.value?.connection?.username != "native-fixture-user")
         }
         if (!coldProbe) server.shutdown()
+    }
+
+    @Test fun albumDetailStartsFreshOrderedAndShuffledOccurrenceQueuesWithoutChangingPlaybackOnSelection() {
+        val baseUrl = server.url("/").toString()
+        // A standalone cold run can still be restoring when the activity first becomes idle.
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Connect to Navidrome").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Connect to Navidrome").assertIsDisplayed()
+        capture("native-welcome")
+        compose.onNodeWithText("Connect to Navidrome").performClick()
+        compose.onNodeWithTag("connect-name").performTextInput("Local fixture")
+        compose.onNodeWithTag("connect-server-url").performTextInput(baseUrl)
+        compose.onNodeWithTag("connect-username").performTextInput("native-fixture-user")
+        compose.onNodeWithTag("connect-password").performTextInput("test-only-password")
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            val activity = compose.activity
+            (activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE) as android.view.inputmethod.InputMethodManager)
+                .hideSoftInputFromWindow(activity.window.decorView.windowToken, 0)
+        }
+        compose.onNodeWithTag("connect-submit").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithTag("library-continue").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("library-continue").assertIsDisplayed()
+        capture("native-libraries")
+        compose.onNodeWithTag("library-continue").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Choose a playlist").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithText("Choose a playlist").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-card-routine").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("album-card-fixture-album").performScrollTo().performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithTag("album-play").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("album-play").performScrollTo().performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing }
+        val ordered = graph.session.value!!
+        Assert.assertEquals("album", ordered.sourceType)
+        Assert.assertEquals("fixture-album", ordered.playlistId)
+        Assert.assertEquals(listOf("s1", "s2", "s1", "s3"), ordered.queue.map { it.id })
+        Assert.assertFalse(ordered.shuffle)
+        assertServiceOccurrenceQueue(ordered)
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("album-card-fixture-album").performScrollTo().performClick()
+        compose.onNodeWithTag("album-play").performScrollTo().performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != ordered.queueId }
+        val restarted = graph.session.value!!
+        Assert.assertEquals(ordered.queue, restarted.queue)
+        Assert.assertFalse(restarted.shuffle)
+        Assert.assertEquals(0, restarted.index)
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("album-card-fixture-album").performScrollTo().performClick()
+        compose.onNodeWithTag("album-shuffle").performScrollTo().performClick()
+        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
+        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
+        Assert.assertFalse(graph.session.value!!.shuffle)
+        Assert.assertFalse(graph.playback.value.playing)
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.waitUntil(10_000) { graph.playback.value.playing }
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
+        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
+        compose.onNodeWithTag("album-play").performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId }
+        val shuffled = graph.session.value!!
+        Assert.assertTrue("Album detail mode must reach the real service", shuffled.shuffle)
+        Assert.assertEquals("album", shuffled.sourceType)
+        Assert.assertEquals(listOf("s1", "s1", "s2", "s3"), shuffled.queue.map { it.id }.sorted())
+        assertServiceOccurrenceQueue(shuffled)
+        capture("native-album-shuffled")
     }
 
     @Test fun realConnectionShuffleRatingBackgroundPlaybackAndActivityReturn() {
@@ -309,8 +381,14 @@ class NativeFlowTest {
         compose.waitForIdle()
         Assert.assertFalse("Leaving offline resumed a paused session", graph.playback.value.playing)
         if (preserveFixture) {
+            // Paused playback is published before the asynchronous progress write finishes.
+            // Capture the final position, not the earlier seek target, for exact cold restore.
+            val finalPosition = graph.playback.value.positionMs
+            compose.waitUntil(10_000) { graph.session.value?.positionMs == finalPosition }
+            val expected = graph.session.value!!
+            until { runBlocking { graph.store.session(expected.connectionId) == expected } }
             java.io.File(app.getExternalFilesDir(null), "evidence/expected-session.json")
-                .writeText(Json.encodeToString(graph.session.value!!))
+                .writeText(Json.encodeToString(expected))
         }
     }
 }

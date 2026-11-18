@@ -1,5 +1,131 @@
 # Windows implementation checkpoint — validation
 
+## Startup navigation revision fence — November 18, 2026
+
+Automatic startup Offline/Library routes now share a navigation revision captured
+before the first cache-initialization await. User page navigation, collection opens,
+Back restoration and repeated sidebar selections invalidate those routes without
+cancelling startup Ping/catalog loading. A successful catalog still publishes for
+the current account; the existing `connectGate` checks continue to fence replaced
+accounts. Startup failure fallback uses the same revision fence.
+
+Executable regression: `validation/startup-navigation.test.mjs` compiles the actual
+`InitializeAsync`, `NavigateAsync`, `OpenCollectionAsync`, `GoBackAsync` and snapshot
+method bodies with production `RequestGate`/`NavigationHistory`, substituting only
+non-WinUI UI/storage/network boundaries. Task-completion barriers delay cache, Ping
+and catalog completion and exercise success/failure, album and Settings navigation,
+Back, repeated destinations, retained catalog publication, untouched startup and
+account invalidation. It is imported by the existing navigation/visual suite.
+The first run was RED: `cache success startup overwrote user album`; after the fix,
+all scenarios are GREEN. This is executable routing/history integration evidence,
+not native WinUI acceptance.
+
+Checks passed: LogicChecks (72 assertions), Core (184 tests), updater (31 tests),
+visual/offline Node suites (44 tests including the executable regression), unchanged
+Python source suite (10 tests), and Windows-targeted Linux compile-only build
+(0 warnings/errors). The existing VSTEST_ARTIFACTS_DIRECTORY fallback advisory
+remains. Native startup interaction and rendered Windows UI remain unverified.
+
+## Scoped mouse Back navigation — November 18, 2026
+
+Playlist and Album details no longer show the top `← Library` link. The existing
+left Play / Shuffle / icon-only Download transport is unchanged. Shell XButton1
+presses now consume the routed pointer event and restore the actual previous view,
+not a fixed Library destination. History keeps up to 64 in-memory metadata-only
+snapshots of collection origin, query and grid/list layout. Re-selecting the active
+sidebar destination preserves its search/layout and does not create a duplicate.
+Settings participates in the same history, including returning to a detail view;
+restored details fetch current tracks rather than retaining stale song lists.
+Back never pushes the departed view back onto history. No scroll-position or
+pagination-depth restoration is promised.
+
+Connection activation/replacement, successful account removal, and Offline mode
+transitions clear the history and retained detail identity. Startup and forced
+post-account/offline routes do not record synthetic history. Ordinary navigation
+and Back keep the existing request cancellation/client-generation fences and
+bounded virtualized detail list. History and navigation do not alter playback.
+XButton1 is consumed without shell navigation when a popup is open, an editor has
+focus or is the event source, the account is changing, or the window is closing.
+No new keyboard accelerators were added. The handler uses the SDK's actual
+`PointerUpdateKind.XButton1Pressed`, `UIElement.AddHandler(..., true)`, XamlRoot
+popup enumeration, and focused-element APIs; installed projection XML and primary
+Microsoft PointerPressed/PointerUpdateKind documentation were inspected.
+
+Evidence: first logic run failed because the history types were missing; after
+basic traversal passed, an executable regression failed on repeated-sidebar
+navigation before de-duplication was implemented. New source wiring/removal checks
+failed 5/5 before integration and pass afterward. Final checks: LogicChecks 72
+assertions (19 navigation assertions), visual/offline Node suites 43 tests
+(including imported navigation/transport contracts), Core 184 tests, updater 31
+tests, unchanged Python runtime/source checks 10 tests, and Windows-targeted Linux
+compile-only build with 0 warnings/errors. `git diff --check -- apps/windows` passes.
+Existing test-SDK VSTEST_ARTIFACTS_DIRECTORY fallback advisory remains.
+
+Native mouse routing, popup/focus behavior, UI restoration and unchanged audible
+playback remain **unverified in WSL**; cross-compilation/source tests are not
+native Windows acceptance. No installer, commit, push or publication was made.
+
+- [ ] On Windows: Library → Playlists → playlist → XButton1 → Playlists → XButton1
+  → Library; repeat through Albums, with filtered list/grid origins.
+- [ ] Navigate detail → Settings → XButton1; confirm the same collection reopens,
+  then Back returns to its original collection/query/layout.
+- [ ] Back while detail is loading, then allow the response to finish; abandoned
+  content must not reappear. Repeated active-sidebar clicks and empty-history Back
+  must not manufacture navigation or alter search/layout.
+- [ ] Exercise XButton1 over cards, rows, background and buttons; verify focused
+  text/password/number editors and open dialogs/menus do not unexpectedly navigate.
+- [ ] Replace/remove account and toggle Offline; old account details must never
+  return. Confirm playback queue, index, play/pause and shuffle remain unchanged
+  during ordinary navigation/Back (account/offline lifecycle behavior is separate).
+
+## Compact album and playlist transport — November 18, 2026
+
+Both native detail types now share a left-aligned group in Play, Shuffle, Download
+order. Download is icon-only, with its collection-specific accessible name and
+tooltip retained. The independent shuffle mode toggle keeps its sage icon/background
+and selected dot; Play remains round and sage.
+Mode defaults to ordered and is remembered in memory per account, collection type
+and ID; it is not a persisted player/session setting. Toggling changes only the
+future-start mode. Play always creates a fresh queue at index zero, retaining every
+song occurrence; shuffled starts use Fisher–Yates on a copy. The active session's
+shuffle is cleared only after a valid queue is prepared, avoiding a second shuffle
+on Next/prefetch. Repeated Play restarts instead of resuming the prior queue.
+
+The shared transport checks loading, detail error, empty songs, offline mode,
+account-change state, page, collection identity, song-list identity and connection
+lease before playback or download effects. Existing bounded native ListView,
+indexed occurrences, lazy row realization, downloaded-song playback and cache
+behavior remain unchanged. Android PlaylistDetails and its action guards were
+inspected read-only; no Android, mockup or release files were changed here.
+
+Evidence: observed executable RED for missing scoped mode policy, then GREEN;
+observed executable RED for missing safe queue planning, then GREEN; new rendering
+and wiring contracts failed before UI implementation and passed afterward.
+LogicChecks now passes 53 assertions, Core 184 tests, updater 31 tests, existing
+Python runtime/source checks 10 tests (unchanged), visual/offline Node contracts 38
+tests. New transport source contracts are imported by the existing visual suite.
+Windows-targeted Linux compile-only build passes with 0 warnings and 0 errors.
+The left-group/icon-only refinement first failed its updated source regression
+(missing left-aligned group), then passed after the layout change. Revalidation:
+visual/offline Node contracts 38 passed (including the imported transport checks),
+LogicChecks 53 assertions passed, Core 184 passed, unchanged Python source checks
+10 passed, and Linux compile-only build 0 warnings/errors.
+The test SDK prints its existing VSTEST_ARTIFACTS_DIRECTORY fallback advisory.
+
+Native WinUI execution is unavailable in this WSL session: no Windows executable
+host is exposed. No installed-app, screenshot, runtime automation or audible
+playback acceptance is claimed; no installer was built or release published.
+
+- [ ] On Windows, compare album and playlist transport at restored/maximized sizes
+  and high DPI; inspect sage checked/hover/focus/disabled states and selected dot.
+- [ ] Verify native ToggleButton accessibility/keyboard state and changing Play's
+  accessible mode label, without interrupting a playing or paused session.
+- [ ] Exercise ordered and shuffled Play repeatedly with duplicate occurrences;
+  verify fresh index-zero playback, sequential traversal of the prepared queue,
+  full download list and unchanged virtualized realization behavior.
+- [ ] Switch account/collection, navigate away, enable Offline, fail or delay a
+  request; verify old/loading/error/empty handlers cannot replace playback.
+
 ## Song artwork in collection details and Queue — November 17, 2026
 
 Native list rows now show 40 × 40 artwork beside the title/artist, using the

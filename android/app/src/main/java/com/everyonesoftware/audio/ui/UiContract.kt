@@ -132,7 +132,7 @@ interface AudioUiActions {
     fun loadPlaylists()
     fun loadAlbums()
     fun openAlbum(id: String)
-    fun playAlbum(id: String)
+    fun playAlbum(id: String, shuffle: Boolean = false)
     fun playSong(song: Song) = Unit
     fun search(query: String) = Unit
     fun openPlaylist(id: String) = Unit

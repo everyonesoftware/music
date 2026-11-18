@@ -651,6 +651,102 @@ class AudioViewModelTest {
         }
     }
 
+    @Test fun detailAlbumPlayRejectsMissingAndFailedDetailsWithoutRequestsOrSessionMutation() = runBlocking {
+        withAlbumFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val previous = graph.session.value
+            val before = server.requestCount
+            onMain { model.playAlbum("a") }
+            until { !model.state.value.loading }
+            assertEquals("No detail selection must not fetch or start playback", before, server.requestCount)
+            assertNull(model.state.value.error)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { model.openAlbum("a") }
+            until { model.state.value.albumError != null }
+            val failedRequests = server.requestCount
+            onMain { model.playAlbum("a") }
+            until { !model.state.value.loading }
+            assertEquals(failedRequests, server.requestCount)
+            assertNull(model.state.value.error)
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
+    @Test fun detailAlbumPlayRejectsLoadingEmptyAndOfflineDetails() = runBlocking {
+        withAlbumFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    entered.countDown()
+                    check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    return ok(""", "album":{"id":"a","name":"Album","song":[]}""")
+                }
+            }
+            val previous = graph.session.value
+            try {
+                onMain { model.openAlbum("a") }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                val requests = server.requestCount
+                onMain { model.playAlbum("a") }
+                assertFalse(model.state.value.loading)
+                assertEquals(requests, server.requestCount)
+                release.countDown()
+                until { !model.state.value.albumLoading }
+                onMain { model.playAlbum("a") }
+                assertFalse(model.state.value.loading)
+                assertEquals(requests, server.requestCount)
+                server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                    override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                        ok(""", "album":{"id":"a","name":"Album","song":[{"id":"remote","title":"Remote song"}]}""")
+                }
+                onMain { model.openAlbum("a") }
+                until { !model.state.value.albumLoading && model.state.value.albumSongs.isNotEmpty() }
+                val readyRequests = server.requestCount
+                val settings = graph.songCache.state.value.settings
+                graph.songCache.setSettings(settings.copy(offline = true))
+                try {
+                    onMain { model.playAlbum("a") }
+                    assertFalse(model.state.value.loading)
+                    assertEquals(readyRequests, server.requestCount)
+                    assertEquals(previous, graph.session.value)
+                    assertNull(model.state.value.error)
+                } finally { graph.songCache.setSettings(settings) }
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun detailAlbumPlayRequiresAControllerBeforeReplacingTheSession() = runBlocking {
+        withAlbumFixture { model, graph, _ ->
+            onMain { model.openAlbum("a") }
+            until { !model.state.value.albumLoading && model.state.value.albumSongs.isNotEmpty() }
+            val previous = graph.session.value
+            onMain { model.playAlbum("a") }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals(previous, graph.session.value)
+            assertEquals(previous, graph.store.session("vm-browse-fixture"))
+        }
+    }
+
+    private suspend fun withAlbumFixture(block: suspend (AudioViewModel, AudioGraph, MockWebServer) -> Unit) {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                    request.path!!.contains("getAlbumList2.view") -> ok(""", "albumList2":{"album":[{"id":"a","name":"Album"}]}""")
+                    request.path!!.contains("getAlbum.view") -> ok(""", "album":{"id":"a","name":"Album","song":[{"id":"remote","title":"Remote song"}]}""")
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            onMain { model.refreshCollection(CollectionKind.ALBUMS) }
+            until { !model.state.value.albumsRefreshing && model.state.value.albums.isNotEmpty() }
+            block(model, graph, server)
+        }
+    }
+
     private suspend fun withBrowseFixture(block: suspend (AudioViewModel, AudioGraph, MockWebServer) -> Unit) {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val graph = AudioGraph(app)

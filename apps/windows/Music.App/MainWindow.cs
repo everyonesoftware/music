@@ -75,7 +75,7 @@ public sealed partial class MainWindow : Window
         C<Button>("TestConnectionButton").Click += async (_, _) => await TestConnectionAsync();
         C<TextBox>("SearchBox").TextChanged += async (_, _) =>
         {
-            if (page is "settings" or "detail" || client is null) return;
+            if (updatingNavigation || page is "settings" or "detail" || client is null) return;
             query = C<TextBox>("SearchBox").Text.Trim();
             await LoadBrowseAsync(true);
         };
@@ -106,6 +106,7 @@ public sealed partial class MainWindow : Window
         C<Button>("CloseQueueButton").Click += (_, _) => { C<Border>("QueuePane").Visibility = Visibility.Collapsed; C<Button>("QueueButton").Focus(FocusState.Programmatic); };
         C<ListView>("QueueList").ItemClick += (_, e) => { if (e.ClickedItem is FrameworkElement { Tag: int index }) SelectTrack(index, true); };
         InitializeDetailList();
+        InitializeNavigation();
         player.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(UpdateTransport);
         player.MediaEnded += (_, _) =>
         {
@@ -146,6 +147,8 @@ public sealed partial class MainWindow : Window
 #if MUSIC_NATIVE_ACCEPTANCE
         if (NativeAcceptance.IsRequested) return;
 #endif
+        // Cover cache initialization too; browsing must not cancel useful catalog work.
+        long startupRevision = navigationRevision;
         var lease = connectGate.Begin();
         NavidromeClient? candidate = null;
         try
@@ -162,7 +165,7 @@ public sealed partial class MainWindow : Window
             await cacheInitialization;
             if (closed || !connectGate.IsCurrent(lease)) return;
             RestorePlayback();
-            await NavigateAsync("offline");
+            await NavigateAsync("offline", remember: false, startupRevision: startupRevision);
             if (offlineSettings.Offline)
             {
                 return;
@@ -173,7 +176,11 @@ public sealed partial class MainWindow : Window
             var data = await ReadLibraryAsync(startupClient, lease.Token);
             if (!connectGate.IsCurrent(lease) || closed) return;
             albums = data.Albums; playlists = data.Playlists;
-            await NavigateAsync("library");
+            // A user-owned browse route still needs the newly published catalog.
+            // Pending searches render it on completion; Songs pagination is untouched.
+            if (navigationRevision != startupRevision && !browsePending && !offlineSettings.Offline &&
+                page is "library" or "albums" or "playlists") RenderBrowse();
+            await NavigateAsync("library", remember: false, startupRevision: startupRevision);
         }
         catch (OperationCanceledException) { }
         catch
@@ -182,7 +189,7 @@ public sealed partial class MainWindow : Window
             {
                 if (client is not null && connection is not null)
                 {
-                    await NavigateAsync("offline");
+                    await NavigateAsync("offline", remember: false, startupRevision: startupRevision);
                     ShowError("Server unavailable. Your saved songs and queue are available; incomplete songs need a connection.");
                 }
                 else ShowError("Could not open the saved connection or local session store. Check Windows credentials.");
@@ -264,7 +271,7 @@ public sealed partial class MainWindow : Window
             if (closed) return;
             RestorePlayback();
             C<PasswordBox>("Password").Password = "";
-            await NavigateAsync(offlineSettings.Offline ? "offline" : "library");
+            await NavigateAsync(offlineSettings.Offline ? "offline" : "library", remember: false);
         }
         catch (OperationCanceledException) { }
         catch
@@ -292,6 +299,8 @@ public sealed partial class MainWindow : Window
 
     private void ActivateConnection(ConnectionProfile profile, NavidromeClient target, IReadOnlyList<Album> newAlbums, IReadOnlyList<Playlist> newPlaylists)
     {
+        navigationHistory.Clear(); detailCollection = null;
+        page = "library"; query = ""; mode = ReadMode("library");
         browseGate.Cancel(); testGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel();
         connectionLease = connectionGate.Begin();
         C<StackPanel>("BrowsePanel").Children.Clear();
@@ -321,12 +330,24 @@ public sealed partial class MainWindow : Window
         finally { if (testGate.IsCurrent(lease) && !closed) C<Button>("TestConnectionButton").IsEnabled = true; }
     }
 
-    private async Task NavigateAsync(string target)
+    private async Task NavigateAsync(string target, bool remember = true, NavigationView? restore = null, long? startupRevision = null)
     {
+        // Automatic startup routes share one revision; user navigation (including Back
+        // and repeated sidebar clicks) invalidates them without touching connectGate.
+        if (startupRevision is { } expected)
+        {
+            if (navigationRevision != expected) return;
+        }
+        else navigationRevision++;
+        var destination = restore ?? new NavigationView(target, "", ReadMode(target));
+        if (remember && !navigationHistory.Record(CaptureNavigation(), destination)) return;
         browseGate.Cancel(); artworkGate.Cancel();
         ClearDetail();
-        page = target; query = "";
-        C<TextBox>("SearchBox").Text = "";
+        detailCollection = null;
+        page = target; query = destination.Query;
+        updatingNavigation = true;
+        try { C<TextBox>("SearchBox").Text = query; }
+        finally { updatingNavigation = false; }
         C<TextBlock>("PageTitle").Text = char.ToUpperInvariant(target[0]) + target[1..];
         C<TextBox>("SearchBox").Visibility = target == "settings" ? Visibility.Collapsed : Visibility.Visible;
         C<Button>("LayoutButton").Visibility = target is "library" or "settings" ? Visibility.Collapsed : Visibility.Visible;
@@ -337,7 +358,7 @@ public sealed partial class MainWindow : Window
         C<TextBox>("SearchBox").PlaceholderText = target == "library" ? "Search your library" : "Search " + target;
         C<ScrollViewer>("MainScroll").ChangeView(null, 0, null);
         if (target == "settings") C<Border>("QueuePane").Visibility = Visibility.Collapsed;
-        mode = ReadMode(target);
+        mode = destination.Mode;
         C<SymbolIcon>("LayoutIcon").Symbol = mode == "grid" ? Symbol.ViewAll : Symbol.List;
         SetNavigation();
         if (target != "settings" && client is not null) await LoadBrowseAsync();
@@ -609,7 +630,9 @@ public sealed partial class MainWindow : Window
 
     private string detailTitle = "";
     private List<Song> detailSongs = new();
-    private bool detailLoading;
+    private bool detailLoading, detailError;
+    private (string Kind, string Id) detailIdentity;
+    private readonly CollectionTransport collectionTransport = new();
     private sealed record DetailSong(Song Song, int Index);
     private void InitializeDetailList()
     {
@@ -646,16 +669,21 @@ public sealed partial class MainWindow : Window
         C<ScrollViewer>("MainScroll").Visibility = Visibility.Visible;
         detailLoading = false;
     }
-    private async Task OpenCollectionAsync(object? value)
+    private async Task OpenCollectionAsync(object? value, bool remember = true)
     {
         if (client is null) return;
         if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
         string title = value switch { Album album => album.Name, Playlist playlist => playlist.Name, _ => "" };
         if (value is not Album and not Playlist) return;
+        navigationRevision++;
+        var destination = new NavigationView("detail", query, mode, value);
+        if (remember && !navigationHistory.Record(CaptureNavigation(), destination)) return;
+        detailCollection = value;
         var lease = browseGate.Begin(); var target = client;
         browsePending = false; browseResultsVersion++;
         C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;
-        page = "detail"; detailTitle = title; detailSongs = new(); detailLoading = true;
+        page = "detail"; detailTitle = title; detailSongs = new(); detailLoading = true; detailError = false;
+        detailIdentity = value switch { Album album => ("album", album.Id), Playlist playlist => ("playlist", playlist.Id), _ => default };
         C<TextBlock>("PageTitle").Text = title;
         C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
         C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
@@ -676,7 +704,7 @@ public sealed partial class MainWindow : Window
         {
             if (browseGate.IsCurrent(lease) && target == client && !closed)
             {
-                detailLoading = false; RenderDetail();
+                detailLoading = false; detailError = true; RenderDetail();
                 ShowError("Could not open this collection. Return to Library and try again.");
             }
         }
@@ -689,19 +717,9 @@ public sealed partial class MainWindow : Window
         C<Grid>("DetailHost").Visibility = Visibility.Visible;
         var panel = C<StackPanel>("DetailHeader"); panel.Children.Clear(); panel.Spacing = 12;
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
-        var back = new Button { Content = "←  Library", Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0), Padding = new Thickness(0, 8, 12, 8) };
-        back.Click += async (_, _) => await NavigateAsync("library"); actions.Children.Add(back);
-        var play = new Button { Content = "Play", IsEnabled = detailSongs.Count > 0, Background = Sage, Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 36, 52, 31)), Padding = new Thickness(20, 8, 20, 8) };
-        AutomationProperties.SetName(play, "Play " + detailTitle);
-        play.Click += (_, _) => StartQueue(detailSongs, 0); actions.Children.Add(play);
-        var download = new Button { Content = "Download " + detailTitle };
-        download.IsEnabled = !detailLoading && detailSongs.Count > 0;
-        var owner = connectionLease;
-        var capturedSongs = detailSongs.ToArray();
-        download.Click += async (_, _) => { if (connectionGate.IsCurrent(owner)) await DownloadSongs(capturedSongs); };
-        actions.Children.Add(download);
         actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs", 13, true));
         panel.Children.Add(actions);
+        panel.Children.Add(CreateCollectionTransport());
         var header = SongGrid(); header.MinHeight = 32;
         string[] headings = { "#", "Title / artist", "Album", "Time" };
         for (int column = 0; column < headings.Length; column++)

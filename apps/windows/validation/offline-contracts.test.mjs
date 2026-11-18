@@ -51,7 +51,10 @@ test('explicit collection pin intentions are durable and resumed independently o
   const source = offline();
   assert.ok(source.includes('storage.Pin(requested)'));
   assert.ok(source.includes('recent.Where(x => x.Pinned && !x.Complete)'));
-  assert.ok(main.includes('capturedSongs'));
+  assert.match(main, /panel.Children.Add\(CreateCollectionTransport\(\)\)/);
+  const transport = readFileSync(new URL('../Music.App/MainWindow.CollectionTransport.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
+  assert.match(transport, /if \(available\(\)\) await DownloadSongs\(capturedSongs\)/);
+  assert.match(transport, /ReferenceEquals\(capturedSongs, detailSongs\)/);
 });
 test('completed current media hands off with latest position/intent and shared playback order', () => {
   const source = offline();

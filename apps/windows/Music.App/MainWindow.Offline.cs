@@ -135,6 +135,7 @@ public sealed partial class MainWindow
     }
     private async Task SetOfflineAsync(bool value)
     {
+        navigationHistory.Clear(); detailCollection = null;
         offlineSettings = offlineSettings with { Offline = value };
         SaveOfflineSettings();
         browseGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel(); connectGate.Cancel(); testGate.Cancel();
@@ -149,7 +150,7 @@ public sealed partial class MainWindow
             SelectTrack(queueIndex, intended, position);
         }
         if (!value) { ScheduleCache(); _ = ReconnectAsync(); }
-        await NavigateAsync(value ? "offline" : "library");
+        await NavigateAsync(value ? "offline" : "library", remember: false);
     }
     private void RefreshStorageUsage()
     {
@@ -314,10 +315,11 @@ public sealed partial class MainWindow
             await storageWork.RunAsync(() => storage?.Dispose());
             if (closed || connection != profile) return;
             cache = null; client?.Dispose(); client = null; connection = null;
+            navigationHistory.Clear(); detailCollection = null;
             pendingDownloads.Clear(); albums = []; playlists = []; songs.Clear(); artwork.Clear();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
             C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";
-            RefreshStorageUsage(); await NavigateAsync("settings");
+            RefreshStorageUsage(); await NavigateAsync("settings", remember: false);
         }
         finally { accountChangePending = false; cacheMaintenance--; if (!closed) SetConnecting(false); }
     }

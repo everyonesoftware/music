@@ -58,9 +58,9 @@ class OfflineCollectionScreensTest {
             override fun downloadSongs(songs: List<Song>) { fail("Collection download used individual-song pins") }
         }
         compose.setContent { AudioTheme { AudioApp(state.value, actions) { null } } }
-        compose.onNodeWithText("Download playlist").performClick()
+        compose.onNodeWithTag("playlist-download").assertContentDescriptionEquals("Download playlist").performClick()
         compose.runOnIdle { state.value = state.value.copy(screen = Screen.ALBUM, selectedAlbum = Album("a", "Album"), albumSongs = listOf(song)) }
-        compose.onNodeWithText("Download album").performClick()
+        compose.onNodeWithTag("album-download").assertContentDescriptionEquals("Download album").performClick()
         compose.runOnIdle { assertEquals(1, actions.playlists); assertEquals(1, actions.albums) }
     }
 
@@ -72,7 +72,7 @@ class OfflineCollectionScreensTest {
         override fun loadPlaylists() = Unit
         override fun loadAlbums() = Unit
         override fun openAlbum(id: String) = Unit
-        override fun playAlbum(id: String) = Unit
+        override fun playAlbum(id: String, shuffle: Boolean) = Unit
         override fun startPlaylist(id: String) = Unit
         override fun playPlaylist(id: String, shuffle: Boolean) = Unit
         override fun togglePlay() = Unit

@@ -94,7 +94,15 @@ Verified on an isolated API 36 Google APIs x86_64 emulator:
 - Android lint passes with **zero errors** and warnings (mostly available dependency/target updates, the intentional exported media service and a KTX style suggestion). No baseline or lint-error suppression was used to turn failures green.
 - All preserved browser mockup suites pass independently. They do not stand in for native audio tests.
 
-`NativeFlowTest` has optional instrumentation arguments `preserveSession=true` and `coldRestoreOnly=true` for the two-phase probe. Run only that class for each phase, with `adb -s <owned emulator> shell am force-stop com.everyonesoftware.audio` between phases. Preserve mode leaves **test-only** credentials/session until the cold probe's cleanup. Normal suite runs always clean up their fixture account. Emulator screenshots and the expected-session JSON are written under the test installation's external `files/evidence/`; none is a production demo or real account.
+The two-phase `NativeFlowTest` probe is **method-scoped**, not class-wide: `preserveSession=true` and `coldRestoreOnly=true` apply only to `realConnectionShuffleRatingBackgroundPlaybackAndActivityReturn`. The independent album test requires a fresh welcome screen and live fixture server; it must not run in either probe phase. On a task-owned emulator with clean app data, run the following (replace `<owned-serial>` with its explicit serial):
+
+```sh
+adb -s <owned-serial> shell am instrument -w -r -e class 'com.everyonesoftware.audio.NativeFlowTest#realConnectionShuffleRatingBackgroundPlaybackAndActivityReturn' -e preserveSession true com.everyonesoftware.audio.test/androidx.test.runner.AndroidJUnitRunner
+adb -s <owned-serial> shell am force-stop com.everyonesoftware.audio
+adb -s <owned-serial> shell am instrument -w -r -e class 'com.everyonesoftware.audio.NativeFlowTest#realConnectionShuffleRatingBackgroundPlaybackAndActivityReturn' -e coldRestoreOnly true com.everyonesoftware.audio.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Require `OK (1 test)` in **each** phase with no failure, crash or assumption-skip status. This verifies the original playback/restoration method only, not the album method. Preserve mode leaves **test-only** credentials/session until the cold probe's cleanup. Normal suite runs without either argument clean up each fixture account, including the album test. Emulator screenshots and the expected-session JSON are written under the test installation's external `files/evidence/`; none is a production demo or real account.
 
 `AndroidAutoTest` exercises both Media3 and platform-legacy browsing, real fixture WAV playback, one-tap custom shuffle, queue occurrence selection, playlist inspection, name-based voice requests, native voice-intent recreation, duplicate-name refusal, network retry, subscription refresh, and a delayed car response racing a newer phone queue. A saved-account/no-session voice-launch regression gates the server response until initialization finishes, verifying startup refresh cannot cancel explicit playback. It rejects arbitrary URI replacements and stale queue IDs. These are native controller tests, not an Android Auto host simulation.
 

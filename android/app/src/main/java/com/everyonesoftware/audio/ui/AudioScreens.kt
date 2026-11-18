@@ -513,12 +513,10 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
                 Hint(if (state.playlistLoading) "Loading songs…" else "${state.playlistSongs.size} songs", Modifier.padding(vertical = 8.dp))
                 Row(Modifier.fillMaxWidth().testTag("playlist-transport"), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    TextButton({ actions.downloadPlaylist() }, Modifier.heightIn(min = 48.dp).testTag("playlist-download"),
-                        enabled = transportEnabled) {
-                        Icon(Icons.Default.Download, null, Modifier.size(20.dp))
-                        Text("Download", Modifier.padding(start = 6.dp))
+                    FilledIconButton({ actions.playPlaylist(playlist.id, shuffle) }, Modifier.size(56.dp).testTag("playlist-play"),
+                        enabled = transportEnabled, shape = CircleShape) {
+                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play playlist shuffled" else "Play playlist in order", Modifier.size(30.dp))
                     }
-                    Spacer(Modifier.weight(1f))
                     IconToggleButton(shuffle, { shuffle = it }, Modifier.size(48.dp).testTag("playlist-shuffle")
                         .semantics { stateDescription = if (shuffle) "On" else "Off" },
                         enabled = transportEnabled,
@@ -531,10 +529,8 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
                                 .background(MaterialTheme.colorScheme.primary, CircleShape).testTag("playlist-shuffle-dot"))
                         }
                     }
-                    FilledIconButton({ actions.playPlaylist(playlist.id, shuffle) }, Modifier.size(56.dp).testTag("playlist-play"),
-                        enabled = transportEnabled, shape = CircleShape) {
-                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play playlist shuffled" else "Play playlist in order", Modifier.size(30.dp))
-                    }
+                    IconButton({ actions.downloadPlaylist() }, Modifier.size(48.dp).testTag("playlist-download"),
+                        enabled = transportEnabled) { Icon(Icons.Default.Download, "Download playlist") }
                 }
             }
             if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
@@ -556,6 +552,9 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
 @Composable
 private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val album = state.selectedAlbum
+    var shuffle by rememberSaveable(state.connection?.id, album?.id) { mutableStateOf(false) }
+    val transportEnabled = !state.loading && !state.albumLoading && state.albumError == null &&
+        state.albumSongs.isNotEmpty() && !state.storage.settings.offline
     Column(Modifier.fillMaxSize()) {
         CollectionDetailHeader("album-header") { actions.showScreen(state.backDestination) }
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("album-songs"), contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp)) {
@@ -564,10 +563,27 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
                     Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp).testTag("album-artwork"))
                 }
                 Text(album.name, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                TextButton({ actions.downloadAlbum() }, enabled = !state.albumLoading && state.albumError == null && state.albumSongs.isNotEmpty()) { Text("Download album") }
                 Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
-                Primary(if (state.loading) "Starting…" else "Play album", Modifier.testTag("album-play"), enabled = !state.loading && !state.albumLoading && state.albumSongs.isNotEmpty()) {
-                    actions.playAlbum(album.id)
+                Row(Modifier.fillMaxWidth().testTag("album-transport"), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilledIconButton({ actions.playAlbum(album.id, shuffle) }, Modifier.size(56.dp).testTag("album-play"),
+                        enabled = transportEnabled, shape = CircleShape) {
+                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play album shuffled" else "Play album in order", Modifier.size(30.dp))
+                    }
+                    IconToggleButton(shuffle, { shuffle = it }, Modifier.size(48.dp).testTag("album-shuffle")
+                        .semantics { stateDescription = if (shuffle) "On" else "Off" },
+                        enabled = transportEnabled,
+                        colors = IconButtonDefaults.iconToggleButtonColors(
+                            checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            checkedContentColor = MaterialTheme.colorScheme.primary)) {
+                        Box(Modifier.size(32.dp), contentAlignment = Alignment.TopCenter) {
+                            Icon(Icons.Default.Shuffle, "Shuffle album", Modifier.size(24.dp))
+                            if (shuffle) Box(Modifier.size(4.dp).align(Alignment.BottomCenter)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape).testTag("album-shuffle-dot"))
+                        }
+                    }
+                    IconButton({ actions.downloadAlbum() }, Modifier.size(48.dp).testTag("album-download"),
+                        enabled = transportEnabled) { Icon(Icons.Default.Download, "Download album") }
                 }
             }
             if (state.albumLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth().padding(top = 10.dp)) }
@@ -576,7 +592,9 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
                 if (state.albumError != null && album != null) TextButton({ actions.openAlbum(album.id) }) { Text("Retry album") }
                 if (!state.albumLoading && state.albumError == null && state.albumSongs.isEmpty()) Hint("This album has no songs.")
             }
-            items(state.albumSongs, key = { it.id }) { song ->
+            // Album responses can repeat a song; each occurrence needs its own lazy-list identity.
+            items(state.albumSongs.size) { index ->
+                val song = state.albumSongs[index]
                 Row(Modifier.fillMaxWidth().heightIn(min = 62.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                     Column(Modifier.weight(1f)) { Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis); Hint(song.artist); OfflineBadge(song.id, state.storage) }

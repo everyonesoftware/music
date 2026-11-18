@@ -15,7 +15,6 @@ import com.everyonesoftware.audio.BuildConfig
 import com.everyonesoftware.audio.data.Connection
 import com.everyonesoftware.audio.data.CollectionKind
 import com.everyonesoftware.audio.data.CollectionLayout
-import com.everyonesoftware.audio.data.AlbumContents
 import com.everyonesoftware.audio.data.Playlist
 import com.everyonesoftware.audio.data.OfflineCollection
 import com.everyonesoftware.audio.data.Song
@@ -341,17 +340,16 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
-    override fun playAlbum(id: String) {
-        if (graph.networkPolicy.offline) { playOfflineCollection("album", id); return }
-        if (current.value.loading) return
+    override fun playAlbum(id: String, shuffle: Boolean) {
+        val detail = current.value
+        if (detail.loading || detail.selectedAlbum?.id != id || detail.albumLoading || detail.albumError != null ||
+            detail.albumSongs.isEmpty() || graph.networkPolicy.offline) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
-            val result = if (current.value.selectedAlbum?.id == id && current.value.albumSongs.isNotEmpty())
-                AlbumContents(requireNotNull(current.value.selectedAlbum), current.value.albumSongs)
-            else graph.clientFor(credentials).album(id)
+            val result = graph.clientFor(credentials).album(id)
             val album = result.album
             val previous = graph.session.value
-            val session = SessionRules.start(credentials.connection.id, album.id, album.name, result.songs, sourceType = "album", shuffle = false)
+            val session = SessionRules.start(credentials.connection.id, album.id, album.name, result.songs, sourceType = "album", shuffle = shuffle)
             val controller = controller()
             graph.setSession(session, credentials, previous)
             controller.play()

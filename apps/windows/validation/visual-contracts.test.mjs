@@ -1,3 +1,5 @@
+import './collection-transport.test.mjs';
+import './navigation-contracts.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -123,22 +125,22 @@ test('collection opens its header before awaiting the server and uses static loa
   assert.match(open, /Could not open this collection/);
   const detail = method('RenderDetail');
   assert.match(detail, /Loading songs…/);
-  assert.match(detail, /download.IsEnabled = !detailLoading/);
+  assert.match(detail, /CreateCollectionTransport\(\)/);
+  const transport = readFileSync(new URL('MainWindow.CollectionTransport.cs', app), 'utf8').replaceAll('\r\n', '\n');
+  assert.match(transport, /collectionTransport.CanStart\(detailLoading, detailError/);
+  assert.match(transport, /IsEnabled = available\(\)/);
   assert.match(method('NavigateAsync'), /ClearDetail\(\)/);
   assert.match(method('ActivateConnection'), /ClearDetail\(\)/);
 });
 
-test('collection detail keeps back, play, and count in one compact action row', () => {
+test('collection detail keeps count above shared left transport without a Library back link', () => {
   const detail = method('RenderDetail');
   assert.match(detail, /Orientation = Orientation.Horizontal/);
   assert.match(detail, /panel.Spacing = 12/);
-  assert.match(detail, /actions.Children.Add\(back\)/);
-  assert.match(detail, /actions.Children.Add\(play\)/);
+  assert.doesNotMatch(detail, /actions.Children.Add\(back\)|←|NavigateAsync/);
   assert.match(detail, /actions.Children.Add\(Text\(/);
   assert.doesNotMatch(detail, /panel.Children.Add\((back|play)\)/);
-  assert.match(detail, /StartQueue\(detailSongs, 0\)/);
-  assert.match(detail, /NavigateAsync\("library"\)/);
-  assert.match(detail, /AutomationProperties.SetName\(play, "Play " \+ detailTitle\)/);
+  assert.match(detail, /panel.Children.Add\(CreateCollectionTransport\(\)\)/);
 });
 
 test('track list shares responsive columns with its headings and stretches item containers', () => {
