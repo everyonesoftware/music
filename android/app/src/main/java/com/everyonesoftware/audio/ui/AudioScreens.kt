@@ -498,8 +498,6 @@ private fun SongRow(song: Song, artworkUrl: (String?) -> String?, storage: com.e
 @Composable
 private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val playlist = state.selectedPlaylist
-    // A preference for this detail screen, not a command for the existing listening session.
-    var shuffle by rememberSaveable(state.connection?.id, playlist?.id) { mutableStateOf(false) }
     val transportEnabled = !state.loading && !state.playlistLoading && state.playlistDetailError == null &&
         state.playlistSongs.isNotEmpty() && !state.storage.settings.offline
     Column(Modifier.fillMaxSize()) {
@@ -513,21 +511,13 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
                 Hint(if (state.playlistLoading) "Loading songs…" else "${state.playlistSongs.size} songs", Modifier.padding(vertical = 8.dp))
                 Row(Modifier.fillMaxWidth().testTag("playlist-transport"), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledIconButton({ actions.playPlaylist(playlist.id, shuffle) }, Modifier.size(56.dp).testTag("playlist-play"),
+                    FilledIconButton({ actions.playPlaylist(playlist.id, false) }, Modifier.size(56.dp).testTag("playlist-play"),
                         enabled = transportEnabled, shape = CircleShape) {
-                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play playlist shuffled" else "Play playlist in order", Modifier.size(30.dp))
+                        Icon(Icons.Default.PlayArrow, "Play playlist in order", Modifier.size(30.dp))
                     }
-                    IconToggleButton(shuffle, { shuffle = it }, Modifier.size(48.dp).testTag("playlist-shuffle")
-                        .semantics { stateDescription = if (shuffle) "On" else "Off" },
-                        enabled = transportEnabled,
-                        colors = IconButtonDefaults.iconToggleButtonColors(
-                            checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            checkedContentColor = MaterialTheme.colorScheme.primary)) {
-                        Box(Modifier.size(32.dp), contentAlignment = Alignment.TopCenter) {
-                            Icon(Icons.Default.Shuffle, "Shuffle playlist", Modifier.size(24.dp))
-                            if (shuffle) Box(Modifier.size(4.dp).align(Alignment.BottomCenter)
-                                .background(MaterialTheme.colorScheme.primary, CircleShape).testTag("playlist-shuffle-dot"))
-                        }
+                    IconButton({ actions.playPlaylist(playlist.id, true) }, Modifier.size(48.dp).testTag("playlist-shuffle"),
+                        enabled = transportEnabled) {
+                        Icon(Icons.Default.Shuffle, "Shuffle playlist", Modifier.size(24.dp))
                     }
                     IconButton({ actions.downloadPlaylist() }, Modifier.size(48.dp).testTag("playlist-download"),
                         enabled = transportEnabled) { Icon(Icons.Default.Download, "Download playlist") }
@@ -552,7 +542,6 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
 @Composable
 private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val album = state.selectedAlbum
-    var shuffle by rememberSaveable(state.connection?.id, album?.id) { mutableStateOf(false) }
     val transportEnabled = !state.loading && !state.albumLoading && state.albumError == null &&
         state.albumSongs.isNotEmpty() && !state.storage.settings.offline
     Column(Modifier.fillMaxSize()) {
@@ -566,21 +555,13 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
                 Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
                 Row(Modifier.fillMaxWidth().testTag("album-transport"), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilledIconButton({ actions.playAlbum(album.id, shuffle) }, Modifier.size(56.dp).testTag("album-play"),
+                    FilledIconButton({ actions.playAlbum(album.id, false) }, Modifier.size(56.dp).testTag("album-play"),
                         enabled = transportEnabled, shape = CircleShape) {
-                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play album shuffled" else "Play album in order", Modifier.size(30.dp))
+                        Icon(Icons.Default.PlayArrow, "Play album in order", Modifier.size(30.dp))
                     }
-                    IconToggleButton(shuffle, { shuffle = it }, Modifier.size(48.dp).testTag("album-shuffle")
-                        .semantics { stateDescription = if (shuffle) "On" else "Off" },
-                        enabled = transportEnabled,
-                        colors = IconButtonDefaults.iconToggleButtonColors(
-                            checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                            checkedContentColor = MaterialTheme.colorScheme.primary)) {
-                        Box(Modifier.size(32.dp), contentAlignment = Alignment.TopCenter) {
-                            Icon(Icons.Default.Shuffle, "Shuffle album", Modifier.size(24.dp))
-                            if (shuffle) Box(Modifier.size(4.dp).align(Alignment.BottomCenter)
-                                .background(MaterialTheme.colorScheme.primary, CircleShape).testTag("album-shuffle-dot"))
-                        }
+                    IconButton({ actions.playAlbum(album.id, true) }, Modifier.size(48.dp).testTag("album-shuffle"),
+                        enabled = transportEnabled) {
+                        Icon(Icons.Default.Shuffle, "Shuffle album", Modifier.size(24.dp))
                     }
                     IconButton({ actions.downloadAlbum() }, Modifier.size(48.dp).testTag("album-download"),
                         enabled = transportEnabled) { Icon(Icons.Default.Download, "Download album") }

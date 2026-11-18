@@ -131,7 +131,7 @@ class NativeFlowTest {
         if (!coldProbe) server.shutdown()
     }
 
-    @Test fun albumDetailStartsFreshOrderedAndShuffledOccurrenceQueuesWithoutChangingPlaybackOnSelection() {
+    @Test fun albumDetailPlayAndShuffleImmediatelyStartFreshOccurrenceQueues() {
         val baseUrl = server.url("/").toString()
         // A standalone cold run can still be restoring when the activity first becomes idle.
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Connect to Navidrome").fetchSemanticsNodes().isNotEmpty() }
@@ -182,21 +182,20 @@ class NativeFlowTest {
         compose.waitUntil(10_000) { !graph.playback.value.playing }
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithTag("album-card-fixture-album").performScrollTo().performClick()
-        compose.onNodeWithTag("album-shuffle").performScrollTo().performClick()
-        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
-        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
-        Assert.assertFalse(graph.session.value!!.shuffle)
-        Assert.assertFalse(graph.playback.value.playing)
+        // Mini-player pause/resume preserves the ordered queue before the Shuffle action.
         compose.onNodeWithTag("mini-player-toggle").performClick()
         compose.waitUntil(10_000) { graph.playback.value.playing }
         compose.onNodeWithTag("mini-player-toggle").performClick()
         compose.waitUntil(10_000) { !graph.playback.value.playing }
         Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
         Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
-        compose.onNodeWithTag("album-play").performClick()
-        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId }
+        Assert.assertFalse(graph.session.value!!.shuffle)
+        compose.onNodeWithTag("album-shuffle").performScrollTo().performClick()
+        compose.waitUntil(20_000) {
+            graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId && graph.session.value?.shuffle == true
+        }
         val shuffled = graph.session.value!!
-        Assert.assertTrue("Album detail mode must reach the real service", shuffled.shuffle)
+        Assert.assertTrue("Album Shuffle must immediately reach the real service", shuffled.shuffle)
         Assert.assertEquals("album", shuffled.sourceType)
         Assert.assertEquals(listOf("s1", "s1", "s2", "s3"), shuffled.queue.map { it.id }.sorted())
         assertServiceOccurrenceQueue(shuffled)
@@ -277,7 +276,7 @@ class NativeFlowTest {
         Assert.assertFalse(ordered.shuffle)
         assertServiceOccurrenceQueue(ordered)
         Assert.assertNotEquals(beforeBrowsing!!.queueId, ordered.queueId)
-        // Mini-player transport and the detail mode selector must not rebuild a paused queue.
+        // Mini-player transport must not rebuild a paused queue.
         compose.onNodeWithTag("player-toggle").performClick()
         compose.waitUntil(10_000) { !graph.playback.value.playing }
         compose.onNodeWithContentDescription("Back").performClick()
@@ -295,19 +294,18 @@ class NativeFlowTest {
         compose.onNodeWithContentDescription("Back").performClick()
         compose.onNodeWithTag("playlist-card-routine").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s2").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithTag("playlist-shuffle").performScrollTo().performClick()
-        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
-        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
-        Assert.assertFalse(graph.session.value!!.shuffle)
-        Assert.assertFalse(graph.playback.value.playing)
+        // Mini-player pause/resume preserves the ordered queue before the Shuffle action.
         compose.onNodeWithTag("mini-player-toggle").performClick()
         compose.waitUntil(10_000) { graph.playback.value.playing }
         compose.onNodeWithTag("mini-player-toggle").performClick()
         compose.waitUntil(10_000) { !graph.playback.value.playing }
         Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
         Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
-        compose.onNodeWithTag("playlist-play").performClick()
-        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId }
+        Assert.assertFalse(graph.session.value!!.shuffle)
+        compose.onNodeWithTag("playlist-shuffle").performScrollTo().performClick()
+        compose.waitUntil(20_000) {
+            graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId && graph.session.value?.shuffle == true
+        }
         val original = graph.session.value!!
         Assert.assertTrue(original.shuffle)
         Assert.assertEquals(listOf("s1", "s1", "s2", "s3"), original.queue.map { it.id }.sorted())

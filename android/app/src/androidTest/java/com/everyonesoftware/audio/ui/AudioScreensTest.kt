@@ -502,8 +502,7 @@ class AudioScreensTest {
             selectedAlbum = Album("test-album", "Test album", "Artist"),
             albumSongs = listOf(song)))
         compose.onNodeWithTag("album-transport").assertIsDisplayed()
-        compose.onNodeWithTag("album-shuffle").assertIsDisplayed()
-            .assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+        assertCollectionShuffleAction("album")
         compose.onNodeWithContentDescription("Download album").performClick()
         compose.onNodeWithContentDescription("Play album in order").assertIsDisplayed().performClick()
         compose.runOnIdle {
@@ -528,55 +527,105 @@ class AudioScreensTest {
         }
     }
 
-    @Test fun playlistShuffleOnlySelectsTheNextFreshQueueAndResetsForOtherPlaylistsAndAccounts() {
-        val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST,
-            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song)))
-        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
-        val toggle = compose.onNodeWithTag("playlist-shuffle")
-        toggle.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-            .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.onNodeWithTag("playlist-shuffle-dot", useUnmergedTree = true).assertIsDisplayed()
-        compose.runOnIdle {
-            assertTrue(actions.playedPlaylists.isEmpty())
-            assertTrue(actions.startedPlaylists.isEmpty())
-            assertEquals(0, actions.playToggles)
-            assertEquals(session, state.value.session)
-        }
-        compose.onNodeWithContentDescription("Play playlist shuffled").performClick()
-        compose.onNodeWithTag("mini-player-toggle").performClick()
-        compose.runOnIdle {
-            assertEquals(listOf("p" to true), actions.playedPlaylists)
-            assertEquals(1, actions.playToggles)
-            state.value = state.value.copy(playlistSongs = listOf(song, song)) // metadata refresh retains mode
-        }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.runOnIdle { state.value = state.value.copy(selectedPlaylist = Playlist("other", "Other")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(connection = connection.copy(id = "other-account")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        compose.onNodeWithTag("playlist-shuffle-dot", useUnmergedTree = true).assertDoesNotExist()
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(selectedPlaylist = Playlist("p", "Playlist")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYLISTS) }
-        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYLIST) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+    @Test fun playlistShuffleImmediatelyPlaysEveryTapAndPlayStaysOrderedAcrossIdentityChanges() {
+        assertImmediateCollectionShuffle(Screen.PLAYLIST, "playlist")
     }
 
-    @Test fun playlistShuffleSelectionSurvivesSavedStateRestorationWithoutPlaybackCommands() {
-        val restoration = StateRestorationTester(compose)
-        val state = playerState().copy(screen = Screen.PLAYLIST,
-            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song))
-        restoration.setContent { AudioTheme { AudioApp(state, actions, artworkUrl = { null }) } }
-        compose.onNodeWithTag("playlist-shuffle").performClick()
-        restoration.emulateSavedInstanceStateRestore()
-        compose.onNodeWithTag("playlist-shuffle").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.runOnIdle {
-            assertTrue(actions.playedPlaylists.isEmpty())
+    @Test fun playlistShuffleRestorationDoesNotReplayCommands() {
+        assertCollectionShuffleRestoration(Screen.PLAYLIST, "playlist")
+    }
+
+    private fun assertCollectionShuffleAction(prefix: String) {
+        compose.onNodeWithTag("$prefix-shuffle").assertIsDisplayed()
+            .assert(SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.ToggleableState))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+            .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+        compose.onNodeWithContentDescription("Shuffle $prefix").assertIsDisplayed()
+        compose.onNodeWithTag("$prefix-shuffle-dot", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Play $prefix in order").assertIsDisplayed()
+    }
+
+    private fun assertImmediateCollectionShuffle(screen: Screen, prefix: String) {
+        val state = mutableStateOf(playerState().copy(screen = screen,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song),
+            selectedAlbum = Album("p", "Album", "Artist"), albumSongs = listOf(song)))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val expected = mutableListOf<Pair<String, Boolean>>()
+        fun assertCommands() = compose.runOnIdle {
+            assertEquals(expected, if (screen == Screen.PLAYLIST) actions.playedPlaylists else actions.playedAlbums)
+            assertTrue(actions.startedPlaylists.isEmpty())
             assertEquals(0, actions.playToggles)
+            // The callback spy must not mutate the active mini-player session itself.
+            assertEquals(session, state.value.session)
+        }
+        fun click(id: String, shuffle: Boolean) {
+            compose.onNodeWithTag("$prefix-${if (shuffle) "shuffle" else "play"}").performClick()
+            expected += id to shuffle
+            assertCommands()
+            assertCollectionShuffleAction(prefix)
+        }
+        assertCollectionShuffleAction(prefix)
+        assertCommands()
+        click("p", true)
+        click("p", true) // Each tap is a new action, never an on/off selection.
+        click("p", false)
+        compose.runOnIdle {
+            state.value = state.value.copy(selectedPlaylist = Playlist("p", "Refreshed playlist"),
+                selectedAlbum = Album("p", "Refreshed album", "Other artist"),
+                playlistSongs = listOf(song, song), albumSongs = listOf(song, song))
+        }
+        assertCommands() // Metadata refresh cannot start playback.
+        click("p", true)
+        click("p", false)
+        compose.runOnIdle {
+            state.value = state.value.copy(selectedPlaylist = Playlist("other", "Other playlist"),
+                selectedAlbum = Album("other", "Other album", "Artist"))
+        }
+        assertCommands()
+        click("other", true)
+        click("other", false)
+        compose.runOnIdle { state.value = state.value.copy(connection = connection.copy(id = "other-account")) }
+        assertCommands()
+        click("other", true) // The same collection ID is valid under the newly displayed account.
+        click("other", false)
+        compose.runOnIdle {
+            state.value = state.value.copy(selectedPlaylist = Playlist("account-collection", "Account playlist"),
+                selectedAlbum = Album("account-collection", "Account album", "Artist"))
+        }
+        assertCommands()
+        click("account-collection", true)
+        click("account-collection", false)
+        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYLISTS) }
+        compose.runOnIdle { state.value = state.value.copy(screen = screen) }
+        assertCommands() // Re-entry cannot reissue the last action.
+        click("account-collection", true)
+        click("account-collection", false)
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.runOnIdle { assertEquals(1, actions.playToggles) }
+    }
+
+    private fun assertCollectionShuffleRestoration(screen: Screen, prefix: String) {
+        val restoration = StateRestorationTester(compose)
+        val state = playerState().copy(screen = screen,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song),
+            selectedAlbum = Album("p", "Album", "Artist"), albumSongs = listOf(song))
+        restoration.setContent { AudioTheme { AudioApp(state, actions, artworkUrl = { null }) } }
+        compose.onNodeWithTag("$prefix-shuffle").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("p" to true), if (screen == Screen.PLAYLIST) actions.playedPlaylists else actions.playedAlbums)
+        }
+        restoration.emulateSavedInstanceStateRestore()
+        assertCollectionShuffleAction(prefix)
+        compose.runOnIdle {
+            assertEquals(listOf("p" to true), if (screen == Screen.PLAYLIST) actions.playedPlaylists else actions.playedAlbums)
+            assertTrue(actions.startedPlaylists.isEmpty())
+            assertEquals(0, actions.playToggles)
+        }
+        compose.onNodeWithTag("$prefix-play").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("p" to true, "p" to false), if (screen == Screen.PLAYLIST) actions.playedPlaylists else actions.playedAlbums)
         }
     }
 
@@ -607,9 +656,13 @@ class AudioScreensTest {
                 assertTrue("Download sits beside Shuffle", download.left - shuffle.right <= 9 * density)
                 compose.onNodeWithText("Download").assertDoesNotExist()
                 compose.onNodeWithContentDescription("Download $prefix").assertIsDisplayed()
+                val neutralPixels = compose.onRoot().captureToImage().toPixelMap()
+                val neutralShuffleBackground = neutralPixels[(shuffle.left + 8 * density).toInt(), shuffle.center.y.toInt()]
                 compose.onNodeWithTag("$prefix-shuffle").performClick()
+                assertCollectionShuffleAction(prefix)
                 val pixels = compose.onRoot().captureToImage().toPixelMap()
-                assertEquals("Selected sage background", Color(0xFF323E35), pixels[(shuffle.left + 8 * density).toInt(), shuffle.center.y.toInt()])
+                assertEquals("Shuffle action retains neutral background", neutralShuffleBackground,
+                    pixels[(shuffle.left + 8 * density).toInt(), shuffle.center.y.toInt()])
                 assertEquals("Sage Play", Color(0xFFC0D7AE), pixels[(play.left + 8 * density).toInt(), play.center.y.toInt()])
                 captureOutputEvidence("compact-$prefix-transport-${dp.value.toInt()}", compose.onRoot())
                 compose.onNodeWithTag("$prefix-shuffle").performClick()
@@ -641,56 +694,12 @@ class AudioScreensTest {
         }
     }
 
-    @Test fun albumShuffleOnlySelectsTheNextFreshQueueAndResetsForOtherPlaylistsAndAccounts() {
-        val state = mutableStateOf(playerState().copy(screen = Screen.ALBUM,
-            selectedAlbum = Album("p", "Album", "Artist"), albumSongs = listOf(song)))
-        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
-        val toggle = compose.onNodeWithTag("album-shuffle")
-        toggle.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-            .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.onNodeWithTag("album-shuffle-dot", useUnmergedTree = true).assertIsDisplayed()
-        compose.runOnIdle {
-            assertTrue(actions.playedAlbums.isEmpty())
-            assertTrue(actions.startedPlaylists.isEmpty())
-            assertEquals(0, actions.playToggles)
-            assertEquals(session, state.value.session)
-        }
-        compose.onNodeWithContentDescription("Play album shuffled").performClick()
-        compose.onNodeWithTag("mini-player-toggle").performClick()
-        compose.runOnIdle {
-            assertEquals(listOf("p" to true), actions.playedAlbums)
-            assertEquals(1, actions.playToggles)
-            state.value = state.value.copy(albumSongs = listOf(song, song)) // metadata refresh retains mode
-        }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.runOnIdle { state.value = state.value.copy(selectedAlbum = Album("other", "Other", "Artist")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(connection = connection.copy(id = "other-account")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        compose.onNodeWithTag("album-shuffle-dot", useUnmergedTree = true).assertDoesNotExist()
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(selectedAlbum = Album("p", "Album", "Artist")) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
-        toggle.performClick()
-        compose.runOnIdle { state.value = state.value.copy(screen = Screen.ALL_ALBUMS) }
-        compose.runOnIdle { state.value = state.value.copy(screen = Screen.ALBUM) }
-        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+    @Test fun albumShuffleImmediatelyPlaysEveryTapAndPlayStaysOrderedAcrossIdentityChanges() {
+        assertImmediateCollectionShuffle(Screen.ALBUM, "album")
     }
 
-    @Test fun albumShuffleSelectionSurvivesSavedStateRestorationWithoutPlaybackCommands() {
-        val restoration = StateRestorationTester(compose)
-        val state = playerState().copy(screen = Screen.ALBUM,
-            selectedAlbum = Album("p", "Album", "Artist"), albumSongs = listOf(song))
-        restoration.setContent { AudioTheme { AudioApp(state, actions, artworkUrl = { null }) } }
-        compose.onNodeWithTag("album-shuffle").performClick()
-        restoration.emulateSavedInstanceStateRestore()
-        compose.onNodeWithTag("album-shuffle").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
-        compose.runOnIdle {
-            assertTrue(actions.playedAlbums.isEmpty())
-            assertEquals(0, actions.playToggles)
-        }
+    @Test fun albumShuffleRestorationDoesNotReplayCommands() {
+        assertCollectionShuffleRestoration(Screen.ALBUM, "album")
     }
 
     @Test fun albumTransportDisablesAllActionsWhileUnavailable() {
