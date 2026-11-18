@@ -4,10 +4,16 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.OnBackPressedDispatcher
 import androidx.activity.compose.LocalOnBackPressedDispatcherOwner
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.assertHeightIsAtLeast
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotEnabled
@@ -24,6 +30,7 @@ import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
+
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.toPixelMap
@@ -363,6 +370,21 @@ class AudioScreensTest {
         compose.runOnIdle { assertTrue(actions.screens.all { it == Screen.SETTINGS }) }
     }
 
+    @Test fun savedMusicSettingsIsVisibleInItsTopRowWithoutScrolling() {
+        render(playerState().copy(screen = Screen.OFFLINE))
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        val title = compose.onNodeWithText("Saved music").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        val back = compose.onNodeWithText("Back").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+        assertTrue("Saved music title is visible at the top", title.top >= root.top && title.bottom < root.center.y)
+        captureOutputEvidence("saved-music-settings-header", compose.onRoot())
+        val gear = compose.onNodeWithTag("settings-gear").assertIsDisplayed()
+            .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).fetchSemanticsNode().boundsInRoot
+        assertEquals("Settings stays in the top row", back.center.y, gear.center.y, 1f)
+        assertTrue("Settings remains within the viewport", gear.left >= root.left && gear.right <= root.right && gear.bottom <= root.bottom)
+        compose.onNodeWithTag("settings-gear").performClick()
+        compose.runOnIdle { assertEquals(listOf(Screen.SETTINGS), actions.screens) }
+    }
+
     @Test fun systemBackFromLibraryFallsThroughToAndroid() {
         render(playerState().copy(screen = Screen.PLAYLISTS))
         compose.runOnIdle {
@@ -475,13 +497,155 @@ class AudioScreensTest {
         }
     }
 
-    @Test fun playlistDetailsListsSongsAndProvidesExplicitShuffle() {
+    @Test fun playlistDetailsDefaultsToOrderedCompactPlayWithoutTouchingTheMiniPlayer() {
         render(playerState().copy(screen = Screen.PLAYLIST,
             selectedPlaylist = Playlist("test-playlist", "Test playlist", songCount = 1),
             playlistSongs = listOf(song.copy(title = "Playlist track"))))
         compose.onNodeWithText("Playlist track").assertIsDisplayed()
-        compose.onNodeWithTag("playlist-play").performClick()
-        compose.runOnIdle { assertEquals(listOf("test-playlist"), actions.startedPlaylists) }
+        compose.onNodeWithTag("playlist-download").performClick()
+        compose.onNodeWithContentDescription("Play playlist in order").assertIsDisplayed().performClick()
+        compose.runOnIdle {
+            assertTrue("Detail Play must not call the shuffle shortcut", actions.startedPlaylists.isEmpty())
+            assertEquals(listOf("test-playlist" to false), actions.playedPlaylists)
+            assertEquals(1, actions.playlistDownloads)
+            assertEquals(0, actions.playToggles)
+        }
+    }
+
+    @Test fun playlistShuffleOnlySelectsTheNextFreshQueueAndResetsForOtherPlaylistsAndAccounts() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song)))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val toggle = compose.onNodeWithTag("playlist-shuffle")
+        toggle.assertIsDisplayed().assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+            .assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp).performClick()
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
+        compose.onNodeWithTag("playlist-shuffle-dot", useUnmergedTree = true).assertIsDisplayed()
+        compose.runOnIdle {
+            assertTrue(actions.playedPlaylists.isEmpty())
+            assertTrue(actions.startedPlaylists.isEmpty())
+            assertEquals(0, actions.playToggles)
+            assertEquals(session, state.value.session)
+        }
+        compose.onNodeWithContentDescription("Play playlist shuffled").performClick()
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.runOnIdle {
+            assertEquals(listOf("p" to true), actions.playedPlaylists)
+            assertEquals(1, actions.playToggles)
+            state.value = state.value.copy(playlistSongs = listOf(song, song)) // metadata refresh retains mode
+        }
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
+        compose.runOnIdle { state.value = state.value.copy(selectedPlaylist = Playlist("other", "Other")) }
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+        toggle.performClick()
+        compose.runOnIdle { state.value = state.value.copy(connection = connection.copy(id = "other-account")) }
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+        compose.onNodeWithTag("playlist-shuffle-dot", useUnmergedTree = true).assertDoesNotExist()
+        toggle.performClick()
+        compose.runOnIdle { state.value = state.value.copy(selectedPlaylist = Playlist("p", "Playlist")) }
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+        toggle.performClick()
+        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYLISTS) }
+        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYLIST) }
+        toggle.assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Off"))
+    }
+
+    @Test fun playlistShuffleSelectionSurvivesSavedStateRestorationWithoutPlaybackCommands() {
+        val restoration = StateRestorationTester(compose)
+        val state = playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song))
+        restoration.setContent { AudioTheme { AudioApp(state, actions, artworkUrl = { null }) } }
+        compose.onNodeWithTag("playlist-shuffle").performClick()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("playlist-shuffle").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "On"))
+        compose.runOnIdle {
+            assertTrue(actions.playedPlaylists.isEmpty())
+            assertEquals(0, actions.playToggles)
+        }
+    }
+
+    @Test fun playlistTransportFitsOneRowAtNarrowAndNormalWidthsWithSageSelection() {
+        val width = mutableStateOf(320.dp)
+        val state = playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("p", "Compact playlist"), playlistSongs = listOf(song, song))
+        compose.setContent { Box(Modifier.width(width.value)) { AudioTheme { AudioApp(state, actions, artworkUrl = { null }) } } }
+        val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        for (dp in listOf(320.dp, 412.dp)) {
+            compose.runOnIdle { width.value = dp }
+            val row = compose.onNodeWithTag("playlist-transport").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val nodes = listOf("playlist-download", "playlist-shuffle", "playlist-play").map {
+                compose.onNodeWithTag(it).assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+                    .fetchSemanticsNode().boundsInRoot
+            }
+            val (download, shuffle, play) = nodes
+            assertTrue("Compact row height", row.height <= 64 * density)
+            assertEquals("Download stays left", row.left, download.left, 1f)
+            assertEquals("Play stays right", row.right, play.right, 1f)
+            assertEquals("Round compact Play", 56 * density, play.width, 1f)
+            assertEquals(play.width, play.height, 1f)
+            for (node in nodes) assertEquals("Same-row centers", row.center.y, node.center.y, 1f)
+            assertTrue("Targets do not overlap", download.right <= shuffle.left && shuffle.right <= play.left)
+            assertTrue("Shuffle sits beside Play", play.left - shuffle.right <= 9 * density)
+            compose.onNodeWithTag("playlist-shuffle").performClick()
+            val pixels = compose.onRoot().captureToImage().toPixelMap()
+            assertEquals("Selected sage background", Color(0xFF323E35), pixels[(shuffle.left + 8 * density).toInt(), shuffle.center.y.toInt()])
+            assertEquals("Sage Play", Color(0xFFC0D7AE), pixels[(play.left + 8 * density).toInt(), play.center.y.toInt()])
+            captureOutputEvidence("compact-transport-${dp.value.toInt()}", compose.onRoot())
+            compose.onNodeWithTag("playlist-shuffle").performClick()
+        }
+    }
+
+    @Test fun playlistTransportDisablesAllActionsWhileUnavailable() {
+        val ready = playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song))
+        val state = mutableStateOf(ready)
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val unavailable = listOf(
+            ready.copy(loading = true), ready.copy(playlistLoading = true),
+            ready.copy(playlistDetailError = "Refresh failed"), ready.copy(playlistSongs = emptyList()),
+            ready.copy(storage = ready.storage.copy(settings = ready.storage.settings.copy(offline = true))),
+        )
+        for (value in unavailable) {
+            compose.runOnIdle { state.value = value }
+            for (tag in listOf("playlist-download", "playlist-shuffle", "playlist-play")) {
+                compose.onNodeWithTag(tag).assertIsDisplayed().assertIsNotEnabled().performClick()
+            }
+        }
+        compose.runOnIdle {
+            assertTrue(actions.playedPlaylists.isEmpty())
+            assertTrue(actions.startedPlaylists.isEmpty())
+            assertEquals(0, actions.playToggles)
+            assertEquals(0, actions.playlistDownloads)
+        }
+    }
+
+    @Test fun collectionDetailsHaveCompactIconOnlyHeadersAndMetadataBelowArtwork() {
+        val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST,
+            selectedPlaylist = Playlist("p", "Compact playlist"), playlistSongs = listOf(song),
+            selectedAlbum = Album("a", "Compact album", "Album artist", year = 2026), albumSongs = emptyList()))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        val density = InstrumentationRegistry.getInstrumentation().targetContext.resources.displayMetrics.density
+        for ((screen, prefix, title) in listOf(
+            Triple(Screen.PLAYLIST, "playlist", "Compact playlist"), Triple(Screen.ALBUM, "album", "Compact album"),
+        )) {
+            compose.runOnIdle { state.value = state.value.copy(screen = screen) }
+            compose.onAllNodesWithText(title).assertCountEquals(1)
+            val header = compose.onNodeWithTag("$prefix-header").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val cover = compose.onNodeWithTag("$prefix-artwork").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            val metadata = compose.onNodeWithText(title).assertIsDisplayed().fetchSemanticsNode().boundsInRoot
+            assertTrue("$prefix header remains compact", header.height <= 56 * density)
+            assertTrue("$prefix artwork immediately follows icon row", cover.top >= header.bottom && cover.top - header.bottom <= 8 * density)
+            assertTrue("$prefix title remains below cover", metadata.top >= cover.bottom)
+            compose.onNodeWithContentDescription("Back").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+            compose.onNodeWithTag("settings-gear").assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
+            if (screen == Screen.PLAYLIST) compose.onNodeWithText("Playlist").assertDoesNotExist()
+            else {
+                compose.onNodeWithText("Album artist · 2026").assertIsDisplayed()
+                compose.onNodeWithTag("playlist-transport").assertDoesNotExist()
+                compose.onNodeWithTag("album-play").assertIsDisplayed()
+            }
+            captureOutputEvidence("compact-$prefix-header", compose.onRoot())
+        }
     }
 
     @Test fun searchIncludesServerSongsAndOpensThemForPlayback() {
@@ -680,6 +844,10 @@ class AudioScreensTest {
         val screens = mutableListOf<Screen>()
         val connects = mutableListOf<ConnectCall>()
         val startedPlaylists = mutableListOf<String>()
+        val playedPlaylists = mutableListOf<Pair<String, Boolean>>()
+        override fun playPlaylist(id: String, shuffle: Boolean) { playedPlaylists += id to shuffle }
+        var playlistDownloads = 0
+        override fun downloadPlaylist() { playlistDownloads++ }
         val openedPlaylists = mutableListOf<String>()
         val playedSongs = mutableListOf<String>()
         val openedAlbums = mutableListOf<String>()

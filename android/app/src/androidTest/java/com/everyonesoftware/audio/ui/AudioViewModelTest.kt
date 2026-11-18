@@ -571,6 +571,86 @@ class AudioViewModelTest {
         }
     }
 
+    @Test fun detailPlaylistPlayRejectsMissingAndFailedDetailsWithoutRequestsOrSessionMutation() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val previous = graph.session.value
+            val before = server.requestCount
+            onMain { model.playPlaylist("p", false) }
+            until { !model.state.value.loading }
+            assertEquals("No detail selection must not fetch or start playback", before, server.requestCount)
+            assertNull(model.state.value.error)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { model.openPlaylist("p") }
+            until { model.state.value.playlistDetailError != null }
+            val failedRequests = server.requestCount
+            onMain { model.playPlaylist("p", true) }
+            until { !model.state.value.loading }
+            assertEquals(failedRequests, server.requestCount)
+            assertNull(model.state.value.error)
+            assertEquals(previous, graph.session.value)
+        }
+    }
+
+    @Test fun detailPlaylistPlayRejectsLoadingEmptyAndOfflineDetails() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    entered.countDown()
+                    check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                    return ok(""", "playlist":{"entry":[]}""")
+                }
+            }
+            val previous = graph.session.value
+            try {
+                onMain { model.openPlaylist("p") }
+                assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                val requests = server.requestCount
+                onMain { model.playPlaylist("p", true) }
+                assertFalse(model.state.value.loading)
+                assertEquals(requests, server.requestCount)
+                release.countDown()
+                until { !model.state.value.playlistLoading }
+                onMain { model.playPlaylist("p") }
+                assertFalse(model.state.value.loading)
+                assertEquals(requests, server.requestCount)
+                server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                    override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                        ok(""", "playlist":{"entry":[{"id":"remote","title":"Remote song"}]}""")
+                }
+                onMain { model.openPlaylist("p") }
+                until { !model.state.value.playlistLoading && model.state.value.playlistSongs.isNotEmpty() }
+                val readyRequests = server.requestCount
+                val settings = graph.songCache.state.value.settings
+                graph.songCache.setSettings(settings.copy(offline = true))
+                try {
+                    onMain { model.playPlaylist("p", true) }
+                    assertFalse(model.state.value.loading)
+                    assertEquals(readyRequests, server.requestCount)
+                    assertEquals(previous, graph.session.value)
+                    assertNull(model.state.value.error)
+                } finally { graph.songCache.setSettings(settings) }
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun detailPlaylistPlayRequiresAControllerBeforeReplacingTheSession() = runBlocking {
+        withBrowseFixture { model, graph, _ ->
+            onMain { model.openPlaylist("p") }
+            until { !model.state.value.playlistLoading && model.state.value.playlistSongs.isNotEmpty() }
+            val previous = graph.session.value
+            onMain { model.playPlaylist("p", false) }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals(previous, graph.session.value)
+            assertEquals(previous, graph.store.session("vm-browse-fixture"))
+        }
+    }
+
     private suspend fun withBrowseFixture(block: suspend (AudioViewModel, AudioGraph, MockWebServer) -> Unit) {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val graph = AudioGraph(app)

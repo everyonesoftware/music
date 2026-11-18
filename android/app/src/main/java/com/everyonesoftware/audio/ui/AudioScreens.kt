@@ -156,6 +156,16 @@ private fun Header(title: String, eyebrow: String = "", back: (() -> Unit)? = nu
     }
 }
 
+/** Collection metadata lives below the cover; the top row contains navigation only. */
+@Composable
+private fun CollectionDetailHeader(tag: String, back: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag(tag), verticalAlignment = Alignment.CenterVertically) {
+        AudioIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = back)
+        Spacer(Modifier.weight(1f))
+        SettingsGear()
+    }
+}
+
 @Composable
 private fun AudioIcon(icon: ImageVector, label: String, modifier: Modifier = Modifier, enabled: Boolean = true, active: Boolean = false, onClick: () -> Unit) {
     IconButton(onClick, modifier.sizeIn(minWidth = 48.dp, minHeight = 52.dp), enabled = enabled) {
@@ -488,17 +498,44 @@ private fun SongRow(song: Song, artworkUrl: (String?) -> String?, storage: com.e
 @Composable
 private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val playlist = state.selectedPlaylist
+    // A preference for this detail screen, not a command for the existing listening session.
+    var shuffle by rememberSaveable(state.connection?.id, playlist?.id) { mutableStateOf(false) }
+    val transportEnabled = !state.loading && !state.playlistLoading && state.playlistDetailError == null &&
+        state.playlistSongs.isNotEmpty() && !state.storage.settings.offline
     Column(Modifier.fillMaxSize()) {
-        Header(playlist?.name ?: "Playlist", "Playlist", back = { actions.showScreen(state.backDestination) })
+        CollectionDetailHeader("playlist-header") { actions.showScreen(state.backDestination) }
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("playlist-songs"), contentPadding = PaddingValues(bottom = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             if (playlist != null) item {
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                    Artwork(playlist.coverArtId, artworkUrl, Modifier.size(180.dp))
+                Row(Modifier.fillMaxWidth().padding(top = 4.dp, bottom = 8.dp), horizontalArrangement = Arrangement.Center) {
+                    Artwork(playlist.coverArtId, artworkUrl, Modifier.size(180.dp).testTag("playlist-artwork"))
                 }
-                Text(playlist.name, style = MaterialTheme.typography.headlineSmall)
+                Text(playlist.name, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall)
                 Hint(if (state.playlistLoading) "Loading songs…" else "${state.playlistSongs.size} songs", Modifier.padding(vertical = 8.dp))
-                TextButton({ actions.downloadPlaylist() }, enabled = !state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isNotEmpty()) { Text("Download playlist") }
-                Primary(if (state.loading) "Starting…" else "Shuffle and play", Modifier.testTag("playlist-play"), enabled = !state.loading && !state.playlistLoading && state.playlistSongs.isNotEmpty()) { actions.startPlaylist(playlist.id) }
+                Row(Modifier.fillMaxWidth().testTag("playlist-transport"), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    TextButton({ actions.downloadPlaylist() }, Modifier.heightIn(min = 48.dp).testTag("playlist-download"),
+                        enabled = transportEnabled) {
+                        Icon(Icons.Default.Download, null, Modifier.size(20.dp))
+                        Text("Download", Modifier.padding(start = 6.dp))
+                    }
+                    Spacer(Modifier.weight(1f))
+                    IconToggleButton(shuffle, { shuffle = it }, Modifier.size(48.dp).testTag("playlist-shuffle")
+                        .semantics { stateDescription = if (shuffle) "On" else "Off" },
+                        enabled = transportEnabled,
+                        colors = IconButtonDefaults.iconToggleButtonColors(
+                            checkedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                            checkedContentColor = MaterialTheme.colorScheme.primary)) {
+                        Box(Modifier.size(32.dp), contentAlignment = Alignment.TopCenter) {
+                            Icon(Icons.Default.Shuffle, "Shuffle playlist", Modifier.size(24.dp))
+                            if (shuffle) Box(Modifier.size(4.dp).align(Alignment.BottomCenter)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape).testTag("playlist-shuffle-dot"))
+                        }
+                    }
+                    FilledIconButton({ actions.playPlaylist(playlist.id, shuffle) }, Modifier.size(56.dp).testTag("playlist-play"),
+                        enabled = transportEnabled, shape = CircleShape) {
+                        Icon(Icons.Default.PlayArrow, if (shuffle) "Play playlist shuffled" else "Play playlist in order", Modifier.size(30.dp))
+                    }
+                }
             }
             if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             item {
@@ -520,13 +557,13 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
 private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val album = state.selectedAlbum
     Column(Modifier.fillMaxSize()) {
-        Header(album?.name ?: "Album", album?.artist.orEmpty(), back = { actions.showScreen(state.backDestination) })
-        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("album-songs"), contentPadding = PaddingValues(top = 10.dp, bottom = 12.dp)) {
+        CollectionDetailHeader("album-header") { actions.showScreen(state.backDestination) }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("album-songs"), contentPadding = PaddingValues(top = 4.dp, bottom = 12.dp)) {
             if (album != null) item {
-                Row(Modifier.fillMaxWidth().padding(vertical = 8.dp), horizontalArrangement = Arrangement.Center) {
-                    Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp))
+                Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.Center) {
+                    Artwork(album.coverArtId, artworkUrl, Modifier.size(220.dp).testTag("album-artwork"))
                 }
-                Text(album.name, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(album.name, Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 TextButton({ actions.downloadAlbum() }, enabled = !state.albumLoading && state.albumError == null && state.albumSongs.isNotEmpty()) { Text("Download album") }
                 Hint(album.artist + if (album.year > 0) " · ${album.year}" else "", Modifier.padding(top = 4.dp, bottom = 8.dp))
                 Primary(if (state.loading) "Starting…" else "Play album", Modifier.testTag("album-play"), enabled = !state.loading && !state.albumLoading && state.albumSongs.isNotEmpty()) {

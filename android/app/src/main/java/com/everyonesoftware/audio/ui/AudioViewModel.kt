@@ -589,7 +589,16 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
-    override fun startPlaylist(id: String) {
+    override fun startPlaylist(id: String) = startPlaylistQueue(id, shuffle = true)
+
+    override fun playPlaylist(id: String, shuffle: Boolean) {
+        val detail = current.value
+        if (detail.selectedPlaylist?.id != id || detail.playlistLoading || detail.playlistDetailError != null ||
+            detail.playlistSongs.isEmpty() || graph.networkPolicy.offline) return
+        startPlaylistQueue(id, shuffle)
+    }
+
+    private fun startPlaylistQueue(id: String, shuffle: Boolean) {
         if (graph.networkPolicy.offline) { playOfflineCollection("playlist", id); return }
         if (current.value.loading) return
         work {
@@ -598,7 +607,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             val previous = graph.session.value
             val playlist = current.value.playlists.firstOrNull { it.id == id } ?: error("Refresh playlists and retry.")
             val songs = graph.playlists.fetchContents(credentials, id).songs
-            val session = SessionRules.start(connection.id, playlist.id, playlist.name, songs)
+            val session = SessionRules.start(connection.id, playlist.id, playlist.name, songs, shuffle = shuffle)
             val controller = controller()
             graph.setSession(session, credentials, previous)
             controller.play()

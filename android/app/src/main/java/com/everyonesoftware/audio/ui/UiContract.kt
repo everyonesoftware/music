@@ -137,6 +137,8 @@ interface AudioUiActions {
     fun search(query: String) = Unit
     fun openPlaylist(id: String) = Unit
     fun startPlaylist(id: String)
+    /** Fresh playlist queue; independent of the current session's transport. */
+    fun playPlaylist(id: String, shuffle: Boolean = false)
     fun togglePlay()
     fun next()
     fun previous()

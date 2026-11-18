@@ -125,9 +125,10 @@ internal fun OfflineSongs(state: AudioUiState, actions: AudioUiActions, artworkU
     val complete = state.storage.cachedSongs + state.storage.downloadedSongs
     val songs = if (recent) state.storage.recentSongs.filter { !offlineOnly || it.id in complete } else state.storage.songs
     Column(Modifier.fillMaxSize()) {
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Row(Modifier.fillMaxWidth().heightIn(min = 52.dp), verticalAlignment = Alignment.CenterVertically) {
             TextButton({ actions.showScreen(Screen.SETTINGS) }) { Text("Back") }
-            Text("Saved music", style = MaterialTheme.typography.headlineSmall)
+            Text("Saved music", Modifier.weight(1f), style = MaterialTheme.typography.headlineSmall)
+            SettingsGear()
         }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             FilterChip(!recent, { recent = false }, { Text("All saved") })

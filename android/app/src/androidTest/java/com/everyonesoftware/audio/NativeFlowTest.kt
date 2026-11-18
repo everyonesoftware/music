@@ -45,6 +45,8 @@ class NativeFlowTest {
     private val graph get() = app.graph
     private val coldProbe get() = InstrumentationRegistry.getArguments().getString("coldRestoreOnly") == "true"
     private val preserveFixture get() = InstrumentationRegistry.getArguments().getString("preserveSession") == "true"
+    // Native software-emulator UI/capture steps can exceed 30 seconds while audio keeps playing.
+    private val fixtureDurationSeconds = 180
     private fun capture(name: String) {
         compose.waitForIdle()
         InstrumentationRegistry.getInstrumentation().waitForIdleSync()
@@ -59,15 +61,34 @@ class NativeFlowTest {
         image.recycle()
     }
     private fun ok(content: String = "") = MockResponse().setHeader("Content-Type", "application/json").setBody("{\"subsonic-response\":{\"status\":\"ok\",\"version\":\"1.16.1\"$content}}")
-    private fun song(id: String) = "{\"id\":\"$id\",\"title\":\"Fixture $id\",\"artist\":\"Audio test\",\"album\":\"Local fixture\",\"duration\":30,\"userRating\":${ratings[id] ?: 0}}"
+    private fun song(id: String) = "{\"id\":\"$id\",\"title\":\"Fixture $id\",\"artist\":\"Audio test\",\"album\":\"Local fixture\",\"duration\":$fixtureDurationSeconds,\"userRating\":${ratings[id] ?: 0}}"
     private fun until(condition: () -> Boolean) {
         val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(20)
         while (!condition()) { check(System.nanoTime() < deadline) { "Native fixture state timed out" }; Thread.sleep(25) }
     }
 
+    private fun assertServiceOccurrenceQueue(saved: ListeningSession) {
+        lateinit var future: com.google.common.util.concurrent.ListenableFuture<MediaController>
+        InstrumentationRegistry.getInstrumentation().runOnMainSync {
+            future = MediaController.Builder(app, SessionToken(app, ComponentName(app, PlaybackService::class.java))).buildAsync()
+        }
+        val controller = future.get(15, java.util.concurrent.TimeUnit.SECONDS)
+        try {
+            InstrumentationRegistry.getInstrumentation().runOnMainSync {
+                Assert.assertEquals(saved.queue.size, controller.mediaItemCount)
+                Assert.assertFalse("Queue order is materialized, not Media3-shuffled", controller.shuffleModeEnabled)
+                val ids = List(controller.mediaItemCount) { controller.getMediaItemAt(it).mediaId }
+                Assert.assertEquals(saved.queue.indices.map {
+                    com.everyonesoftware.audio.playback.CarMediaIds.queued(saved.connectionId, saved.queueId, it)
+                }, ids)
+                Assert.assertEquals("Duplicate songs retain distinct occurrence media IDs", ids.size, ids.toSet().size)
+            }
+        } finally { InstrumentationRegistry.getInstrumentation().runOnMainSync { controller.release() } }
+    }
+
     @Before fun serveIsolatedMusicFixture() {
         if (coldProbe) return
-        val samples = 30 * 8000
+        val samples = fixtureDurationSeconds * 8000
         val bytes = samples * 2
         val wav = ByteBuffer.allocate(44 + bytes).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("RIFF".toByteArray()); putInt(36 + bytes); put("WAVEfmt ".toByteArray()); putInt(16)
@@ -85,7 +106,7 @@ class NativeFlowTest {
                     "search3.view" -> ok(",\"searchResult3\":{\"song\":[${song("s1")}]}")
                     "getMusicFolders.view" -> ok(",\"musicFolders\":{\"musicFolder\":[{\"id\":\"main\",\"name\":\"Fixture library\"}]}")
                     "getPlaylists.view" -> ok(",\"playlists\":{\"playlist\":[{\"id\":\"routine\",\"name\":\"Fixture routine\",\"songCount\":3}]}")
-                    "getPlaylist.view" -> ok(",\"playlist\":{\"id\":\"routine\",\"name\":\"Fixture routine\",\"entry\":[${listOf("s1", "s2", "s3").joinToString(",") { song(it) }}]}")
+                    "getPlaylist.view" -> ok(",\"playlist\":{\"id\":\"routine\",\"name\":\"Fixture routine\",\"entry\":[${listOf("s1", "s2", "s1", "s3").joinToString(",") { song(it) }}]}")
                     "setRating.view" -> { ratings[url.queryParameter("id")!!] = url.queryParameter("rating")!!.toInt(); ok() }
                     "getSong.view" -> ok(",\"song\":${song(url.queryParameter("id")!!)}")
                     "stream.view" -> MockResponse().setHeader("Content-Type", "audio/wav").setHeader("Cache-Control", "no-store").setBody(Buffer().write(wav))
@@ -172,7 +193,47 @@ class NativeFlowTest {
         capture("native-playlist-details")
         compose.onNodeWithTag("playlist-play").performScrollTo().performClick()
         compose.waitUntil(20_000) { graph.playback.value.playing }
+        val ordered = graph.session.value!!
+        Assert.assertEquals("playlist", ordered.sourceType)
+        Assert.assertEquals(listOf("s1", "s2", "s1", "s3"), ordered.queue.map { it.id })
+        Assert.assertFalse(ordered.shuffle)
+        assertServiceOccurrenceQueue(ordered)
+        Assert.assertNotEquals(beforeBrowsing!!.queueId, ordered.queueId)
+        // Mini-player transport and the detail mode selector must not rebuild a paused queue.
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("playlist-card-routine").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s2").fetchSemanticsNodes().isNotEmpty() }
+        // Repeated ordered Play must restart even when its contents are identical.
+        compose.onNodeWithTag("playlist-play").performScrollTo().performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != ordered.queueId }
+        val restarted = graph.session.value!!
+        Assert.assertEquals(ordered.queue, restarted.queue)
+        Assert.assertFalse(restarted.shuffle)
+        Assert.assertEquals(0, restarted.index)
+        compose.onNodeWithTag("player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        compose.onNodeWithContentDescription("Back").performClick()
+        compose.onNodeWithTag("playlist-card-routine").performClick()
+        compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s2").fetchSemanticsNodes().isNotEmpty() }
+        compose.onNodeWithTag("playlist-shuffle").performScrollTo().performClick()
+        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
+        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
+        Assert.assertFalse(graph.session.value!!.shuffle)
+        Assert.assertFalse(graph.playback.value.playing)
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.waitUntil(10_000) { graph.playback.value.playing }
+        compose.onNodeWithTag("mini-player-toggle").performClick()
+        compose.waitUntil(10_000) { !graph.playback.value.playing }
+        Assert.assertEquals(restarted.queueId, graph.session.value!!.queueId)
+        Assert.assertEquals(restarted.queue, graph.session.value!!.queue)
+        compose.onNodeWithTag("playlist-play").performClick()
+        compose.waitUntil(20_000) { graph.playback.value.playing && graph.session.value?.queueId != restarted.queueId }
         val original = graph.session.value!!
+        Assert.assertTrue(original.shuffle)
+        Assert.assertEquals(listOf("s1", "s1", "s2", "s3"), original.queue.map { it.id }.sorted())
+        assertServiceOccurrenceQueue(original)
         Assert.assertEquals(setOf("s1", "s2", "s3"), original.queue.map { it.id }.toSet())
         Assert.assertTrue(requests.any { it.requestUrl?.encodedPath?.endsWith("/stream.view") == true })
         compose.onNodeWithTag("player-rating").performClick()

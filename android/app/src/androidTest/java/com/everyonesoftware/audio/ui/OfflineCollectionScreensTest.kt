@@ -74,6 +74,7 @@ class OfflineCollectionScreensTest {
         override fun openAlbum(id: String) = Unit
         override fun playAlbum(id: String) = Unit
         override fun startPlaylist(id: String) = Unit
+        override fun playPlaylist(id: String, shuffle: Boolean) = Unit
         override fun togglePlay() = Unit
         override fun next() = Unit
         override fun previous() = Unit
