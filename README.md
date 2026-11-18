@@ -7,8 +7,8 @@ Choose your platform. Each link points to its latest published installer, which 
 
 | Platform | Version | Download | Status |
 | --- | --- | --- | --- |
-| Windows x64 | 0.1.69 | [Download installer (.exe)](https://github.com/everyonesoftware/music/releases/download/v0.1.69/MusicWindows-win-x64-Setup.exe) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.69/MusicWindows-win-x64-Setup.exe.sha256) | Unsigned installer; Windows may display a security warning. |
-| Android | 0.1.73 | [Download APK](https://github.com/everyonesoftware/music/releases/download/v0.1.73/Music-0.1.73.apk) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.73/Music-0.1.73.apk.sha256) | Signed alpha; install manually on your device. |
+| Windows x64 | 0.1.75 | [Download installer (.exe)](https://github.com/everyonesoftware/music/releases/download/v0.1.75/MusicWindows-win-x64-Setup.exe) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.75/MusicWindows-win-x64-Setup.exe.sha256) | Unsigned installer; Windows may display a security warning. |
+| Android | 0.1.75 | [Download APK](https://github.com/everyonesoftware/music/releases/download/v0.1.75/Music-0.1.75.apk) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.75/Music-0.1.75.apk.sha256) | Signed alpha; install manually on your device. |
 | Web | — | No released web app | Browser design studies only; not a working web player. |
 
 Unchanged platforms keep their existing installers; a new project release does not necessarily mean a new version for every platform.
