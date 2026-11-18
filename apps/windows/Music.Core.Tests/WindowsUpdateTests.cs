@@ -53,10 +53,37 @@ public sealed class WindowsUpdateTests
         using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
         await controller.CheckAsync();
         Assert.Equal(WindowsUpdatePhase.Current, controller.Status.Phase);
+        Assert.Equal("No newer Windows version is available.", controller.Status.Message);
         await controller.DownloadAsync();
         await controller.RestartAsync();
         Assert.Equal(0, backend.Downloads);
         Assert.Equal(0, backend.Applies);
+    }
+
+    [Fact]
+    public async Task Rechecking_a_current_result_does_not_present_checking_or_failure_as_up_to_date()
+    {
+        var backend = new Backend { Offered = null };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        Assert.Equal(WindowsUpdatePhase.Idle, controller.Status.Phase);
+        await controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Current, controller.Status.Phase);
+        var pending = new TaskCompletionSource<Version?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        backend.PendingCheck = pending.Task;
+        var recheck = controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Checking, controller.Status.Phase);
+        Assert.DoesNotContain("No newer", controller.Status.Message);
+        pending.SetException(new IOException("secret feed URL"));
+        await recheck;
+        Assert.Equal(WindowsUpdatePhase.Error, controller.Status.Phase);
+        Assert.DoesNotContain("No newer", controller.Status.Message);
+        Assert.DoesNotContain("secret", controller.Status.Message);
+        Assert.Equal(0, backend.Downloads);
+        Assert.Equal(0, backend.Applies);
+        backend.PendingCheck = null;
+        await controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Current, controller.Status.Phase);
+        Assert.Equal("No newer Windows version is available.", controller.Status.Message);
     }
 
     [Fact]

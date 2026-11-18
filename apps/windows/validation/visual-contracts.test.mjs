@@ -1,3 +1,4 @@
+import './updates-card.test.mjs';
 import './collection-transport.test.mjs';
 import './navigation-contracts.test.mjs';
 import test from 'node:test';

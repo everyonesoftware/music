@@ -17,6 +17,14 @@ The studies use historical version examples and real commit subjects from those 
 4. Omit the installed-to-offered arrow row, divider above What’s new, platform subtitles, “Everything since your installed version,” and helper/security paragraphs below the download/install action. Omit Android’s **Automatic update checks** section. State changes must not restore removed copy.
 5. Keep download and installation separate: **Download update → Restart and install** on Windows; **Download update → Install update** on Android. Preserve real progress, verification, error handling, and required OS confirmation. Do not infer a change to existing background-check behavior solely from removing its settings section.
 
+### No-update state
+
+- Use the approved **Matched card** treatment on both platforms: the current-version heading and check action sit above a compact **Up to date** card.
+- Supporting copy is **No newer Windows version is available.** on Windows and **No newer Android version is available.** on Android.
+- Omit Preview details, source/verification disclosures, offered-version labels, changelogs, and download/install actions from this state. Reclaim the removed space rather than reserving empty rows.
+- Only a successful completed check with no newer release may show this card. Initial/not-checked, checking, and failed checks must remain distinct; retry must not claim the app is current before it succeeds.
+- Preserve the native shell and Android mini-player. Removing the Android automatic-check controls does not change its existing background-check policy or weaken download verification and installation consent.
+
 ## Changelog contract
 
 - Map each platform’s actual installed and offered packages independently to verified published source revisions. Collect every commit in that exact range, including skipped releases. Do not assume version strings are Git tags or use another platform’s latest release.

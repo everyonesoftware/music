@@ -118,15 +118,17 @@
           </StackPanel>
           <StackPanel x:Name="BrowsePanel" Spacing="24" Visibility="Collapsed"/>
           <StackPanel x:Name="SettingsPanel" Spacing="22" Visibility="Collapsed" MaxWidth="720" HorizontalAlignment="Stretch">
-            <StackPanel Spacing="10"><TextBlock Text="Updates" FontSize="21" FontWeight="SemiBold"/>
-              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
-                <TextBlock x:Name="VersionText" Text="Music for Windows"/>
-                <TextBlock Text="Windows previews · unsigned" FontWeight="SemiBold"/>
-                <TextBlock Text="Automatic updates are not enabled yet. Check for updates below; downloads install only when you choose Restart and install. Windows may show security warnings for unsigned previews." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-                <TextBlock x:Name="UpdateStatus" Text="Check for Windows preview updates when you choose." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+            <StackPanel Spacing="16"><TextBlock Text="Updates" FontSize="21" FontWeight="SemiBold"/>
+              <Grid ColumnSpacing="20">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="VersionText" Text="Current Version:" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
+                <Button Grid.Column="1" x:Name="CheckUpdatesButton" Content="Check for updates" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+              </Grid>
+              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="24,22"><StackPanel Spacing="8">
+                <TextBlock x:Name="UpdateTitle" Text="Not checked yet" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                <TextBlock x:Name="UpdateStatus" Text="Check for updates when you choose." Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                 <ProgressBar x:Name="UpdateProgress" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" AutomationProperties.Name="Windows update progress"/>
-                <StackPanel Orientation="Horizontal" Spacing="10">
-                  <Button x:Name="CheckUpdatesButton" Content="Check for updates"/>
+                <StackPanel x:Name="UpdateActions" Orientation="Horizontal" Spacing="10" Visibility="Collapsed">
                   <Button x:Name="DownloadUpdateButton" Content="Download update" Visibility="Collapsed"/>
                   <Button x:Name="RestartUpdateButton" Content="Restart and install" Visibility="Collapsed"/>
                 </StackPanel>

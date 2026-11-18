@@ -21,7 +21,7 @@ public sealed class WindowsUpdateController : IDisposable
     private readonly CancellationTokenSource lifetime = new();
     private int busy;
     private bool disposed;
-    public WindowsUpdateStatus Status { get; private set; } = new(WindowsUpdatePhase.Idle, "Check for Windows preview updates when you choose.");
+    public WindowsUpdateStatus Status { get; private set; } = new(WindowsUpdatePhase.Idle, "Check for updates when you choose.");
     public event Action<WindowsUpdateStatus>? Changed;
 
     public WindowsUpdateController(IWindowsUpdateBackend backend, Func<Task> preserveSession)
@@ -48,11 +48,11 @@ public sealed class WindowsUpdateController : IDisposable
                 Set(new(WindowsUpdatePhase.NotInstalled, "Install Music using the Windows installer to enable in-app updates. Loose development builds cannot update."));
                 return;
             }
-            Set(new(WindowsUpdatePhase.Checking, "Checking Windows preview releases…"));
+            Set(new(WindowsUpdatePhase.Checking, "Looking for a newer Windows version…"));
             var version = await backend.CheckAsync();
             Set(version is not null && version > backend.CurrentVersion
-                ? new(WindowsUpdatePhase.Available, $"Windows preview {version} is available. Download it to continue.", version)
-                : new(WindowsUpdatePhase.Current, "No newer Windows preview is available."));
+                ? new(WindowsUpdatePhase.Available, $"Music {version}", version)
+                : new(WindowsUpdatePhase.Current, "No newer Windows version is available."));
         }
         catch { Set(new(WindowsUpdatePhase.Error, "Could not check for updates. Check your internet connection or try again later (GitHub may be rate-limiting requests).")); }
         finally { Interlocked.Exchange(ref busy, 0); }
@@ -64,13 +64,13 @@ public sealed class WindowsUpdateController : IDisposable
         try
         {
             if (Status.Phase != WindowsUpdatePhase.Available || Status.Version is not { } version) return;
-            Set(new(WindowsUpdatePhase.Downloading, $"Downloading Windows preview {version}…", version));
+            Set(new(WindowsUpdatePhase.Downloading, $"Music {version}…", version));
             await backend.DownloadAsync(version, value =>
             {
                 if (Status.Phase == WindowsUpdatePhase.Downloading)
-                    Set(new(WindowsUpdatePhase.Downloading, $"Downloading Windows preview {version}…", version, Math.Clamp(value, 0, 100)));
+                    Set(new(WindowsUpdatePhase.Downloading, $"Music {version}…", version, Math.Clamp(value, 0, 100)));
             }, lifetime.Token);
-            Set(new(WindowsUpdatePhase.Ready, $"Windows preview {version} is downloaded. Restart and install when you are ready.", version, 100));
+            Set(new(WindowsUpdatePhase.Ready, $"Music {version} is downloaded.", version, 100));
         }
         catch { Set(new(WindowsUpdatePhase.Error, "Download failed or was cancelled. Nothing was installed. Check for updates to try again.")); }
         finally { Interlocked.Exchange(ref busy, 0); }

@@ -94,19 +94,48 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(listOf(Screen.UPDATES), actions.screens) }
     }
 
-    @Test fun idleShowsInstalledVersionPrivacyAutomaticChecksAndManualCheck() {
-        render(state(updates = UpdateUiState(installedVersion = "0.1.41")))
-        compose.onNodeWithText("Installed version 0.1.41").assertIsDisplayed()
-        compose.onNodeWithText("Checks contact GitHub, not your music server. No server credentials are sent. Downloads and installation require your approval.").assertExists()
-        compose.onNodeWithTag("updates-automatic").performScrollTo().assertIsOn().performClick()
-        compose.onNodeWithTag("updates-check").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(listOf(false), actions.automatic); assertEquals(1, actions.checks) }
+    @Test fun confirmedCurrentShowsCompactCardAndVersionBesideManualCheck() {
+        render(state(updates = UpdateUiState(installedVersion = "0.1.41", lastCheckedAt = 1L)))
+        compose.onNodeWithText("Current Version: 0.1.41").assertIsDisplayed()
+        compose.onNodeWithText("Up to date").assertIsDisplayed()
+        compose.onNodeWithText("No newer Android version is available.").assertIsDisplayed()
+        val version = compose.onNodeWithText("Current Version: 0.1.41").fetchSemanticsNode().boundsInRoot
+        val check = compose.onNodeWithTag("updates-check").fetchSemanticsNode().boundsInRoot
+        org.junit.Assert.assertTrue(version.right <= check.left)
+        org.junit.Assert.assertTrue(version.center.y in check.top..check.bottom)
+        compose.onNodeWithTag("updates-download").assertDoesNotExist()
+        compose.onNodeWithTag("updates-install").assertDoesNotExist()
+        compose.onNodeWithText("What’s new").assertDoesNotExist()
+        compose.onNodeWithText("Installed version 0.1.41").assertDoesNotExist()
+        compose.onNodeWithTag("updates-automatic").assertDoesNotExist()
+        compose.onNodeWithTag("updates-source").assertDoesNotExist()
+        compose.onNodeWithText("Checks contact GitHub", substring = true).assertDoesNotExist()
+        compose.onNodeWithContentDescription("Back").assertIsDisplayed()
+        compose.onNodeWithTag("settings-gear").assertIsDisplayed()
+        compose.onNodeWithTag("mini-player").assertIsDisplayed()
+        if (InstrumentationRegistry.getArguments().getString("captureUpdates") == "true") {
+            compose.waitForIdle()
+            val context = InstrumentationRegistry.getInstrumentation().targetContext
+            val image = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
+            java.io.File(context.getExternalFilesDir(null), "updates-current.png").outputStream().use {
+                image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)
+            }
+            image.recycle()
+        }
+        compose.onNodeWithTag("updates-check").assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(1, actions.checks)
+            assertEquals(emptyList<Boolean>(), actions.automatic)
+            assertEquals(0, actions.pauses)
+            assertEquals(0, actions.downloads)
+            assertEquals(0, actions.installs)
+        }
     }
 
     @Test fun checkingIsDisabledAndDoesNotPausePlayback() {
         render(state(updates = UpdateUiState(stage = UpdateStage.CHECKING)).copy(playing = true))
         compose.onNodeWithTag("updates-check").performScrollTo().assertIsNotEnabled()
-        compose.onNodeWithText("Checking for updates…").assertExists()
+        compose.onNodeWithText("Checking…").assertExists()
         compose.onNodeWithTag("mini-player-toggle").assertIsDisplayed()
         compose.runOnIdle { assertEquals(0, actions.pauses); assertEquals(0, actions.installs) }
     }
@@ -185,10 +214,13 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(listOf(Screen.PLAYER), actions.screens) }
     }
 
-    @Test fun sourceDetailsDiscloseGithubAndVerification() {
+    @Test fun uncheckedDoesNotClaimCurrentOrExposeRemovedSections() {
         render(state())
-        compose.onNodeWithTag("updates-source").performScrollTo().performClick()
-        compose.onNodeWithText("Updates come from this app’s GitHub releases. Downloads are checked for the expected size and SHA-256 checksum, then Android verifies the app identity and signing certificate before installation.").assertExists()
+        compose.onNodeWithText("Not checked yet").assertIsDisplayed()
+        compose.onNodeWithText("Up to date").assertDoesNotExist()
+        compose.onNodeWithTag("updates-current").assertDoesNotExist()
+        compose.onNodeWithTag("updates-source").assertDoesNotExist()
+        compose.onNodeWithTag("updates-automatic").assertDoesNotExist()
     }
 
     @Test fun hardwareBackReturnsToTheOriginatingScreen() {
@@ -197,14 +229,19 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(listOf(Screen.PLAYLISTS), actions.screens) }
     }
 
-    @Test fun automaticChecksCanBeEnabledWithoutStartingADownload() {
-        render(state(updates = UpdateUiState(automaticChecks = false)))
-        compose.onNodeWithTag("updates-automatic").performScrollTo().assertIsOff().performClick()
-        compose.runOnIdle {
-            assertEquals(listOf(true), actions.automatic)
-            assertEquals(0, actions.downloads)
-            assertEquals(0, actions.installs)
-        }
+    @Test fun recheckingAndFailureNeverReuseConfirmedCurrentCard() {
+        val current = mutableStateOf(state(updates = UpdateUiState(lastCheckedAt = 1L)))
+        compose.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
+        compose.onNodeWithText("Up to date").assertIsDisplayed()
+        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(stage = UpdateStage.CHECKING)) }
+        compose.onNodeWithTag("updates-current").assertDoesNotExist()
+        compose.onNodeWithTag("updates-check").assertIsNotEnabled()
+        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(stage = UpdateStage.ERROR, error = "Could not check for updates.")) }
+        compose.onNodeWithTag("updates-current").assertDoesNotExist()
+        compose.onNodeWithText("No newer Android version is available.").assertDoesNotExist()
+        compose.onNodeWithText("Could not check for updates.").assertIsDisplayed()
+        compose.onNodeWithTag("updates-check").assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, actions.checks); assertEquals(0, actions.downloads); assertEquals(0, actions.installs) }
     }
 
     @Test fun updatesWithoutAQueueHasNoSecondPlayerAndStillHasSettings() {

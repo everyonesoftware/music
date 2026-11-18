@@ -3,12 +3,12 @@ package com.everyonesoftware.audio.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -17,14 +17,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.LiveRegionMode
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.everyonesoftware.audio.updates.UpdateStage
-import java.text.DateFormat
-import java.util.Date
 import java.util.Locale
 
 /** A quiet header affordance, never a banner over the music library. */
@@ -46,7 +43,6 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
     val busy = update.stage in listOf(UpdateStage.CHECKING, UpdateStage.DOWNLOADING, UpdateStage.VERIFYING)
     // A resumed player or changed release invalidates any previous install consent.
     var confirmInstall by rememberSaveable(release?.count, update.stage, state.playing, update.installPermissionRequired) { mutableStateOf(false) }
-    var sourceExpanded by rememberSaveable { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -60,17 +56,34 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
             SettingsGear()
         }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-            Text("Installed version ${update.installedVersion}", style = MaterialTheme.typography.titleMedium)
-            UpdateHint(update.lastCheckedAt?.let { "Last checked ${DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(it))}" } ?: "Not checked yet")
-            OutlinedButton(actions::checkForUpdates, Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("updates-check"), enabled = !busy, shape = RoundedCornerShape(12.dp)) {
-                Text(if (update.stage == UpdateStage.CHECKING) "Checking for updates…" else "Check now")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text("Current Version: ${update.installedVersion}", Modifier.weight(1f).semantics { heading() }, style = MaterialTheme.typography.labelLarge)
+                OutlinedButton(actions::checkForUpdates, Modifier.heightIn(min = 48.dp).testTag("updates-check"), enabled = !busy, shape = RoundedCornerShape(12.dp), contentPadding = PaddingValues(horizontal = 13.dp, vertical = 10.dp)) {
+                    Text(if (update.stage == UpdateStage.CHECKING) "Checking…" else "Check now", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+            if (update.stage == UpdateStage.IDLE && update.lastCheckedAt == null && release == null) {
+                UpdateHint("Not checked yet")
             }
             if (update.stage == UpdateStage.CHECKING) {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
                 UpdateHint("You can keep listening while Music checks.")
             }
-            if (update.stage == UpdateStage.IDLE && update.lastCheckedAt != null && release == null) {
-                Text("Music is up to date", style = MaterialTheme.typography.titleMedium)
+            if (update.stage == UpdateStage.IDLE && update.lastCheckedAt != null && release == null && update.error == null) {
+                Surface(
+                    modifier = Modifier.fillMaxWidth().testTag("updates-current").semantics { liveRegion = LiveRegionMode.Polite },
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.65f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+                ) {
+                    Column(Modifier.padding(horizontal = 20.dp, vertical = 21.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(11.dp)) {
+                            Icon(Icons.Default.Check, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                            Text("Up to date", style = MaterialTheme.typography.titleLarge)
+                        }
+                        UpdateHint("No newer Android version is available.")
+                    }
+                }
             }
             if (release != null) {
                 HorizontalDivider()
@@ -119,21 +132,6 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
                 Text("What’s new", style = MaterialTheme.typography.titleMedium)
                 // Plain text only; release notes cannot launch links or execute markup.
                 Text(release.notes, style = MaterialTheme.typography.bodyMedium)
-            }
-            HorizontalDivider()
-            Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).testTag("updates-automatic")
-                .toggleable(update.automaticChecks, role = Role.Switch, onValueChange = actions::setAutomaticUpdates), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f).padding(end = 12.dp)) {
-                    Text("Automatic update checks", style = MaterialTheme.typography.titleMedium)
-                    UpdateHint("Check when you open Music, at most once a day.")
-                }
-                Switch(update.automaticChecks, onCheckedChange = null)
-            }
-            UpdateHint("Checks contact GitHub, not your music server. No server credentials are sent. Downloads and installation require your approval.")
-            TextButton({ sourceExpanded = !sourceExpanded }, Modifier.testTag("updates-source")) { Text(if (sourceExpanded) "Hide source details" else "Source and verification details") }
-            if (sourceExpanded) {
-                UpdateHint("Updates come from this app’s GitHub releases. Downloads are checked for the expected size and SHA-256 checksum, then Android verifies the app identity and signing certificate before installation.")
-                UpdateHint("Automatic checks do not automatically download or install anything. You can turn checks off and use Check now instead.")
             }
         }
     }

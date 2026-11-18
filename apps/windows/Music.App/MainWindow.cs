@@ -137,7 +137,7 @@ public sealed partial class MainWindow : Window
         timer.Tick += (_, _) => Tick();
         root.Loaded += async (_, _) => { if (!initialized) { initialized = true; await InitializeAsync(); } };
         Closed += (_, _) => Shutdown();
-        C<TextBlock>("VersionText").Text = $"Music for Windows · {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
+        C<TextBlock>("VersionText").Text = $"Current Version: {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
         SetNavigation();
         UpdateTransport();
     }

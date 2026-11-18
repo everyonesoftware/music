@@ -11,7 +11,8 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
     private readonly WindowsUpdateController controller;
     private readonly DispatcherQueue dispatcher;
     private readonly Button check, download, restart;
-    private readonly TextBlock status;
+    private readonly TextBlock title, status;
+    private readonly StackPanel actions;
     private readonly ProgressBar progress;
     private bool disposed;
 
@@ -21,7 +22,9 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         check = (Button)root.FindName("CheckUpdatesButton");
         download = (Button)root.FindName("DownloadUpdateButton");
         restart = (Button)root.FindName("RestartUpdateButton");
+        title = (TextBlock)root.FindName("UpdateTitle");
         status = (TextBlock)root.FindName("UpdateStatus");
+        actions = (StackPanel)root.FindName("UpdateActions");
         progress = (ProgressBar)root.FindName("UpdateProgress");
         controller = new WindowsUpdateController(new WindowsUpdateBackend(), preserveSession);
         check.Click += CheckClicked;
@@ -43,9 +46,24 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
 
     private void Render(WindowsUpdateStatus state)
     {
+        title.Text = state.Phase switch
+        {
+            WindowsUpdatePhase.Idle => "Not checked yet",
+            WindowsUpdatePhase.Checking => "Checking for updates",
+            WindowsUpdatePhase.Current => "Up to date",
+            WindowsUpdatePhase.Available => "Update available",
+            WindowsUpdatePhase.Downloading => "Downloading update",
+            WindowsUpdatePhase.Ready => "Ready to install",
+            WindowsUpdatePhase.Restarting => "Restarting",
+            WindowsUpdatePhase.Error => "Update failed",
+            WindowsUpdatePhase.NotInstalled => "Updates unavailable",
+            _ => "Updates"
+        };
         status.Text = state.Phase == WindowsUpdatePhase.Downloading ? $"{state.Message} {state.Progress}%" : state.Message;
         bool busy = state.Phase is WindowsUpdatePhase.Checking or WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Restarting;
+        check.Content = state.Phase == WindowsUpdatePhase.Checking ? "Checking…" : "Check for updates";
         check.IsEnabled = !busy && state.Phase is not (WindowsUpdatePhase.Ready or WindowsUpdatePhase.NotInstalled);
+        actions.Visibility = state.Phase is WindowsUpdatePhase.Available or WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
         download.Visibility = state.Phase == WindowsUpdatePhase.Available ? Visibility.Visible : Visibility.Collapsed;
         download.IsEnabled = !busy;
         restart.Visibility = state.Phase == WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
