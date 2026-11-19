@@ -14,6 +14,12 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
     private readonly TextBlock title, status;
     private readonly StackPanel actions;
     private readonly ProgressBar progress;
+    private readonly TextBlock offeredVersion, notesStatus;
+    private readonly Expander changelog;
+    private readonly StackPanel notesContent;
+    private readonly Button retryNotes;
+    private readonly WindowsChangelogClient notesClient;
+    private readonly WindowsChangelogController notes;
     private bool disposed;
 
     public WindowsUpdatesPanel(FrameworkElement root, DispatcherQueue dispatcher, Func<Task> preserveSession)
@@ -26,7 +32,20 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         status = (TextBlock)root.FindName("UpdateStatus");
         actions = (StackPanel)root.FindName("UpdateActions");
         progress = (ProgressBar)root.FindName("UpdateProgress");
-        controller = new WindowsUpdateController(new WindowsUpdateBackend(), preserveSession);
+        var backend = new WindowsUpdateBackend();
+        controller = new WindowsUpdateController(backend, preserveSession);
+        offeredVersion = (TextBlock)root.FindName("UpdateOfferedVersion");
+        changelog = (Expander)root.FindName("UpdateChangelog");
+        notesStatus = (TextBlock)root.FindName("ChangelogStatus");
+        notesContent = (StackPanel)root.FindName("ChangelogContent");
+        retryNotes = (Button)root.FindName("RetryChangelogButton");
+        notesClient = new WindowsChangelogClient();
+        // The installed assembly is available even for a loose build; do not initialize Velopack at startup.
+        var installed = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version!;
+        notes = new WindowsChangelogController(Version.Parse(installed.ToString(3)), notesClient.LoadAsync);
+        changelog.Expanding += ChangelogExpanding;
+        retryNotes.Click += RetryNotesClicked;
+        notes.Changed += NotesChanged;
         check.Click += CheckClicked;
         download.Click += DownloadClicked;
         restart.Click += RestartClicked;
@@ -37,6 +56,47 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
     private async void CheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
     private async void DownloadClicked(object sender, RoutedEventArgs e) => await controller.DownloadAsync();
     private async void RestartClicked(object sender, RoutedEventArgs e) => await controller.RestartAsync();
+    private async void ChangelogExpanding(Expander sender, ExpanderExpandingEventArgs args) => await notes.LoadAsync();
+    private async void RetryNotesClicked(object sender, RoutedEventArgs e) => await notes.LoadAsync();
+
+    private void NotesChanged() => dispatcher.TryEnqueue(() =>
+    {
+        if (!disposed) RenderNotes();
+    });
+
+    private void RenderNotes()
+    {
+        notesContent.Children.Clear();
+        retryNotes.Visibility = notes.Phase == WindowsChangelogPhase.Unavailable ? Visibility.Visible : Visibility.Collapsed;
+        notesStatus.Visibility = notes.Phase == WindowsChangelogPhase.Loaded ? Visibility.Collapsed : Visibility.Visible;
+        notesStatus.Text = notes.Phase switch
+        {
+            WindowsChangelogPhase.Loading => "Loading changes…",
+            WindowsChangelogPhase.Unavailable => "Couldn’t load the changelog. You can still download or install this update.",
+            _ => "Expand to load changes."
+        };
+        changelog.Header = "What’s new";
+        if (notes.Changes is not { } changes) return;
+        int count = changes.Improvements.Count + changes.Fixes.Count;
+        changelog.Header = $"What’s new · {count} {(count == 1 ? "change" : "changes")}";
+        AddGroup("Improvements", changes.Improvements);
+        AddGroup("Fixes", changes.Fixes);
+        if (count == 0) notesContent.Children.Add(NoteText("No user-facing Windows changes in this source range."));
+        var details = new StackPanel { Spacing = 8 };
+        details.Children.Add(NoteText($"{changes.BaseRevision}…{changes.HeadRevision}"));
+        foreach (var commit in changes.Commits)
+            details.Children.Add(NoteText($"{commit.Sha}  {commit.Subject}"));
+        notesContent.Children.Add(new Expander { Header = "Commit details", Content = details, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
+    }
+
+    private void AddGroup(string heading, IReadOnlyList<string> entries)
+    {
+        if (entries.Count == 0) return;
+        notesContent.Children.Add(new TextBlock { Text = heading, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
+        foreach (string entry in entries) notesContent.Children.Add(NoteText($"• {entry}"));
+    }
+
+    private static TextBlock NoteText(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };
 
     private void OnChanged(WindowsUpdateStatus _) => dispatcher.TryEnqueue(() =>
     {
@@ -60,6 +120,15 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
             _ => "Updates"
         };
         status.Text = state.Phase == WindowsUpdatePhase.Downloading ? $"{state.Message} {state.Progress}%" : state.Message;
+        bool changedOffer = offeredVersion.Text != (state.Version is { } version ? $"Music {version}" : "");
+        offeredVersion.Text = state.Version is { } offer ? $"Music {offer}" : "";
+        offeredVersion.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
+        notes.SetOffer(state.Version);
+        changelog.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
+        if (changedOffer) changelog.IsExpanded = false;
+        // The product/version already lives in the offer header, not in a duplicate status row.
+        if (state.Phase == WindowsUpdatePhase.Available) status.Visibility = Visibility.Collapsed;
+        else status.Visibility = Visibility.Visible;
         bool busy = state.Phase is WindowsUpdatePhase.Checking or WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Restarting;
         check.Content = state.Phase == WindowsUpdatePhase.Checking ? "Checking…" : "Check for updates";
         check.IsEnabled = !busy && state.Phase is not (WindowsUpdatePhase.Ready or WindowsUpdatePhase.NotInstalled);
@@ -80,6 +149,11 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         check.Click -= CheckClicked;
         download.Click -= DownloadClicked;
         restart.Click -= RestartClicked;
+        changelog.Expanding -= ChangelogExpanding;
+        retryNotes.Click -= RetryNotesClicked;
+        notes.Changed -= NotesChanged;
+        notes.Dispose();
+        notesClient.Dispose();
         controller.Changed -= OnChanged;
         controller.Dispose();
     }

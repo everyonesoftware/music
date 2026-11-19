@@ -3,6 +3,7 @@
   <ItemGroup>
     <None Include="../Music.App/Shell.xaml" Link="Shell.xaml" CopyToOutputDirectory="PreserveNewest" />
     <Compile Include="../Music.App/WindowsUpdateBackend.cs" Link="WindowsUpdateBackend.cs" />
+    <Compile Include="../Music.App/WindowsChangelogClient.cs" Link="WindowsChangelogClient.cs" />
     <ProjectReference Include="../Music.Core/Music.Core.csproj" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.12.0" />

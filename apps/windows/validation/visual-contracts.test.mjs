@@ -1,6 +1,7 @@
 import './playing-callback.test.mjs';
 import './played-queue.test.mjs';
 import './updates-card.test.mjs';
+import './update-changelog.test.mjs';
 import './collection-transport.test.mjs';
 import './navigation-contracts.test.mjs';
 import test from 'node:test';

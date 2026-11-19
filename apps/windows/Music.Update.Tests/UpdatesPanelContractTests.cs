@@ -34,6 +34,23 @@ public sealed class UpdatesPanelContractTests
     }
 
     [Fact]
+    public void Changelog_is_on_demand_inside_the_offer_with_named_native_controls()
+    {
+        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml"));
+        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var named = document.Descendants().Where(e => e.Attribute(x + "Name") is not null).ToDictionary(e => e.Attribute(x + "Name")!.Value);
+        var notes = named["UpdateChangelog"];
+        Assert.Equal("Expander", notes.Name.LocalName);
+        Assert.Equal("False", notes.Attribute("IsExpanded")?.Value);
+        Assert.Equal("Collapsed", notes.Attribute("Visibility")?.Value);
+        Assert.Equal("What’s new", notes.Attribute("Header")?.Value);
+        Assert.Contains(named["ChangelogContent"], notes.Descendants());
+        Assert.Contains(named["RetryChangelogButton"], notes.Descendants());
+        Assert.Equal(named["UpdateTitle"].Parent, named["UpdateOfferedVersion"].Parent);
+        Assert.Equal("1", named["UpdateOfferedVersion"].Attribute("Grid.Column")?.Value);
+    }
+
+    [Fact]
     public void Runtime_xaml_exposes_explicit_actions_progress_and_accessible_status()
     {
         var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml"));

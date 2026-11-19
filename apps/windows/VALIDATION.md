@@ -1,5 +1,36 @@
 # Windows implementation checkpoint — validation
 
+## On-demand Windows update changelog
+
+Settings Updates now includes a collapsed native **What’s new** disclosure for
+the offered package, including while downloading and when ready to install.
+It groups actual source-range subjects under **Improvements** and **Fixes** and
+nests **Commit details** with original subjects/hashes and the source range.
+Empty groups are omitted. Notes loading/failure/retry is independent of download
+and explicit restart/install; no release-description body is used as history.
+
+The notes controller caches one offer, cancels on replacement/close, and rejects
+late completions from previous offers. Its executable Core tests cover on-demand
+loading, same-offer retention, failure/retry, duplicate loads and stale completion.
+The XAML and Node contracts check the native disclosure/header/action wiring;
+these are not native rendering or keyboard acceptance.
+
+Run the Core and Update test projects plus
+`node --test apps/windows/validation/visual-contracts.test.mjs`. The latter imports
+`update-changelog.test.mjs`, so the existing Windows CI gates exercise the wiring.
+
+Native Windows acceptance remains required:
+
+- [ ] Offer an update across skipped releases; expand **What’s new**, verify its
+  complete installed-to-offered source range and grouped bullets, then expand
+  **Commit details** using keyboard and a screen reader.
+- [ ] Collapse/reopen before and after Download; retain the same notes and inspect
+  the Ready to install card at restored/maximized sizes and increased font scale.
+- [ ] Simulate unavailable/rate-limited history; retry notes without blocking a
+  valid download or triggering installation. Recheck/close while notes are pending
+  and verify old results never describe a replacement offer.
+- [ ] Explicitly restart/install and verify session preservation separately.
+
 ## Collection song selection and actual Played queue — November 19, 2026
 
 Direct album/playlist row selection starts the entire ordered collection at the

@@ -125,8 +125,19 @@
                 <Button Grid.Column="1" x:Name="CheckUpdatesButton" Content="Check for updates" HorizontalAlignment="Right" VerticalAlignment="Center"/>
               </Grid>
               <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="24,22"><StackPanel Spacing="8">
-                <TextBlock x:Name="UpdateTitle" Text="Not checked yet" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                <Grid ColumnSpacing="16">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="UpdateTitle" Text="Not checked yet" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
+                  <TextBlock Grid.Column="1" x:Name="UpdateOfferedVersion" FontSize="18" VerticalAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"/>
+                </Grid>
                 <TextBlock x:Name="UpdateStatus" Text="Check for updates when you choose." Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                <Expander x:Name="UpdateChangelog" Header="What’s new" IsExpanded="False" Visibility="Collapsed" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                  <StackPanel Spacing="12">
+                    <TextBlock x:Name="ChangelogStatus" Text="Expand to load changes." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                    <Button x:Name="RetryChangelogButton" Content="Retry changelog" Visibility="Collapsed"/>
+                    <StackPanel x:Name="ChangelogContent" Spacing="12"/>
+                  </StackPanel>
+                </Expander>
                 <ProgressBar x:Name="UpdateProgress" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" AutomationProperties.Name="Windows update progress"/>
                 <StackPanel x:Name="UpdateActions" Orientation="Horizontal" Spacing="10" Visibility="Collapsed">
                   <Button x:Name="DownloadUpdateButton" Content="Download update" Visibility="Collapsed"/>
