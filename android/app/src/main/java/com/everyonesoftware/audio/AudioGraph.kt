@@ -108,6 +108,7 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         require(value.connectionId == credentials.value?.connection?.id) { "The active connection changed. Choose the playlist again." }
         if (expectedCredentials != null) {
             require(currentCredentials.value == expectedCredentials && currentSession.value?.queueId == expectedSession?.queueId &&
+                currentSession.value?.occurrences == expectedSession?.occurrences &&
                 currentSession.value?.queue?.map { it.id } == expectedSession?.queue?.map { it.id }) {
                 "The listening session changed. Choose the music again."
             }
@@ -115,16 +116,20 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         // A queue jump changes position only, not a rating/repeat update committed during resolution.
         val current = currentSession.value
         val merged = if (expectedCredentials != null && current != null && current.queueId == value.queueId)
-            current.copy(index = value.index, positionMs = value.positionMs) else value
+            current.copy(index = value.index, positionMs = value.positionMs)
+        else if (current != null && current.queueId == value.queueId)
+            value.copy(played = current.played) // In-session shuffle cannot erase a newer service visit.
+        else value
         val safe = SessionRules.restore(merged)
         store.saveSession(safe)
         currentSession.value = safe
     }
-    suspend fun updateProgress(index: Int, positionMs: Long, repeatMode: Int, expectedConnectionId: String? = null, expectedQueueId: String? = null, expectedQueueIds: List<String>? = null) = lock.withLock {
+    suspend fun updateProgress(index: Int, positionMs: Long, repeatMode: Int, expectedConnectionId: String? = null, expectedQueueId: String? = null, expectedQueueIds: List<String>? = null, expectedOccurrences: List<Int>? = null) = lock.withLock {
         val current = currentSession.value ?: return@withLock
         if (expectedConnectionId != null && current.connectionId != expectedConnectionId) return@withLock
         if (expectedQueueId != null && current.queueId != expectedQueueId) return@withLock
         if (expectedQueueIds != null && current.queue.map { it.id } != expectedQueueIds) return@withLock
+        if (expectedOccurrences != null && current.occurrences != expectedOccurrences) return@withLock
         val next = SessionRules.progress(current, index, positionMs, repeatMode)
         store.saveSession(next)
         currentSession.value = next
@@ -136,5 +141,15 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         val next = current.copy(queue = current.queue.map { if (it.id == songId) it.copy(userRating = rating) else it })
         store.saveSession(next)
         if (currentSession.value?.connectionId == connectionId) currentSession.value = next
+    }
+
+    /** Only PlaybackService supplies started-visit evidence; merge with latest progress/rating. */
+    internal suspend fun updatePlayed(expectedCredentials: Credentials, queueId: String, played: List<Int>) = lock.withLock {
+        val current = currentSession.value ?: return@withLock
+        if (currentCredentials.value != expectedCredentials || current.connectionId != expectedCredentials.connection.id || current.queueId != queueId) return@withLock
+        val next = SessionRules.restore(current.copy(played = played))
+        if (next == current) return@withLock
+        store.saveSession(next)
+        currentSession.value = next
     }
 }

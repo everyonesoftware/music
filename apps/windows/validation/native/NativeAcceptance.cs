@@ -177,7 +177,7 @@ public sealed partial class MainWindow
                 NativeRequire(checks, "duplicateQueue", queue.Select(s => s.Id).SequenceEqual(new[] { "native-song-a", "native-song-b", "native-song-a" }) && queueIndex == 2);
                 NativeRequire(checks, "pausedRestoration", player.PlaybackSession.PlaybackState != MediaPlaybackState.Playing && !player.AutoPlay);
                 NativeRequire(checks, "positionRestoration", Math.Abs((restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds) - NativeAcceptance.Position) < .5);
-                NativeRequire(checks, "transportRestoration", C<ToggleButton>("ShuffleButton").IsChecked == true && C<ToggleButton>("RepeatButton").IsChecked == true && C<ListView>("QueueList").Items.Count == 3 && C<ListView>("QueueList").SelectedIndex == 2);
+                NativeRequire(checks, "transportRestoration", C<ToggleButton>("ShuffleButton").IsChecked == true && C<ToggleButton>("RepeatButton").IsChecked == true && C<ListView>("QueueList").SelectedItem is QueueEntry { Index: 2, Current: true } && playbackOrder?.Played.Count == 0);
             }
             category = "native-controls";
             await NavigateAsync("library");
@@ -214,7 +214,10 @@ public sealed partial class MainWindow
             NativeInvoke("QueueButton");
             await NativeAcceptance.WaitAsync(() => C<Border>("QueuePane").Visibility == Visibility.Visible);
             root.UpdateLayout();
-            NativeRequire(checks, "populatedQueueTree", C<ListView>("QueueList").Items.Count == 3 && NativeTree(C<ListView>("QueueList")).OfType<TextBlock>().Any(t => t.Text == "Native fixture A"));
+            await NativeAcceptance.WaitAsync(() => NativeHasRealizedFixtureText(C<ListView>("QueueList")));
+            NativeRequire(checks, "populatedQueueTree", C<ListView>("QueueList").Items.OfType<QueueEntry>().Any(x => x.Heading == "Played") &&
+                C<ListView>("QueueList").Items.OfType<QueueEntry>().Any(x => x.Current && x.Index == 2) &&
+                NativeTree(C<ListView>("QueueList")).OfType<TextBlock>().Any(t => t.Text == "Native fixture A"));
             NativeRequire(checks, "fixtureRequests", handler.Seen.Count == 6);
             category = "native-media";
             mediaStatus = await NativeMediaAsync(directory, stage);

@@ -1,5 +1,75 @@
 # Windows implementation checkpoint — validation
 
+## Collection song selection and actual Played queue — November 19, 2026
+
+Direct album/playlist row selection starts the entire ordered collection at the
+clicked occurrence (including duplicate IDs), and disables session Shuffle only
+after current-account/loading/error/occurrence validation. Queue has no track
+numbers. The existing real song-cover loader and its cancellation/image-release
+lifecycle are reused in lazily realized Queue rows; playlist rows retain it.
+
+Queue presents a native keyboard-accessible **Played** Expander, **Now playing**
+(or **Playback finished**), then **Up next**. Both the main Queue ListView's star
+viewport and the Played ListView's 240px maximum keep realization bounded; their
+ItemsSource entries contain queue indices/event IDs, not pre-created artwork UI.
+Same-queue handoffs reuse unchanged queue controls. Played is bounded to the most
+recent 100 departed, actually started visits and is intentionally **session-only**:
+no session schema changes, credentials, authenticated media URLs, or invented
+history on paused restoration. New queue/account resets history.
+
+Only a source/visit-bound native PlaybackStateChanged observation of
+`Playing` marks a visit started. Its tiny evidence cell is recorded thread-safely
+before dispatcher work and closed atomically on departure, so a blocked dispatcher
+cannot lose a real start. Source replacement invalidates older callbacks without
+clearing the same visit's evidence; queued UI refreshes retain their version guard.
+MediaOpened, selection, cache completion, paused
+restoration and failed/unstarted sources do not. Previous uses actual back history
+before its existing numeric fallback; fallback navigation itself does not create
+Played entries. Forward replay and prefetch share the same PlaybackOrder plan.
+Final completion archives a started last visit once and removes Now playing; late
+cache handoff cannot revive it. Play/Previous can explicitly replay after finish.
+
+TDD RED evidence: `Unstarted_selection_is_not_previous_history` expected 6 but
+returned the unstarted selection 2; the large 602-occurrence queue regression
+threw ArgumentOutOfRangeException at the old 100-plan limit; selecting an older
+visit of the current occurrence lost its actual current visit; Previous after
+finish returned unheard index 1 instead of actual index 2. All are now GREEN.
+The three new Node integration contracts also failed before UI integration.
+The executable `playing-callback.test.mjs` compiles the actual MainWindow native
+callback with real PlaybackOrder and a held dispatcher. It failed RED with
+“Playing evidence was lost before departure” and passes after the evidence fix;
+source/visit replacement, paused handoff and final completion are also exercised.
+It runs with the visual-contract suite (requires the documented .NET/ICU environment).
+These boundary-controlled checks do not establish native WinUI/audio behavior.
+
+Validation commands (source/logic/real-reference compile, **not native acceptance**):
+
+```sh
+dotnet test apps/windows/Music.Core.Tests/Music.Core.Tests.csproj -c Release
+dotnet test apps/windows/Music.Update.Tests/Music.Update.Tests.csproj -c Release
+dotnet run --project apps/windows/validation/LogicChecks.csproj -c Release
+node --test apps/windows/validation/visual-contracts.test.mjs apps/windows/validation/offline-contracts.test.mjs
+python3 -m unittest discover -s apps/windows/validation -p test_source_contracts.py -v
+```
+
+Linux compile gate also passes with the documented OutputType=Library,
+WindowsAppSDKSelfContained=false and PrepareForRunDependsOn overrides, including
+MusicNativeAcceptance=true. The opt-in native fixture understands grouped queue
+entries and verifies paused restoration has no Played entries; it was **compiled,
+not executed** here. No Windows runtime/audio/keyboard/screenshot acceptance or
+installer is claimed.
+
+- [ ] On Windows, click the third collection occurrence with global Shuffle on:
+  verify the full ordered queue, duplicate occurrence identity and empty Played.
+- [ ] Let it actually play, skip directly forward, then fail a source before start:
+  only genuinely started departures belong in Played, never intervening rows.
+- [ ] Expand/collapse Played with keyboard/screen reader; select duplicate visits,
+  exercise Previous/forward, Repeat, Shuffle, final completion and replay.
+- [ ] Restore paused; reconnect, switch to a completed local file and change
+  accounts/queues; check no phantom history or resurrection after completion.
+- [ ] Scroll large Queue/Played/playlist lists rapidly and reopen Queue; inspect
+  realized row count, per-song covers/placeholder recycling and decoded memory.
+
 ## Startup navigation revision fence — November 18, 2026
 
 Automatic startup Offline/Library routes now share a navigation revision captured

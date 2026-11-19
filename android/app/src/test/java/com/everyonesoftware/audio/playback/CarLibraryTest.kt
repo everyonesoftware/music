@@ -73,6 +73,48 @@ class CarLibraryTest {
         }
     }
 
+    @Test fun queueSeparatesCollapsedPlayedCurrentAndUpcomingWithoutInferringPrefix() = runTest {
+        val source = Source().apply { session = SessionRules.start("c", "p", "Playlist", tracks, shuffle = false).copy(index = 2) }
+        val library = CarLibrary(source)
+        val rows = library.children(CarMediaIds.QUEUE)
+        assertEquals(listOf("Played", "One", "Up next"), rows.map { it.mediaMetadata.title })
+        assertEquals(true, rows.first().mediaMetadata.isBrowsable)
+        assertTrue(library.children(rows.first().mediaId).isEmpty())
+        assertEquals("Now playing", rows[1].mediaMetadata.subtitle)
+        assertTrue(library.children(rows.last().mediaId).isEmpty())
+    }
+
+    @Test fun playedBrowseUsesActualVisitsAndRealPerSongOpaqueArtwork() = runTest {
+        val source = Source().apply {
+            tracks = tracks.mapIndexed { index, song -> song.copy(coverArtId = "cover-$index") }
+            session = SessionRules.start("c", "p", "Playlist", tracks, shuffle = false).copy(index = 1, played = listOf(2, 0, 2))
+        }
+        val library = CarLibrary(source)
+        val folders = library.children(CarMediaIds.QUEUE)
+        val played = library.children(folders.first().mediaId)
+        assertEquals(3, played.map { it.mediaId }.distinct().size)
+        assertEquals(listOf(2, 0, 2), played.map { CarMediaIds.parse(it.mediaId)!!.song!!.toInt() })
+        assertEquals(listOf("cover-1", "cover-2", "cover-0", "cover-2"), source.artworkRequests)
+        assertEquals(listOf("cover-1", "cover-2", "cover-0", "cover-2"), source.artworkUris.map { source.artwork.resolve(it)!!.coverArtId })
+        val selected = library.resolve(played.first().mediaId).session
+        assertEquals(source.session!!.queueId, selected.queueId)
+        assertEquals(source.session!!.played, selected.played)
+        source.session = source.session!!.copy(queueId = "replacement")
+        try { library.children(folders.first().mediaId); fail("stale history folder") } catch (_: IllegalArgumentException) { }
+    }
+
+    @Test fun queuedOccurrenceIdSurvivesInSessionShuffleWithoutConfusingIdenticalSongs() = runTest {
+        val source = Source().apply { session = SessionRules.start("c", "p", "Playlist", tracks, shuffle = false).copy(index = 2, played = listOf(0)) }
+        val library = CarLibrary(source)
+        val original = CarMediaIds.queued("c", source.session!!.queueId, 2)
+        source.session = SessionRules.toggleShuffle(source.session!!)
+        val selected = library.resolve(original).session
+        assertEquals(0, selected.index)
+        assertEquals(source.session!!.queueId, selected.queueId)
+        assertEquals(2, selected.occurrences[selected.index])
+        assertEquals(listOf(0), selected.played)
+    }
+
     @Test fun searchCountDoesNotRegisterArtwork() = runTest {
         val source = Source().apply {
             listedPlaylists = (0 until 512).map { Playlist("p$it", "Match $it", 1, "cover-$it") }
@@ -305,8 +347,10 @@ class CarLibraryTest {
         val library = CarLibrary(source)
         val rows = library.children(CarMediaIds.QUEUE)
         assertEquals(3, rows.map { it.mediaId }.distinct().size)
-        assertEquals(listOf("One", "Two", "One"), rows.map { it.mediaMetadata.title })
-        val selected = library.resolve(rows[2].mediaId).session
+        assertEquals(listOf("Played", "One", "Up next"), rows.map { it.mediaMetadata.title })
+        val upcoming = library.children(rows[2].mediaId)
+        assertEquals(listOf("Two", "One"), upcoming.map { it.mediaMetadata.title })
+        val selected = library.resolve(upcoming[1].mediaId).session
         assertEquals(before.copy(index = 2, positionMs = 0), selected)
         assertEquals(before, source.session)
         assertEquals(0, source.reads)

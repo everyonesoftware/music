@@ -48,6 +48,7 @@ class AndroidAutoTest {
     @Volatile private var delayedPlaylists: java.util.concurrent.CountDownLatch? = null
     private val playlistsRequestStarted = java.util.concurrent.CountDownLatch(1)
     @Volatile private var unavailable = false
+    @Volatile private var failStream = false
     @Volatile private var duplicatePlaylistNames = false
     @Volatile private var otherPlaylist = false
     @Volatile private var failOtherPlaylist = false
@@ -59,7 +60,7 @@ class AndroidAutoTest {
     @Volatile private var delayedPlaylist: java.util.concurrent.CountDownLatch? = null
     private val playlistRequestStarted = java.util.concurrent.CountDownLatch(1)
     private val changedParents = java.util.concurrent.ConcurrentLinkedQueue<String>()
-    private val fixtureSongs = listOf(Song("one", "First song", "Fixture artist"), Song("two", "Second song", "Fixture artist"), Song("one", "First song", "Fixture artist"))
+    private val fixtureSongs = listOf(Song("one", "First song", "Fixture artist", coverArtId = "one-cover"), Song("two", "Second song", "Fixture artist", coverArtId = "two-cover"), Song("one", "First song", "Fixture artist", coverArtId = "one-cover"))
     private lateinit var fixtureWav: ByteArray
     private lateinit var fixtureCover: ByteArray
 
@@ -67,7 +68,7 @@ class AndroidAutoTest {
         .setBody("{\"subsonic-response\":{\"status\":\"ok\",$body}}")
 
     @Before fun connectFixtureBrowser() {
-        val sampleBytes = 60 * 8000 * 2
+        val sampleBytes = 300 * 8000 * 2
         val wav = ByteBuffer.allocate(44 + sampleBytes).order(ByteOrder.LITTLE_ENDIAN).apply {
             put("RIFF".toByteArray()); putInt(36 + sampleBytes); put("WAVEfmt ".toByteArray()); putInt(16)
             putShort(1); putShort(1); putInt(8000); putInt(16000); putShort(2); putShort(16)
@@ -104,7 +105,7 @@ class AndroidAutoTest {
                         val extra = if (duplicatePlaylistNames || otherPlaylist) ",{\"id\":\"other\",\"name\":\"${if (duplicatePlaylistNames) "Drive fixture" else "Other fixture"}\",\"songCount\":3}" else ""
                         ok("\"playlists\":{\"playlist\":[{\"id\":\"p/with:punctuation\",\"name\":\"Drive fixture\",\"songCount\":3,\"coverArt\":\"playlist-cover\"}$extra]}")
                     }
-                    "getPlaylist.view" -> ok("\"playlist\":{\"entry\":[${fixtureSongs.take(fixtureCount).joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":60}" }}]}")
+                    "getPlaylist.view" -> ok("\"playlist\":{\"entry\":[${fixtureSongs.take(fixtureCount).joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":300,\"coverArt\":\"${it.coverArtId}\"}" }}]}")
                     "getAlbumList2.view" -> {
                         val offset = url.queryParameter("offset")?.toIntOrNull() ?: 0
                         val size = url.queryParameter("size")?.toIntOrNull() ?: 100
@@ -113,11 +114,11 @@ class AndroidAutoTest {
                             "{\"id\":\"album-fixture$suffix\",\"name\":\"Album fixture$suffix\",\"artist\":\"Fixture artist\",\"songCount\":3,\"coverArt\":\"album-cover$suffix\"}"
                         }}]}")
                     }
-                    "getAlbum.view" -> ok("\"album\":{\"id\":\"album-fixture\",\"name\":\"Album fixture\",\"artist\":\"Fixture artist\",\"coverArt\":\"album-cover\",\"song\":[${fixtureSongs.joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":60}" }}]}")
+                    "getAlbum.view" -> ok("\"album\":{\"id\":\"album-fixture\",\"name\":\"Album fixture\",\"artist\":\"Fixture artist\",\"coverArt\":\"album-cover\",\"song\":[${fixtureSongs.joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":300,\"coverArt\":\"${it.coverArtId}\"}" }}]}")
                     "getCoverArt.view" -> MockResponse().setHeader("Content-Type", "image/jpeg").setBody(Buffer().write(fixtureCover))
                     "setRating.view" -> { fixtureRating = url.queryParameter("rating")!!.toInt(); fixtureCount = 1; ok("\"fixture\":true") }
                     "getSong.view" -> ok("\"song\":{\"id\":\"${url.queryParameter("id")}\",\"userRating\":$fixtureRating}")
-                    "stream.view" -> MockResponse().setHeader("Content-Type", "audio/wav").setBody(Buffer().write(wav))
+                    "stream.view" -> if (failStream) MockResponse().setResponseCode(503) else MockResponse().setHeader("Content-Type", "audio/wav").setBody(Buffer().write(wav))
                     else -> MockResponse().setResponseCode(404)
                 }
             }
@@ -192,6 +193,98 @@ class AndroidAutoTest {
         while (!condition()) { check(System.nanoTime() < deadline) { "Auto fixture state timed out" }; Thread.sleep(25) }
     }
 
+    @Test fun actualStartedHistoryIsSharedByNativeQueueAndCarBrowseWithoutCountingSkippedSelections() {
+        val tracks = children(playlist().mediaId).drop(2)
+        onMain { browser.setMediaItem(tracks[2]); browser.prepare(); browser.play() }
+        until { onMain { browser.mediaItemCount == 3 && browser.currentMediaItemIndex == 2 && browser.isPlaying } && graph.session.value?.index == 2 }
+        val saved = graph.session.value!!
+        assertTrue(saved.played.isEmpty())
+        var hierarchy = children(CarMediaIds.QUEUE)
+        assertEquals(listOf("Played", "First song", "Up next"), hierarchy.map { it.mediaMetadata.title.toString() })
+        assertTrue(children(hierarchy[0].mediaId).isEmpty())
+        assertTrue(children(hierarchy[2].mediaId).isEmpty())
+        assertEquals("content", hierarchy[1].mediaMetadata.artworkUri?.scheme)
+        onMain { browser.pause() }
+        until { onMain { !browser.isPlaying } }
+        onMain { browser.seekTo(0, 0) }
+        until { graph.session.value?.index == 0 && graph.session.value?.played == listOf(2) }
+        onMain { browser.seekTo(1, 0) }
+        until { graph.session.value?.index == 1 }
+        assertEquals(listOf(2), graph.session.value!!.played)
+        onMain { browser.play() }
+        until { onMain { browser.isPlaying } }
+        onMain { browser.seekToNextMediaItem() }
+        until { graph.session.value?.index == 2 && graph.session.value?.played == listOf(2, 1) }
+        hierarchy = children(CarMediaIds.QUEUE)
+        val played = children(hierarchy[0].mediaId)
+        assertEquals(listOf(2, 1), played.map { CarMediaIds.parse(it.mediaId)!!.song!!.toInt() })
+        assertTrue(played.all { it.mediaMetadata.artworkUri?.scheme == "content" })
+        val art = requireNotNull(played[0].mediaMetadata.artworkUri)
+        assertTrue(app.contentResolver.openInputStream(art)!!.use { it.readBytes().isNotEmpty() })
+        onMain { browser.setMediaItem(played[0]); browser.prepare(); browser.play() }
+        until { onMain { browser.mediaItemCount == 3 && browser.currentMediaItemIndex == 2 && browser.isPlaying } }
+        assertEquals(saved.queueId, graph.session.value!!.queueId)
+        assertEquals(saved.queue, graph.session.value!!.queue)
+        until { runBlocking { graph.store.session(saved.connectionId)?.played == graph.session.value!!.played } }
+    }
+
+    @Test fun failedUnstartedSelectionAndPausedRestoreNeverInventPlayedHistory() {
+        until { onMain { browser.mediaItemCount == 3 } }
+        assertTrue(graph.session.value!!.played.isEmpty())
+        onMain { browser.seekTo(2, 0) }
+        until { graph.session.value?.index == 2 }
+        assertTrue(graph.session.value!!.played.isEmpty())
+        failStream = true
+        // Unique uncached resources keep this failure independent of speculative caching.
+        runBlocking {
+            graph.setSession(SessionRules.start(credentials.connection.id, "failure", "Failure fixture",
+                fixtureSongs.mapIndexed { index, song -> song.copy(id = "unstarted-$index") }, shuffle = false).copy(index = 2))
+        }
+        until { onMain { browser.mediaItemCount == 3 && browser.currentMediaItemIndex == 2 } }
+        onMain { browser.prepare(); browser.play() }
+        until { onMain { browser.playerError != null } }
+        assertFalse(onMain { browser.isPlaying })
+        assertTrue(graph.session.value!!.played.isEmpty())
+        onMain { browser.pause(); browser.seekTo(0, 0) }
+        until { graph.session.value?.index == 0 }
+        assertTrue(graph.session.value!!.played.isEmpty())
+        assertTrue(children(children(CarMediaIds.QUEUE)[0].mediaId).isEmpty())
+    }
+
+    @Test fun phoneSelectedDuplicateUsesRealServiceForPlaylistAndAlbumAndNativeHistory() {
+        val store = androidx.lifecycle.ViewModelStore()
+        val model = onMain { com.everyonesoftware.audio.ui.AudioViewModel(app, graph).also { store.put("phone", it) } }
+        try {
+            until { !model.state.value.booting && !model.state.value.albumsRefreshing && model.state.value.playlists.isNotEmpty() }
+            for (kind in listOf("playlist", "album")) {
+                onMain { if (kind == "playlist") model.openPlaylist("p/with:punctuation") else model.openAlbum("album-fixture") }
+                until { if (kind == "playlist") !model.state.value.playlistLoading && model.state.value.playlistSongs.size == 3
+                    else !model.state.value.albumLoading && model.state.value.albumSongs.size == 3 }
+                val page = model.state.value
+                val songs = if (kind == "playlist") page.playlistSongs else page.albumSongs
+                val id = if (kind == "playlist") "p/with:punctuation" else "album-fixture"
+                val before = graph.session.value!!.queueId
+                onMain { model.playCollectionSong(com.everyonesoftware.audio.ui.CollectionSongSelection(page.connection!!.id, kind, id, 2, songs)) }
+                until { graph.session.value?.queueId != before && onMain { browser.mediaItemCount == 3 && browser.currentMediaItemIndex == 2 && browser.isPlaying } }
+                val selected = graph.session.value!!
+                assertEquals(songs, selected.queue)
+                assertEquals(kind, selected.sourceType)
+                assertFalse(selected.shuffle)
+                assertTrue(selected.played.isEmpty())
+                onMain { model.toggleShuffle() }
+                until { graph.session.value?.shuffle == true && onMain { browser.currentMediaItemIndex == 0 && browser.isPlaying } }
+                assertEquals(selected.queueId, graph.session.value!!.queueId)
+                assertEquals(2, graph.session.value!!.occurrences[0])
+                assertTrue(graph.session.value!!.played.isEmpty())
+                onMain { model.toggleShuffle() }
+                until { graph.session.value?.shuffle == false && !model.state.value.loading }
+                onMain { browser.seekTo(1, 0) }
+                until { graph.session.value?.played == listOf(2) }
+                assertEquals(selected.queueId, graph.session.value!!.queueId)
+            }
+        } finally { onMain { store.clear() } }
+    }
+
     @Test fun browseCollectionsAndContentsWithoutReplacingTheSavedQueue() {
         val saved = graph.session.value!!
         val folders = children(root().mediaId)
@@ -241,7 +334,8 @@ class AndroidAutoTest {
         val queue = children(folder.mediaId)
         assertEquals(3, queue.size)
         assertNotEquals(queue[0].mediaId, queue[2].mediaId)
-        onMain { browser.setMediaItem(queue[1]); browser.prepare(); browser.play() }
+        val upcoming = children(queue[2].mediaId)
+        onMain { browser.setMediaItem(upcoming[0]); browser.prepare(); browser.play() }
         until { graph.playback.value.playing && graph.session.value?.index == 1 }
         assertEquals(saved.queueId, graph.session.value!!.queueId)
         assertEquals(saved.queue, graph.session.value!!.queue)
@@ -250,7 +344,7 @@ class AndroidAutoTest {
 
     @Test fun arbitraryMediaUrisAndStaleQueueIdsCannotReplacePlayback() {
         val folder = children(root().mediaId).single { it.mediaMetadata.title == "Queue" }
-        val stale = children(folder.mediaId).first()
+        val stale = children(folder.mediaId)[1]
         runBlocking { graph.setSession(SessionRules.start(credentials.connection.id, "p/with:punctuation", "Drive fixture", fixtureSongs)) }
         val saved = graph.session.value!!
         val malicious = MediaItem.Builder().setMediaId("https://attacker.invalid/song").setUri("https://attacker.invalid/song").build()
@@ -504,6 +598,11 @@ class AndroidAutoTest {
         until { graph.playback.value.playing }
         assertEquals(saved.queueId, graph.session.value!!.queueId)
         assertEquals(saved.queue, graph.session.value!!.queue)
+        until { onMain { browser.mediaItemCount == 3 && browser.isPlaying } }
+        assertTrue(graph.session.value!!.played.isEmpty())
+        onMain { browser.seekTo(2, 0) }
+        until { graph.session.value?.index == 2 && graph.session.value?.played == listOf(0) }
+        assertEquals(listOf(0), children(children(CarMediaIds.QUEUE)[0].mediaId).map { CarMediaIds.parse(it.mediaId)!!.song!!.toInt() })
     }
 
     @Test fun delayedCarSelectionCannotOverwriteANewerPhoneQueue() {
@@ -531,7 +630,9 @@ class AndroidAutoTest {
         runBlocking { graph.setSession(newer) }
         until { changedParents.contains(folder.mediaId) }
         val queue = children(folder.mediaId)
-        assertEquals(newer.queue.map { it.title }, queue.map { it.mediaMetadata.title })
+        assertEquals(listOf("Played", newer.queue[0].title, "Up next"), queue.map { it.mediaMetadata.title })
+        assertTrue(children(queue[0].mediaId).isEmpty())
+        assertEquals(newer.queue.drop(1).map { it.title }, children(queue[2].mediaId).map { it.mediaMetadata.title })
     }
 
     @Test fun failingUnrelatedCountDoesNotBlockHealthyCarPlayback() {
@@ -764,15 +865,15 @@ class AndroidAutoTest {
             assertEquals("No fast-forward action for the car to mistake for next", 0L,
                 actions and android.media.session.PlaybackState.ACTION_FAST_FORWARD)
             onMain { controller.transportControls.skipToNext() }
-            until { graph.session.value?.index == 1 }
+            until { graph.session.value?.index == 1 && graph.session.value?.played == listOf(0) && onMain { browser.isPlaying } }
             onMain { controller.transportControls.skipToNext() }
-            until { graph.session.value?.index == 2 }
+            until { graph.session.value?.index == 2 && graph.session.value?.played == listOf(0, 1) && onMain { browser.isPlaying } }
             // Legacy previous follows normal music behavior: restart after the threshold,
             // otherwise select the previous occurrence. Start at zero to test track skipping.
             onMain { controller.transportControls.seekTo(0) }
             until { onMain { requireNotNull(controller.playbackState).position } < 1000 }
             onMain { controller.transportControls.skipToPrevious() }
-            until { graph.session.value?.index == 1 }
+            until { graph.session.value?.index == 1 && graph.session.value?.played == listOf(0, 1, 2) }
             onMain { controller.transportControls.pause() }
             until { !graph.playback.value.playing }
             onMain { controller.transportControls.play() }

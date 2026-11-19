@@ -33,6 +33,9 @@ public sealed partial class MainWindow : Window
     private List<Song> songs = new(), queue = new();
     private List<Song>? renderedQueue;
     private int renderedQueueCount = -1, renderedSelection = -1;
+    private string renderedQueueState = "";
+    private bool playedExpanded;
+    private Windows.Foundation.TypedEventHandler<MediaPlaybackSession, object>? startedHandler;
     private string page = "library", mode = "grid", query = "";
     private int queueIndex = -1, songOffset, tickCount;
     private bool moreSongs, closed, updatingSeek, seekDragging, initialized, browsePending;
@@ -85,8 +88,8 @@ public sealed partial class MainWindow : Window
         C<Button>("PlayButton").Click += (_, _) => TogglePlayback();
         C<Button>("PreviousButton").Click += (_, _) => Previous();
         C<Button>("NextButton").Click += (_, _) => Step(1);
-        C<ToggleButton>("ShuffleButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); };
-        C<ToggleButton>("RepeatButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); };
+        C<ToggleButton>("ShuffleButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); RenderQueue(); };
+        C<ToggleButton>("RepeatButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); RenderQueue(); };
         C<Slider>("VolumeSlider").ValueChanged += (_, e) => player.Volume = e.NewValue / 100;
         C<Slider>("SeekSlider").ValueChanged += (_, e) =>
         {
@@ -104,7 +107,7 @@ public sealed partial class MainWindow : Window
         C<Button>("OutputButton").Click += async (_, _) => await ChooseOutputAsync();
         C<Button>("QueueButton").Click += (_, _) => C<Border>("QueuePane").Visibility = C<Border>("QueuePane").Visibility == Visibility.Visible ? Visibility.Collapsed : Visibility.Visible;
         C<Button>("CloseQueueButton").Click += (_, _) => { C<Border>("QueuePane").Visibility = Visibility.Collapsed; C<Button>("QueueButton").Focus(FocusState.Programmatic); };
-        C<ListView>("QueueList").ItemClick += (_, e) => { if (e.ClickedItem is FrameworkElement { Tag: int index }) SelectTrack(index, true); };
+        InitializeQueueList(C<ListView>("QueueList"));
         InitializeDetailList();
         InitializeNavigation();
         player.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(UpdateTransport);
@@ -633,7 +636,10 @@ public sealed partial class MainWindow : Window
     private bool detailLoading, detailError;
     private (string Kind, string Id) detailIdentity;
     private readonly CollectionTransport collectionTransport = new();
-    private sealed record DetailSong(Song Song, int Index);
+    private sealed record DetailSong(Song Song, int Index)
+    {
+        public RequestGate.Lease Owner { get; init; }
+    }
     private void InitializeDetailList()
     {
         var view = C<ListView>("DetailList");
@@ -655,9 +661,13 @@ public sealed partial class MainWindow : Window
         };
         view.ItemClick += (_, args) =>
         {
-            if (closed || page != "detail" || args.ClickedItem is not DetailSong item ||
-                item.Index >= detailSongs.Count || !ReferenceEquals(detailSongs[item.Index], item.Song)) return;
+            if (args.ClickedItem is not DetailSong item) return;
+            var owner = item.Owner;
+            if (closed || accountChangePending || client is null || !connectionGate.IsCurrent(owner) ||
+                detailLoading || detailError || page != "detail" ||
+                item.Index < 0 || item.Index >= detailSongs.Count || !ReferenceEquals(detailSongs[item.Index], item.Song)) return;
             int index = item.Index;
+            C<ToggleButton>("ShuffleButton").IsChecked = false;
             StartQueue(detailSongs, index);
         };
     }
@@ -732,7 +742,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(header);
         var view = C<ListView>("DetailList");
         view.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
-        view.ItemsSource = detailSongs.Select((song, index) => new DetailSong(song, index)).ToArray();
+        view.ItemsSource = detailSongs.Select((song, index) => new DetailSong(song, index) { Owner = connectionLease }).ToArray();
     }
 
     private static TextBlock Text(string text, double size, bool muted = false) => new() { Text = text, FontSize = size, Foreground = muted ? Muted : new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233)), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, FontFamily = new FontFamily("Segoe UI") };
@@ -745,8 +755,9 @@ public sealed partial class MainWindow : Window
 
     private void StartQueue(IReadOnlyList<Song> tracks, int index)
     {
-        if (tracks.Count == 0 || client is null) return;
+        if (tracks.Count == 0 || client is null || index < 0 || index >= tracks.Count) return;
         playbackOrder = null;
+        playedExpanded = false;
         queue = tracks.ToList(); SelectTrack(index, true);
     }
     private async void SelectTrack(int index, bool play, double position = 0)
@@ -758,11 +769,13 @@ public sealed partial class MainWindow : Window
         cacheCancellation.Cancel();
         try
         {
+            if (startedHandler is not null) { player.PlaybackSession.PlaybackStateChanged -= startedHandler; startedHandler = null; }
             player.Pause();
             if (openedHandler is not null) player.MediaOpened -= openedHandler;
             player.Source = null; mediaSource?.Dispose(); mediaSource = null; localStream?.Dispose(); localStream = null;
             queueIndex = index; restoredPosition = Math.Max(0, position);
             EnsurePlaybackOrder();
+            playbackOrder!.Select(index);
             Song song = queue[index];
             // Publish protection immediately, before exposing selection or yielding.
             // This short memory-only operation never waits behind storage IO.
@@ -823,6 +836,20 @@ public sealed partial class MainWindow : Window
             });
             player.MediaOpened += openedHandler;
             player.Source = item;
+            var startEvidence = playbackOrder!.CaptureStartEvidence();
+            startedHandler = (session, _) =>
+            {
+                // Record source/visit-bound evidence before dispatch. Only the tiny
+                // evidence cell is shared; queue state and UI stay dispatcher-owned.
+                if (session.PlaybackState != MediaPlaybackState.Playing || (player.Source as MediaPlaybackItem) != item) return;
+                startEvidence();
+                DispatcherQueue.TryEnqueue(() =>
+                {
+                    if (closed || version != playbackVersion || (player.Source as MediaPlaybackItem) != item) return;
+                    RenderQueue(); UpdateTransport();
+                });
+            };
+            player.PlaybackSession.PlaybackStateChanged += startedHandler;
             if (playIntended) player.Play();
             C<TextBlock>("TrackTitle").Text = song.Title + SongAvailability(song); C<TextBlock>("TrackArtist").Text = song.Artist;
             C<Image>("CurrentArt").Source = null;
@@ -840,7 +867,8 @@ public sealed partial class MainWindow : Window
             else
             {
                 playIntended = true;
-                if (playbackInterrupted || player.Source is null) SelectTrack(queueIndex, true, interruptedPosition > 0 ? interruptedPosition : restoredPosition);
+                if (playbackOrder?.Ended == true) SelectTrack(queueIndex, true);
+                else if (playbackInterrupted || player.Source is null) SelectTrack(queueIndex, true, interruptedPosition > 0 ? interruptedPosition : restoredPosition);
                 else player.Play();
             }
         }
@@ -851,7 +879,7 @@ public sealed partial class MainWindow : Window
         if (closed || queueIndex < 0) return;
         try
         {
-            if (player.PlaybackSession.Position.TotalSeconds > 3 && player.PlaybackSession.CanSeek)
+            if (playbackOrder?.Ended != true && player.PlaybackSession.Position.TotalSeconds > 3 && player.PlaybackSession.CanSeek)
             {
                 if (!localPlayback && HasSavedSong(queue[queueIndex].Id)) SelectTrack(queueIndex, playIntended);
                 else { player.PlaybackSession.Position = TimeSpan.Zero; SavePlayback(); }
@@ -868,49 +896,104 @@ public sealed partial class MainWindow : Window
         if (direction > 0)
         {
             var plannedNext = playbackOrder!.MoveNext();
-            if (plannedNext is null) { playIntended = false; player.Pause(); SavePlayback(); UpdateTransport(); return; }
+            if (plannedNext is null) { playbackOrder!.Finish(); playIntended = false; player.Pause(); RenderQueue(); SavePlayback(); UpdateTransport(); return; }
             SelectTrack(plannedNext.Value, true); return;
         }
         SelectTrack(playbackOrder!.MovePrevious(), true);
     }
-    private sealed class QueueSongRow(TextBlock title) : Grid
+    private sealed record QueueEntry(List<Song> Queue, int Index = -1, string? Heading = null, long VisitId = 0, bool Current = false);
+    private void InitializeQueueList(ListView list)
     {
-        public TextBlock Title { get; } = title;
-    }
-    private void RenderQueue()
-    {
-        var list = C<ListView>("QueueList");
-        if (ReferenceEquals(renderedQueue, queue) && renderedQueueCount == queue.Count)
-        { UpdateQueueSelection(list); return; }
-        list.Items.Clear();
         var itemStyle = new Style(typeof(ListViewItem));
         itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
         itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
         list.ItemContainerStyle = itemStyle;
-        for (int i = 0; i < queue.Count; i++)
+        list.ContainerContentChanging += (_, args) =>
         {
-            var song = queue[i];
-            var title = SongTitle(song, 14); if (i == queueIndex) title.Foreground = Sage;
-            var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
-            copy.Children.Add(title); copy.Children.Add(Text(song.Artist, 12, true));
-            var row = new QueueSongRow(title) { Tag = i, MinHeight = 60, Padding = new Thickness(8, 10, 8, 10) };
-            row.Children.Add(SongCell(song, copy, CancellationToken.None, connectionLease, 10));
-            AutomationProperties.SetName(row, song.Title + SongAvailability(song) + ", " + song.Artist);
-            ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
-            list.Items.Add(row);
-        }
-        renderedQueue = queue; renderedQueueCount = queue.Count;
-        renderedSelection = -1;
-        UpdateQueueSelection(list);
+            if (args.ItemContainer.ContentTemplateRoot is not Grid host) return;
+            host.Children.Clear();
+            AutomationProperties.SetName(args.ItemContainer, "");
+            if (args.InRecycleQueue || closed || args.Item is not QueueEntry entry || !ReferenceEquals(entry.Queue, queue)) return;
+            if (entry.Heading == "Played") host.Children.Add(CreatePlayedExpander());
+            else if (entry.Heading is not null)
+            {
+                var heading = Text(entry.Heading, 12, true); heading.Margin = new Thickness(8, 16, 8, 8);
+                AutomationProperties.SetHeadingLevel(heading, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
+                host.Children.Add(heading);
+            }
+            else
+            {
+                var row = CreateQueueSong(entry);
+                AutomationProperties.SetName(args.ItemContainer, AutomationProperties.GetName(row));
+                host.Children.Add(row);
+            }
+            args.Handled = true;
+        };
+        list.ItemClick += (_, args) =>
+        {
+            if (closed || accountChangePending || args.ClickedItem is not QueueEntry entry ||
+                entry.Index < 0 || !ReferenceEquals(entry.Queue, queue)) return;
+            if (entry.VisitId != 0 && playbackOrder?.SelectPlayed(entry.VisitId) != true) return;
+            SelectTrack(entry.Index, true);
+        };
     }
-    private void UpdateQueueSelection(ListView list)
+    private Grid CreateQueueSong(QueueEntry entry)
     {
-        if (renderedSelection >= 0 && renderedSelection < list.Items.Count && list.Items[renderedSelection] is QueueSongRow oldRow)
-            oldRow.Title.Foreground = new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233));
-        if (queueIndex >= 0 && queueIndex < list.Items.Count && list.Items[queueIndex] is QueueSongRow row)
-            row.Title.Foreground = Sage;
-        renderedSelection = queueIndex;
-        list.SelectedIndex = queueIndex;
+        var song = entry.Queue[entry.Index];
+        var title = SongTitle(song, 14); if (entry.Current) title.Foreground = Sage;
+        var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
+        copy.Children.Add(title); copy.Children.Add(Text(song.Artist, 12, true));
+        var row = new Grid { Tag = entry.Index, MinHeight = 60, Padding = new Thickness(8, 10, 8, 10) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnSpacing = 8;
+        row.Children.Add(SongCell(song, copy, CancellationToken.None, connectionLease, 10));
+        var duration = Text(Clock(song.DurationSeconds), 11, true); Grid.SetColumn(duration, 1); row.Children.Add(duration);
+        if (entry.Current) row.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57));
+        AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + SongAvailability(song) + ", " + song.Artist);
+        ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
+        return row;
+    }
+    private Expander CreatePlayedExpander()
+    {
+        var expander = new Expander { Header = $"Played · {playbackOrder?.Played.Count ?? 0} songs", IsExpanded = playedExpanded,
+            HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
+        AutomationProperties.SetName(expander, "Played songs");
+        expander.Expanding += (_, _) => playedExpanded = true;
+        expander.Collapsed += (_, _) => playedExpanded = false;
+        if (playbackOrder?.Played.Count > 0)
+        {
+            var playedList = new ListView { MaxHeight = 240, SelectionMode = ListViewSelectionMode.Single, IsItemClickEnabled = true,
+                ItemTemplate = (DataTemplate)root.Resources["DetailRowTemplate"] };
+            InitializeQueueList(playedList);
+            playedList.ItemsSource = playbackOrder.Played.Select(x => new QueueEntry(queue, x.Index, VisitId: x.Id)).ToArray();
+            AutomationProperties.SetName(playedList, "Played songs");
+            expander.Content = playedList;
+        }
+        else expander.Content = Text("No songs played yet.", 12, true);
+        return expander;
+    }
+    private void RenderQueue()
+    {
+        var list = C<ListView>("QueueList");
+        EnsurePlaybackOrder();
+        string state = $"{queueIndex}:{playbackOrder?.Ended}:{C<ToggleButton>("ShuffleButton").IsChecked}:{C<ToggleButton>("RepeatButton").IsChecked}:" +
+            string.Join(',', playbackOrder?.Played.Select(x => x.Id) ?? []);
+        if (ReferenceEquals(renderedQueue, queue) && renderedQueueCount == queue.Count && renderedQueueState == state) return;
+        var entries = new List<QueueEntry>();
+        if (queueIndex >= 0 && playbackOrder is not null)
+        {
+            entries.Add(new(queue, Heading: "Played"));
+            entries.Add(new(queue, Heading: playbackOrder.Ended ? "Playback finished" : "Now playing"));
+            if (!playbackOrder.Ended) entries.Add(new(queue, queueIndex, Current: true));
+            entries.Add(new(queue, Heading: "Up next"));
+            foreach (int index in playbackOrder.Upcoming(Math.Max(1, queue.Count))) entries.Add(new(queue, index));
+            entries.Add(new(queue, Heading: "End of queue"));
+        }
+        list.ItemsSource = entries;
+        renderedQueue = queue; renderedQueueCount = queue.Count; renderedQueueState = state;
+        renderedSelection = entries.FindIndex(x => x.Current);
+        list.SelectedIndex = renderedSelection;
     }
     private void UpdateTransport()
     {
@@ -992,8 +1075,9 @@ public sealed partial class MainWindow : Window
     {
         playIntended = false; playbackInterrupted = false; interruptedPosition = 0;
         activeSongId = previousSongId = null;
-        playbackOrder = null;
+        playbackOrder = null; playedExpanded = false;
         playbackVersion++;
+        if (startedHandler is not null) { player.PlaybackSession.PlaybackStateChanged -= startedHandler; startedHandler = null; }
         if (openedHandler is not null) { player.MediaOpened -= openedHandler; openedHandler = null; }
         player.Pause(); player.Source = null; mediaSource?.Dispose(); mediaSource = null; localStream?.Dispose(); localStream = null;
         var storage = cache;

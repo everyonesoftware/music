@@ -19,16 +19,21 @@ internal object CarMediaIds {
     fun play(connection: String, playlist: String) = encode("play", connection, playlist)
     fun track(connection: String, playlist: String, index: Int, song: String) = encode("track", connection, playlist) + ":$index:" + part(song)
     fun queued(connection: String, queueId: String, index: Int) = encode("queued", connection, queueId) + ":$index"
+    fun played(connection: String, queueId: String) = encode("played", connection, queueId)
+    fun upcoming(connection: String, queueId: String) = encode("upcoming", connection, queueId)
+    fun history(connection: String, queueId: String, visit: Int, occurrence: Int) = encode("history", connection, queueId) + ":$visit:" + part(occurrence.toString())
 
     fun parse(id: String): Item? = runCatching {
         require(id.length <= 16_384)
         val bits = id.split(':')
         require(bits.size in 4..6 && bits[0] == "audio")
         val kind = bits[1]
-        val expectedSize = when (kind) { "playlist", "album", "play", "shuffle", "albumplay", "albumshuffle" -> 4; "queued" -> 5; "track", "albumtrack" -> 6; else -> error("Unknown media ID") }
+        val expectedSize = when (kind) { "played", "upcoming", "playlist", "album", "play", "shuffle", "albumplay", "albumshuffle" -> 4; "queued" -> 5; "history", "track", "albumtrack" -> 6; else -> error("Unknown media ID") }
         require(bits.size == expectedSize)
         val index = if (bits.size >= 5) bits[4].toInt().also { require(it >= 0 && it.toString() == bits[4]) } else null
-        Item(kind, unpart(bits[2]), unpart(bits[3]), index, if (bits.size == 6) unpart(bits[5]) else null)
+        val song = if (bits.size == 6) unpart(bits[5]) else null
+        if (kind == "history") require(song!!.toInt().let { it >= 0 && it.toString() == song })
+        Item(kind, unpart(bits[2]), unpart(bits[3]), index, song)
     }.getOrNull()
 
     private fun encode(kind: String, connection: String, parent: String) = "audio:$kind:${part(connection)}:${part(parent)}"

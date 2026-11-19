@@ -774,6 +774,29 @@ class AudioViewModelTest {
         }
     }
 
+    @Test fun scopedCollectionSongRequiresControllerBeforeReplacingSavedQueue() = runBlocking {
+        for (kind in listOf("playlist", "album")) withAlbumFixture { model, graph, server ->
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = if (kind == "album")
+                    ok(""", "album":{"id":"a","name":"Album","song":[{"id":"one","title":"One"},{"id":"two","title":"Two"},{"id":"one","title":"One"}]}""")
+                else ok(""", "playlist":{"entry":[{"id":"one","title":"One"},{"id":"two","title":"Two"},{"id":"one","title":"One"}]}""")
+            }
+            onMain { if (kind == "album") model.openAlbum("a") else model.openPlaylist("p") }
+            until { if (kind == "album") !model.state.value.albumLoading && model.state.value.albumSongs.size == 3
+                else !model.state.value.playlistLoading && model.state.value.playlistSongs.size == 3 }
+            val previous = graph.session.value
+            val page = model.state.value
+            val request = CollectionSongSelection(page.connection!!.id, kind, if (kind == "album") "a" else "p", 2,
+                if (kind == "album") page.albumSongs else page.playlistSongs)
+            val requests = server.requestCount
+            onMain { model.playCollectionSong(request) }
+            until { model.state.value.error != null && !model.state.value.loading }
+            assertEquals(previous, graph.session.value)
+            assertEquals(previous, graph.store.session(previous!!.connectionId))
+            assertEquals(requests, server.requestCount)
+        }
+    }
+
     @Test fun singleSongPlaybackRequiresControllerBeforeMutatingSession() = runBlocking {
         withBrowseFixture { model, graph, _ ->
             val previous = graph.session.value

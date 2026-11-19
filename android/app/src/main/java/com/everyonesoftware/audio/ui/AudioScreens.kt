@@ -482,8 +482,8 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
 }
 
 @Composable
-private fun SongRow(song: Song, artworkUrl: (String?) -> String?, storage: com.everyonesoftware.audio.data.SongCacheState, enabled: Boolean, onDownload: () -> Unit, onClick: () -> Unit) {
-    Row(Modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = enabled, onClick = onClick), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+private fun SongRow(song: Song, artworkUrl: (String?) -> String?, storage: com.everyonesoftware.audio.data.SongCacheState, enabled: Boolean, onDownload: () -> Unit, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Row(modifier.fillMaxWidth().heightIn(min = 64.dp).clickable(enabled = enabled, onClick = onClick), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Artwork(song.coverArtId, artworkUrl, Modifier.size(46.dp))
         Column(Modifier.weight(1f)) {
             Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
@@ -532,7 +532,10 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
             // Playlists may contain the same song more than once; retain the server's order.
             items(state.playlistSongs.size) { index ->
                 val song = state.playlistSongs[index]
-                SongRow(song, artworkUrl, state.storage, enabled = !state.loading, onDownload = { actions.downloadSongs(listOf(song)) }) { actions.playSong(song) }
+                SongRow(song, artworkUrl, state.storage, enabled = transportEnabled, onDownload = { actions.downloadSongs(listOf(song)) },
+                    modifier = Modifier.testTag("playlist-song-$index")) {
+                    if (playlist != null && state.connection != null) actions.playCollectionSong(CollectionSongSelection(state.connection.id, "playlist", playlist.id, index, state.playlistSongs))
+                }
                 HorizontalDivider()
             }
         }
@@ -576,11 +579,9 @@ private fun AlbumDetails(state: AudioUiState, actions: AudioUiActions, artworkUr
             // Album responses can repeat a song; each occurrence needs its own lazy-list identity.
             items(state.albumSongs.size) { index ->
                 val song = state.albumSongs[index]
-                Row(Modifier.fillMaxWidth().heightIn(min = 62.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Column(Modifier.weight(1f)) { Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis); Hint(song.artist); OfflineBadge(song.id, state.storage) }
-                    IconButton({ actions.downloadSongs(listOf(song)) }) { Icon(Icons.Default.Download, "Download ${song.title}") }
-                    Hint(timeLabel(song.durationSeconds * 1000L))
+                SongRow(song, artworkUrl, state.storage, enabled = transportEnabled, onDownload = { actions.downloadSongs(listOf(song)) },
+                    modifier = Modifier.testTag("album-song-$index")) {
+                    if (album != null && state.connection != null) actions.playCollectionSong(CollectionSongSelection(state.connection.id, "album", album.id, index, state.albumSongs))
                 }
                 HorizontalDivider()
             }
@@ -774,24 +775,55 @@ private fun Settings(state: AudioUiState, actions: AudioUiActions, home: Screen)
 
 @Composable
 private fun Queue(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
+    val session = state.session
+    var playedOpen by rememberSaveable(session?.connectionId, session?.queueId) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
-        Header("Your saved queue", state.session?.playlistName.orEmpty(), back = { actions.showScreen(Screen.PLAYER) })
-        Hint("Your order is kept when you resume. Browsing preferences do not remove songs from this queue.", Modifier.padding(bottom = 12.dp))
-        LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 12.dp)) {
-            val session = state.session
+        Header("Queue", session?.playlistName.orEmpty(), back = { actions.showScreen(Screen.PLAYER) })
+        LazyColumn(Modifier.weight(1f).testTag("queue-songs"), contentPadding = PaddingValues(bottom = 12.dp)) {
             if (session == null || session.queue.isEmpty()) item { Hint("No listening queue yet.") }
-            else items(session.queue.size) { index ->
-                val song = session.queue[index]
-                // The public action contract has no jump-to-index mutation; do not fake one.
-                Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).background(if (index == session.index) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.background).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Text((index + 1).toString(), Modifier.widthIn(min = 24.dp), style = MaterialTheme.typography.bodySmall)
-                    Artwork(song.coverArtId, artworkUrl, Modifier.size(46.dp))
-                    Column(Modifier.weight(1f)) { Text(song.title, style = MaterialTheme.typography.titleMedium); Hint(song.artist); if (index == session.index) Text("Current song", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) }
+            else {
+                item("played-toggle") {
+                    Row(Modifier.fillMaxWidth().heightIn(min = 52.dp).testTag("queue-played-toggle")
+                        .clickable { playedOpen = !playedOpen }.semantics { stateDescription = if (playedOpen) "Expanded" else "Collapsed" },
+                        verticalAlignment = Alignment.CenterVertically) {
+                        Icon(if (playedOpen) Icons.Default.ExpandMore else Icons.Default.ChevronRight, null)
+                        Text("Played", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        Hint("${session.played.size} ${if (session.played.size == 1) "song" else "songs"}")
+                    }
                 }
-                HorizontalDivider()
+                if (playedOpen) {
+                    if (session.playedIndices.isEmpty()) item("played-empty") { Hint("No songs played yet.", Modifier.padding(vertical = 12.dp)) }
+                    items(session.playedIndices.size, key = { "played-$it" }) { visit ->
+                        QueueSong(session, session.playedIndices[visit], false, actions, artworkUrl, "played-$visit")
+                    }
+                }
+                item("current-label") { Text("Now playing", Modifier.padding(top = 16.dp, bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                item("current") { QueueSong(session, session.index, true, actions, artworkUrl, "current") }
+                item("up-next") { Text("Up next", Modifier.padding(top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                items((session.queue.size - session.index - 1).coerceAtLeast(0), key = { "next-$it" }) { offset ->
+                    QueueSong(session, session.index + 1 + offset, false, actions, artworkUrl, "next-$offset")
+                }
+                item("end") { Hint("End of ${if (session.sourceType == "album") "album" else "queue"}", Modifier.padding(vertical = 20.dp)) }
             }
         }
         ErrorMessage(state.error)
+    }
+}
+
+@Composable
+private fun QueueSong(session: com.everyonesoftware.audio.data.ListeningSession, index: Int, current: Boolean, actions: AudioUiActions, artworkUrl: (String?) -> String?, tag: String) {
+    val song = session.queue.getOrNull(index) ?: return
+    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).testTag("queue-$tag")
+        .background(if (current) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.background)
+        .clickable { actions.playQueueSong(session.connectionId, session.queueId, session.occurrences[index]) }
+        .padding(vertical = 8.dp, horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Artwork(song.coverArtId, artworkUrl, Modifier.size(if (current) 52.dp else 44.dp))
+        Column(Modifier.weight(1f)) {
+            Text(song.title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Hint(song.artist)
+        }
+        if (current) Icon(Icons.Default.GraphicEq, "Current song", tint = MaterialTheme.colorScheme.primary)
+        else Hint(timeLabel(song.durationSeconds * 1000L))
     }
 }
 

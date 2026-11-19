@@ -520,15 +520,23 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
                 if (session != null) {
                     val player = controller()
                     if (player.playWhenReady || player.isPlaying) { updater.installFailed(); return@launch }
-                    if (player.mediaItemCount > 0) {
-                        val index = player.currentMediaItemIndex
+                    val itemCount = player.mediaItemCount
+                    val index = player.currentMediaItemIndex
+                    if (itemCount > 0) {
                         check(index in session.queue.indices && player.currentMediaItem?.mediaId ==
-                            CarMediaIds.queued(session.connectionId, session.queueId, index))
+                            CarMediaIds.queued(session.connectionId, session.queueId, session.occurrences[index]))
                         graph.updateProgress(index, player.currentPosition, player.repeatMode,
-                            session.connectionId, session.queueId, session.queue.map { it.id })
-                        check(graph.session.value?.queueId == session.queueId &&
-                            graph.session.value?.connectionId == session.connectionId)
+                            session.connectionId, session.queueId, session.queue.map { it.id },
+                            expectedOccurrences = session.occurrences)
                     }
+                    // Saving may wait behind a shuffle/store write. An identical song
+                    // at the same numeric index can now be a different occurrence.
+                    check(player === controller() && !player.playWhenReady && !player.isPlaying && player.mediaItemCount == itemCount)
+                    if (itemCount > 0) check(player.currentMediaItemIndex == index && player.currentMediaItem?.mediaId ==
+                        CarMediaIds.queued(session.connectionId, session.queueId, session.occurrences[index]))
+                    val latest = graph.session.value
+                    check(latest?.queueId == session.queueId && latest.connectionId == session.connectionId &&
+                        latest.queue.map { it.id } == session.queue.map { it.id } && latest.occurrences == session.occurrences)
                 }
                 installRequests.send(intent)
                 handedOff = true
@@ -552,6 +560,38 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     fun installerLaunchFailed() { graph.updates.coordinator.installFailed() }
+
+    override fun playCollectionSong(selection: CollectionSongSelection) {
+        val credentials = graph.credentials.value ?: return
+        if (credentials.connection != current.value.connection || graph.networkPolicy.offline) return
+        val session = current.value.collectionSongSession(selection) ?: return
+        val previous = graph.session.value
+        work {
+            // Await the real controller before any destructive session replacement.
+            val controller = controller()
+            val page = current.value.copy(loading = false)
+            require(graph.credentials.value == credentials && !graph.networkPolicy.offline && page.collectionSongSession(selection) != null) {
+                "This collection changed. Reopen it and choose the song again."
+            }
+            graph.setSession(session, credentials, previous)
+            controller.play()
+            current.update { it.copy(screen = Screen.PLAYER, ratingError = null) }
+        }
+    }
+
+    override fun playQueueSong(connectionId: String, queueId: String, occurrence: Int) = playerCommand { controller ->
+        val saved = graph.session.value
+        if (saved != null && saved.connectionId == connectionId && saved.queueId == queueId &&
+            graph.credentials.value?.connection?.id == connectionId) {
+            val index = saved.occurrences.indexOf(occurrence)
+            if (index >= 0 && controller.currentTimeline.windowCount == saved.queue.size &&
+                controller.getMediaItemAt(index).mediaId == CarMediaIds.queued(connectionId, queueId, occurrence)) {
+                controller.seekTo(index, 0)
+                if (controller.playbackState == Player.STATE_IDLE) controller.prepare()
+                controller.play()
+            }
+        }
+    }
 
     override fun playSong(song: Song) {
         if (current.value.loading) return
@@ -705,10 +745,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         if (current.value.loading) return
         work {
             val session = graph.session.value ?: return@work
-            val next = if (session.shuffle) session.copy(shuffle = false) else {
-                val remaining = session.queue.filterIndexed { index, _ -> index != session.index }.shuffled()
-                session.copy(queue = listOf(session.queue[session.index]) + remaining, index = 0, shuffle = true)
-            }
+            val next = SessionRules.toggleShuffle(session)
             graph.setSession(next)
         }
     }

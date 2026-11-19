@@ -156,9 +156,10 @@ test('coalesced cache refresh updates offline list membership without rebuilding
 test('same-queue local handoff reuses existing queue controls', () => {
   const render = main.slice(main.indexOf('private void RenderQueue()'), main.indexOf('private void UpdateTransport()'));
   const reuse = render.indexOf('ReferenceEquals(renderedQueue, queue)');
-  assert.ok(reuse >= 0 && reuse < render.indexOf('list.Items.Clear()'));
-  assert.ok(render.indexOf('return;', reuse) < render.indexOf('list.Items.Clear()'));
-  assert.match(render, /UpdateQueueSelection\(list\)/);
+  assert.ok(reuse >= 0 && reuse < render.indexOf('list.ItemsSource = entries'));
+  assert.ok(render.indexOf('return;', reuse) < render.indexOf('list.ItemsSource = entries'));
+  assert.match(render, /renderedQueueState == state/);
+  assert.match(render, /playbackOrder\?\.Played.Select\(x => x.Id\)/);
 });
 
 test('account deletion waits for initialization and purges the explicit account even without an attached cache', () => {

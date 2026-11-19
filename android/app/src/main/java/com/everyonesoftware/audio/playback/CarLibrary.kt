@@ -53,22 +53,37 @@ internal class CarLibrary(private val source: Source) {
         if (parentId == CarMediaIds.QUEUE) {
             val session = source.session ?: return emptyList()
             require(session.connectionId == credentials.connection.id)
-            return page(session.queue.mapIndexed { index, song ->
-                songItem(CarMediaIds.queued(session.connectionId, session.queueId, index), song)
-            }, page, pageSize)
+            val current = queueSong(credentials, session, session.index).let { item -> item.buildUpon()
+                .setMediaMetadata(item.mediaMetadata.buildUpon().setSubtitle("Now playing").build()).build() }
+            return page(listOf(folder(CarMediaIds.played(session.connectionId, session.queueId), "Played"), current,
+                folder(CarMediaIds.upcoming(session.connectionId, session.queueId), "Up next")), page, pageSize)
         }
         if (parentId == CarMediaIds.ALBUMS) return page(albums(credentials), page, pageSize).map { albumItem(credentials, it) }
         val id = requireNotNull(CarMediaIds.parse(parentId)) { "Refresh playlists and retry." }
+        if (id.kind in setOf("played", "upcoming")) {
+            val saved = requireNotNull(source.session)
+            require(id.connection == credentials.connection.id && saved.connectionId == id.connection && saved.queueId == id.parent) { "The queue changed. Reopen Queue." }
+            if (id.kind == "played") return page(saved.played.indices.toList(), page, pageSize).map { visit ->
+                val token = saved.played[visit]
+                browseSong(credentials, CarMediaIds.history(saved.connectionId, saved.queueId, visit, token),
+                    saved.queue[saved.occurrences.indexOf(token)])
+            }
+            return page(((saved.index + 1) until saved.queue.size).toList(), page, pageSize).map { queueSong(credentials, saved, it) }
+        }
         require(id.kind in setOf("playlist", "album") && id.connection == credentials.connection.id) { "The music account changed. Refresh collections." }
         if (id.kind == "album") require(albums(credentials).any { it.id == id.parent }) { "This album is unavailable. Refresh albums." }
         else require(playlists(credentials).any { it.id == id.parent }) { "This playlist is unavailable. Refresh playlists." }
         val songs = source.songs(credentials, id.parent, id.kind)
         checkCurrent(credentials)
         val album = id.kind == "album"
-        return page(listOf(playable(if (album) CarMediaIds.albumPlay(id.connection, id.parent) else CarMediaIds.play(id.connection, id.parent), "Play"),
-            playable(if (album) CarMediaIds.albumShuffle(id.connection, id.parent) else CarMediaIds.shuffle(id.connection, id.parent), "Shuffle play")) +
-            songs.mapIndexed { index, song -> songItem(if (album) CarMediaIds.albumTrack(id.connection, id.parent, index, song.id)
-                else CarMediaIds.track(id.connection, id.parent, index, song.id), song) }, page, pageSize)
+        return page((-2 until songs.size).toList(), page, pageSize).map { index ->
+            when (index) {
+                -2 -> playable(if (album) CarMediaIds.albumPlay(id.connection, id.parent) else CarMediaIds.play(id.connection, id.parent), "Play")
+                -1 -> playable(if (album) CarMediaIds.albumShuffle(id.connection, id.parent) else CarMediaIds.shuffle(id.connection, id.parent), "Shuffle play")
+                else -> browseSong(credentials, if (album) CarMediaIds.albumTrack(id.connection, id.parent, index, songs[index].id)
+                    else CarMediaIds.track(id.connection, id.parent, index, songs[index].id), songs[index])
+            }
+        }
     }
 
     suspend fun item(mediaId: String): MediaItem {
@@ -83,6 +98,11 @@ internal class CarLibrary(private val source: Source) {
         val credentials = credentials()
         require(id.connection == credentials.connection.id) { "The music account changed. Refresh playlists." }
         return when (id.kind) {
+            "played", "upcoming" -> {
+                val saved = requireNotNull(source.session)
+                require(saved.connectionId == id.connection && saved.queueId == id.parent) { "The queue changed. Reopen Queue." }
+                folder(mediaId, if (id.kind == "played") "Played" else "Up next")
+            }
             "album" -> {
                 val album = requireNotNull(albums(credentials).firstOrNull { it.id == id.parent }) { "This album is unavailable. Refresh albums." }
                 albumItem(credentials, album)
@@ -92,10 +112,10 @@ internal class CarLibrary(private val source: Source) {
                 requireNotNull(playlist) { "This playlist is unavailable. Refresh playlists." }
                 playlistItem(credentials, playlist)
             }
-            "queued" -> {
+            "queued", "history" -> {
                 val session = requireNotNull(source.session) { "Choose a playlist first." }
                 require(session.connectionId == id.connection && session.queueId == id.parent) { "The queue changed. Reopen Queue." }
-                songItem(mediaId, requireNotNull(session.queue.getOrNull(id.index!!)) { "The queue changed. Reopen Queue." })
+                browseSong(credentials, mediaId, session.queue[queueIndex(session, id)])
             }
             "play", "shuffle", "track", "albumplay", "albumshuffle", "albumtrack" -> {
                 val kind = if (id.kind.startsWith("album")) "album" else "playlist"
@@ -108,7 +128,7 @@ internal class CarLibrary(private val source: Source) {
                     checkCurrent(credentials)
                     val song = requireNotNull(songs.getOrNull(id.index!!)) { "The playlist changed. Refresh playlists." }
                     require(song.id == id.song) { "The playlist changed. Refresh playlists." }
-                    songItem(mediaId, song)
+                    browseSong(credentials, mediaId, song)
                 }
             }
             else -> throw IllegalArgumentException("This music is unavailable. Refresh Music.")
@@ -125,12 +145,13 @@ internal class CarLibrary(private val source: Source) {
             require(command in setOf(PLAY_COLLECTION, SHUFFLE_COLLECTION, SHUFFLE_PLAYLIST)) { "Unsupported collection command." }
             require(id.kind in setOf("playlist", "album") && (command != SHUFFLE_PLAYLIST || id.kind == "playlist")) { "Choose a collection from Music." }
         }
-        if (id.kind == "queued") {
+        if (id.kind in setOf("queued", "history")) {
             val saved = requireNotNull(previous) { "Choose a playlist first." }
-            require(saved.connectionId == id.connection && saved.queueId == id.parent && id.index in saved.queue.indices) {
+            require(saved.connectionId == id.connection && saved.queueId == id.parent) {
                 "The queue changed. Reopen Queue."
             }
-            return Selection(credentials, previous, saved.copy(index = id.index!!, positionMs = 0))
+            val selectedIndex = queueIndex(saved, id)
+            return Selection(credentials, previous, saved.copy(index = selectedIndex, positionMs = 0))
         }
         require(id.kind in setOf("playlist", "album", "play", "shuffle", "track", "albumplay", "albumshuffle", "albumtrack")) { "Choose a collection or song from Music." }
         val kind = if (id.kind.startsWith("album")) "album" else "playlist"
@@ -239,6 +260,19 @@ internal class CarLibrary(private val source: Source) {
         }
     }
 
+    private fun queueSong(credentials: Credentials, saved: ListeningSession, index: Int): MediaItem =
+        browseSong(credentials, CarMediaIds.queued(saved.connectionId, saved.queueId, saved.occurrences[index]), saved.queue[index])
+
+    private fun queueIndex(saved: ListeningSession, id: CarMediaIds.Item): Int {
+        val token = if (id.kind == "history") requireNotNull(id.song).toInt().also {
+            require(saved.played.getOrNull(requireNotNull(id.index)) == it) { "History changed. Reopen Played." }
+        } else id.index
+        return saved.occurrences.indexOf(token).also { require(it >= 0) { "The queue changed. Reopen Queue." } }
+    }
+
+    private fun browseSong(credentials: Credentials, id: String, song: Song): MediaItem =
+        songItem(id, song, song.coverArtId?.let { source.artworkUri(credentials, it) })
+
     private fun albumItem(credentials: Credentials, album: Album): MediaItem = MediaItem.Builder()
         .setMediaId(CarMediaIds.album(credentials.connection.id, album.id))
         .setMediaMetadata(MediaMetadata.Builder().setTitle(album.name).setSubtitle("${album.artist} · ${album.songCount} songs")
@@ -271,8 +305,9 @@ internal class CarLibrary(private val source: Source) {
         private fun collectionStyle() = Bundle().apply {
             putInt(MediaConstants.EXTRAS_KEY_CONTENT_STYLE_PLAYABLE, MediaConstants.EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM)
         }
-        fun songItem(id: String, song: Song): MediaItem = MediaItem.Builder().setMediaId(id)
+        fun songItem(id: String, song: Song, artworkUri: String? = null): MediaItem = MediaItem.Builder().setMediaId(id)
             .setMediaMetadata(MediaMetadata.Builder().setTitle(song.title).setArtist(song.artist).setAlbumTitle(song.album)
+                .setArtworkUri(artworkUri?.let(Uri::parse))
                 .setMediaType(MediaMetadata.MEDIA_TYPE_MUSIC).setIsBrowsable(false).setIsPlayable(true).build()).build()
         private fun media(id: String, title: String, subtitle: String?, browsable: Boolean): MediaItem =
             MediaItem.Builder().setMediaId(id).setMediaMetadata(MediaMetadata.Builder().setTitle(title).setSubtitle(subtitle)

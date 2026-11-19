@@ -103,7 +103,24 @@ val AudioUiState.visibleAlbums: List<Album>
             it.artist.contains(albumCollectionQuery.trim(), ignoreCase = true)
     }
 
+/** Captures the displayed ordered occurrences, not merely a song ID which may repeat. */
+data class CollectionSongSelection(val connectionId: String, val kind: String, val id: String, val index: Int, val songs: List<Song>)
+
+fun AudioUiState.collectionSongSession(request: CollectionSongSelection): ListeningSession? {
+    if (booting || loading || storage.settings.offline || connection?.id != request.connectionId) return null
+    val name = when (request.kind) {
+        "playlist" -> if (screen == Screen.PLAYLIST && selectedPlaylist?.id == request.id && !playlistLoading && playlistDetailError == null && playlistSongs == request.songs) selectedPlaylist.name else null
+        "album" -> if (screen == Screen.ALBUM && selectedAlbum?.id == request.id && !albumLoading && albumError == null && albumSongs == request.songs) selectedAlbum.name else null
+        else -> null
+    } ?: return null
+    if (request.index !in request.songs.indices) return null
+    return com.everyonesoftware.audio.playback.SessionRules.start(request.connectionId, request.id, name, request.songs,
+        sourceType = request.kind, shuffle = false).copy(index = request.index)
+}
+
 interface AudioUiActions {
+    fun playCollectionSong(selection: CollectionSongSelection) = Unit
+    fun playQueueSong(connectionId: String, queueId: String, occurrence: Int) = Unit
     fun setCollectionQuery(kind: CollectionKind, query: String) = Unit
     fun setCollectionLayout(kind: CollectionKind, layout: CollectionLayout) = Unit
     fun refreshCollection(kind: CollectionKind) = Unit

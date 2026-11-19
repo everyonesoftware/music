@@ -73,12 +73,15 @@ class PlaybackService : MediaLibraryService() {
     private var artworkCredentials: Credentials? = null
     private var artworkTarget: Pair<QueueBinding, String>? = null
     private var artworkIndex = C.INDEX_UNSET
+    private var history = PlaybackHistory()
+    private var repeatedVisit = false
+    private var publishedVisits: List<Int>? = null
 
-    private data class QueueKey(val connectionId: String, val playlistId: String, val ids: List<String>, val queueId: String)
+    private data class QueueKey(val connectionId: String, val playlistId: String, val ids: List<String>, val queueId: String, val occurrences: List<Int>)
     private data class QueueBinding(val key: QueueKey, val credentials: Credentials)
     private data class Progress(val key: QueueKey, val index: Int, val positionMs: Long, val repeatMode: Int)
 
-    private fun ListeningSession.key() = QueueKey(connectionId, playlistId, queue.map { it.id }, queueId)
+    private fun ListeningSession.key() = QueueKey(connectionId, playlistId, queue.map { it.id }, queueId, occurrences)
     private fun trusted(controller: MediaSession.ControllerInfo) =
         (controller.packageName == packageName && controller.uid == applicationInfo.uid) || controller.isTrusted
 
@@ -111,8 +114,12 @@ class PlaybackService : MediaLibraryService() {
             // The stored queue is already shuffled; a second shuffle would change its order.
             shuffleModeEnabled = false
             addListener(object : Player.Listener {
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    if (!replacingQueue && reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) repeatedVisit = true
+                }
                 override fun onEvents(player: Player, events: Player.Events) {
                     if (replacingQueue) return
+                    observeHistory()
                     publishSnapshot()
                     if (player.isPlaying && events.containsAny(Player.EVENT_IS_PLAYING_CHANGED, Player.EVENT_MEDIA_ITEM_TRANSITION)) {
                         val owner = binding
@@ -343,8 +350,9 @@ class PlaybackService : MediaLibraryService() {
             replacingQueue = false
             publishSnapshot()
         }
+        observeHistory()
         refreshArtwork()
-        librarySession?.notifyChildrenChanged(CarMediaIds.QUEUE, player.mediaItemCount, null)
+        librarySession?.notifyChildrenChanged(CarMediaIds.QUEUE, 3, null)
     }
 
     private fun cancelArtwork() {
@@ -379,12 +387,14 @@ class PlaybackService : MediaLibraryService() {
         artworkTarget = target // Set before metadata replacements can emit another player event.
         val previousIndex = artworkIndex
         artworkIndex = index
-        // Retain artwork only on the current item, not on every song in a long queue.
+        // Keep image bytes only on the current item; other occurrences retain browse
+        // capabilities rather than evictable current-artwork-store URIs.
         if (previousIndex in 0 until player.mediaItemCount && previousIndex != index) {
             val previous = player.getMediaItemAt(previousIndex)
             if (previous.mediaMetadata.artworkData != null || previous.mediaMetadata.artworkUri != null) {
                 player.replaceMediaItem(previousIndex, previous.buildUpon().setMediaMetadata(
-                    previous.mediaMetadata.buildUpon().setArtworkUri(null)
+                    previous.mediaMetadata.buildUpon().setArtworkUri(graph.browseArtwork.register(owner.credentials,
+                        saved?.queue?.getOrNull(previousIndex)?.coverArtId)?.let(Uri::parse))
                         .setArtworkData(null, MediaMetadata.PICTURE_TYPE_FRONT_COVER).build()).build())
             }
         }
@@ -421,7 +431,8 @@ class PlaybackService : MediaLibraryService() {
     private fun playbackItems(saved: ListeningSession, owner: QueueBinding): List<MediaItem> {
         val client = NavidromeClient(owner.credentials, allowLocalHttp = BuildConfig.DEBUG, networkPolicy = graph.networkPolicy)
         return saved.queue.mapIndexed { index, song ->
-            CarLibrary.songItem(CarMediaIds.queued(saved.connectionId, saved.queueId, index), song).buildUpon()
+            CarLibrary.songItem(CarMediaIds.queued(saved.connectionId, saved.queueId, saved.occurrences[index]), song,
+                graph.browseArtwork.register(owner.credentials, song.coverArtId)).buildUpon()
                 .setUri(client.streamUri(song.id)).setTag(owner).build()
         }
     }
@@ -480,6 +491,9 @@ class PlaybackService : MediaLibraryService() {
             player.stop()
             player.clearMediaItems()
             binding = null
+            history = PlaybackHistory()
+            publishedVisits = null
+            repeatedVisit = false
             storageError = null
         } finally {
             replacingQueue = wasReplacing
@@ -499,6 +513,29 @@ class PlaybackService : MediaLibraryService() {
         )
     }
 
+    private fun observeHistory() {
+        val owner = binding ?: return
+        val saved = graph.session.value ?: return
+        if (replacingQueue || owner.credentials != graph.credentials.value || saved.key() != owner.key) return
+        val visits = history.observe(saved, player.currentMediaItemIndex, player.isPlaying,
+            repeat = repeatedVisit, ended = player.playbackState == Player.STATE_ENDED)
+        repeatedVisit = false
+        if (publishedVisits == visits && saved.played == visits) return
+        publishedVisits = visits
+        persistenceScope.launch {
+            try {
+                graph.updatePlayed(owner.credentials, owner.key.queueId, visits)
+                if (binding == owner && graph.credentials.value == owner.credentials) {
+                    librarySession?.notifyChildrenChanged(CarMediaIds.QUEUE, 3, null)
+                    librarySession?.notifyChildrenChanged(CarMediaIds.played(saved.connectionId, saved.queueId), visits.size, null)
+                    librarySession?.notifyChildrenChanged(CarMediaIds.upcoming(saved.connectionId, saved.queueId),
+                        (saved.queue.size - player.currentMediaItemIndex - 1).coerceAtLeast(0), null)
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (_: Exception) { storageError = "Playback history could not be saved." }
+        }
+    }
+
     private fun captureProgress(): Progress? {
         val owner = binding ?: return null
         if (replacingQueue || player.mediaItemCount == 0 || graph.credentials.value != owner.credentials ||
@@ -509,8 +546,15 @@ class PlaybackService : MediaLibraryService() {
     private suspend fun saveProgress(progress: Progress) {
         if (graph.session.value?.key() == progress.key &&
             graph.credentials.value?.connection?.id == progress.key.connectionId) {
+            val previousIndex = graph.session.value?.index
             graph.updateProgress(progress.index, progress.positionMs, progress.repeatMode, progress.key.connectionId,
-                expectedQueueId = progress.key.queueId, expectedQueueIds = progress.key.ids)
+                expectedQueueId = progress.key.queueId, expectedQueueIds = progress.key.ids, expectedOccurrences = progress.key.occurrences)
+            val saved = graph.session.value
+            if (previousIndex != progress.index && saved?.key() == progress.key) {
+                librarySession?.notifyChildrenChanged(CarMediaIds.QUEUE, 3, null)
+                librarySession?.notifyChildrenChanged(CarMediaIds.upcoming(saved.connectionId, saved.queueId),
+                    (saved.queue.size - saved.index - 1).coerceAtLeast(0), null)
+            }
         }
     }
 

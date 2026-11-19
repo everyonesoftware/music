@@ -392,11 +392,11 @@ public sealed partial class MainWindow
         bool repeat = C<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>("RepeatButton").IsChecked == true;
         playbackOrder ??= new PlaybackOrder(queue.Count, queueIndex, shuffle, repeat);
         playbackOrder.Configure(shuffle, repeat);
-        playbackOrder.Select(queueIndex);
+        if (playbackOrder.Current != queueIndex) playbackOrder.Select(queueIndex);
     }
     private void HandoffCompletedSong(string songId, long version)
     {
-        if (closed || version != playbackVersion || localPlayback || queueIndex < 0 || queue[queueIndex].Id != songId) return;
+        if (closed || playbackOrder?.Ended == true || version != playbackVersion || localPlayback || queueIndex < 0 || queue[queueIndex].Id != songId) return;
         double position = restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds;
         var handoff = CacheHandoff.Resolve(songId, version, queue[queueIndex].Id, playbackVersion, localPlayback, closed, position, playIntended);
         if (handoff is not null) SelectTrack(queueIndex, handoff.Play, handoff.PositionSeconds);

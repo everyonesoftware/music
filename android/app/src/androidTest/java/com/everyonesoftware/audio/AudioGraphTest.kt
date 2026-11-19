@@ -13,6 +13,41 @@ class AudioGraphTest {
     private fun connection(id: String) = Connection(id, "Test $id", "https://example.invalid/$id", "test-user")
     private val songs = listOf(Song("s1", "One", "Fixture"), Song("s2", "Two", "Fixture"))
 
+    @Test fun playedEvidenceMergesWithProgressPersistsAndRejectsOldQueueOrAccount() = runBlocking {
+        val graph = AudioGraph(ApplicationProvider.getApplicationContext())
+        val a = "graph-history-a"
+        val b = "graph-history-b"
+        try {
+            for (id in listOf(a, b)) graph.store.saveConnection(Credentials(connection(id), "test-only-password"))
+            graph.activate(a)
+            val credentials = graph.credentials.value!!
+            val saved = ListeningSession(a, "p", "Playlist", songs + songs[0], index = 2, queueId = "history")
+            graph.setSession(saved)
+            graph.updatePlayed(credentials, saved.queueId, listOf(2))
+            graph.updateProgress(0, 100, 2)
+            graph.applyRating(a, "s1", 5)
+            assertEquals(listOf(2), graph.session.value!!.played)
+            assertEquals(graph.session.value, graph.store.session(a))
+            val restored = AudioGraph(ApplicationProvider.getApplicationContext())
+            restored.activate(a)
+            assertEquals(listOf(2), restored.session.value!!.played)
+            assertFalse(restored.playback.value.playing)
+            val shuffled = graph.session.value!!.copy(occurrenceIds = listOf(2, 1, 0), index = 0)
+            graph.updatePlayed(credentials, saved.queueId, listOf(2, 0))
+            graph.setSession(shuffled)
+            assertEquals(listOf(2, 0), graph.session.value!!.played)
+            graph.updateProgress(2, 999, 0, a, saved.queueId, saved.queue.map { it.id }, expectedOccurrences = listOf(0, 1, 2))
+            assertEquals(shuffled.copy(played = listOf(2, 0)), graph.session.value)
+            graph.setSession(saved.copy(queueId = "new"))
+            graph.updatePlayed(credentials, saved.queueId, listOf(1, 2))
+            assertTrue(graph.session.value!!.played.isEmpty())
+            graph.activate(b)
+            graph.setSession(saved.copy(connectionId = b, queueId = "history"))
+            graph.updatePlayed(credentials, "history", listOf(2))
+            assertTrue(graph.session.value!!.played.isEmpty())
+        } finally { graph.store.removeConnection(a); graph.store.removeConnection(b) }
+    }
+
     @Test fun lateProgressCannotOverwriteAnExplicitRestartOfTheSamePlaylist() = runBlocking {
         val graph = AudioGraph(ApplicationProvider.getApplicationContext())
         val id = "graph-late-progress-fixture"

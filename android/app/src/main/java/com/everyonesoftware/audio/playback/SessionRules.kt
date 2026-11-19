@@ -19,8 +19,16 @@ object SessionRules {
             index = session.index.coerceIn(session.queue.indices),
             positionMs = session.positionMs.coerceAtLeast(0),
             repeatMode = session.repeatMode.coerceIn(0, 2),
+            played = session.played.filter { it in session.occurrences }.takeLast(PlaybackHistory.MAX_VISITS),
         )
     }
     fun progress(session: ListeningSession, index: Int, positionMs: Long, repeatMode: Int): ListeningSession =
         restore(session.copy(index = index, positionMs = positionMs, repeatMode = repeatMode))
+
+    fun toggleShuffle(session: ListeningSession): ListeningSession {
+        if (session.shuffle) return session.copy(shuffle = false)
+        val order = listOf(session.index) + session.queue.indices.filter { it != session.index }.shuffled()
+        return session.copy(queue = order.map { session.queue[it] }, occurrenceIds = order.map { session.occurrences[it] },
+            index = 0, shuffle = true)
+    }
 }

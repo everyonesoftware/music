@@ -159,7 +159,7 @@
       </Grid>
     </Grid>
     <Border Grid.Column="2" x:Name="QueuePane" Width="292" Visibility="Collapsed" BorderBrush="#39453d" BorderThickness="1,0,0,0" Background="#242c28" Padding="16">
-      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Grid Margin="0,0,0,12"><TextBlock Text="Queue" FontSize="20" FontWeight="SemiBold"/><Button x:Name="CloseQueueButton" Content="&#xE8BB;" Style="{StaticResource TransportButtonStyle}" HorizontalAlignment="Right" AutomationProperties.Name="Close queue"/></Grid><ListView Grid.Row="1" x:Name="QueueList" SelectionMode="Single" IsItemClickEnabled="True"/></Grid>
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions><Grid Margin="0,0,0,12"><TextBlock Text="Queue" FontSize="20" FontWeight="SemiBold"/><Button x:Name="CloseQueueButton" Content="&#xE8BB;" Style="{StaticResource TransportButtonStyle}" HorizontalAlignment="Right" AutomationProperties.Name="Close queue"/></Grid><ListView Grid.Row="1" x:Name="QueueList" ItemTemplate="{StaticResource DetailRowTemplate}" SelectionMode="Single" IsItemClickEnabled="True"/></Grid>
     </Border>
   </Grid>
   <Border Grid.Row="2" Background="#242c28" BorderBrush="#39453d" BorderThickness="0,1,0,0" Padding="18,10">

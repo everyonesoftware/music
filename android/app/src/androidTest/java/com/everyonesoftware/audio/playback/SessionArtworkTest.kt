@@ -194,7 +194,7 @@ class SessionArtworkTest {
         until { coverRequests.get() >= 2 && onMain { browser.isPlaying && browser.currentPosition >= 1500 } }
         val position = onMain { browser.currentPosition }
         gate.countDown()
-        until { onMain { browser.mediaMetadata.artworkUri != null && browser.mediaMetadata.artworkUri != firstUri } }
+        until { onMain { browser.mediaMetadata.artworkData != null && browser.mediaMetadata.artworkUri != null && browser.mediaMetadata.artworkUri != firstUri } }
         onMain {
             assertTrue("Metadata publication must not restart the track", browser.currentPosition >= position)
             assertEquals(Player.REPEAT_MODE_ALL, browser.repeatMode)
@@ -210,7 +210,7 @@ class SessionArtworkTest {
         imageWidth = 96
         imageHeight = 64
         onMain { browser.seekToNextMediaItem() }
-        until { onMain { browser.mediaMetadata.artworkUri != null && browser.mediaMetadata.artworkUri != firstUri } }
+        until { onMain { browser.mediaMetadata.artworkData != null && browser.mediaMetadata.artworkUri != null && browser.mediaMetadata.artworkUri != firstUri } }
         val bytes = requireNotNull(app.contentResolver.openInputStream(requireNotNull(onMain { browser.mediaMetadata.artworkUri }))).use { it.readBytes() }
         val bitmap = requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
         try { assertEquals(96, bitmap.width); assertEquals(64, bitmap.height) } finally { bitmap.recycle() }
@@ -224,7 +224,7 @@ class SessionArtworkTest {
         until { coverRequests.get() >= 3 && graph.playback.value.playing }
         Thread.sleep(250)
         assertNull(artwork())
-        onMain { assertNull(browser.mediaMetadata.artworkUri); assertNull(browser.playerError); assertTrue(browser.isPlaying) }
+        onMain { assertEquals("content", browser.mediaMetadata.artworkUri?.scheme); assertNull(browser.playerError); assertTrue(browser.isPlaying) }
     }
 
     @Test fun delayedCoverNeverBlocksPlaybackOrAppearsOnAnotherTrack() {
@@ -247,7 +247,7 @@ class SessionArtworkTest {
         assertEquals(2, runBlocking { graph.store.session(credentials.connection.id) }!!.index)
     }
 
-    @Test fun cacheReusesCoverAndDoesNotAttachImagesToTheWholeQueue() {
+    @Test fun cacheReusesCoverAndKeepsPerSongUrisWithoutAttachingImageBytesToTheWholeQueue() {
         until { artwork() != null }
         assertEquals(1, coverRequests.get())
         onMain { browser.seekToDefaultPosition(3) }
@@ -256,7 +256,9 @@ class SessionArtworkTest {
         assertEquals(1, coverRequests.get())
         onMain {
             assertNull(browser.getMediaItemAt(0).mediaMetadata.artworkData)
-            assertNull(browser.getMediaItemAt(0).mediaMetadata.artworkUri)
+            val previous = requireNotNull(browser.getMediaItemAt(0).mediaMetadata.artworkUri)
+            assertEquals("content", previous.scheme)
+            assertTrue(previous.path!!.startsWith("/browse/"))
             assertNotNull(browser.getMediaItemAt(3).mediaMetadata.artworkData)
             assertNotNull(browser.getMediaItemAt(3).mediaMetadata.artworkUri)
         }
@@ -276,7 +278,7 @@ class SessionArtworkTest {
         until { artwork() != null }
         val saved = graph.session.value!!
         val items = onMain { browser.getChildren(CarMediaIds.QUEUE, 0, 100, null) }.get(15, TimeUnit.SECONDS)
-        val first = requireNotNull(items.value).first()
+        val first = requireNotNull(items.value)[1]
         repeat(2) {
             onMain { browser.setMediaItem(first); browser.prepare(); browser.play() }
             until { graph.playback.value.playing && artwork() != null }

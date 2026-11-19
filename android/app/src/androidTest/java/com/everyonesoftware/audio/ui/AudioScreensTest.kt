@@ -58,6 +58,41 @@ import org.junit.runner.RunWith
 /** Real native UI; all account/media fixtures and action spies live only in androidTest. */
 @RunWith(AndroidJUnit4::class)
 class AudioScreensTest {
+    @Test fun collectionSongRowsSendScopedDuplicateOccurrenceAndUseEachSongsArtwork() {
+        val repeated = listOf(song.copy(coverArtId = "one"), song.copy(id = "second", coverArtId = "two"), song.copy(coverArtId = "one"))
+        val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST, selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = repeated,
+            selectedAlbum = Album("a", "Album"), albumSongs = repeated))
+        val covers = java.util.concurrent.CopyOnWriteArrayList<String?>()
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { covers.add(it); null }) } }
+        for ((screen, kind, id) in listOf(Triple(Screen.PLAYLIST, "playlist", "p"), Triple(Screen.ALBUM, "album", "a"))) {
+            compose.runOnIdle { state.value = state.value.copy(screen = screen) }
+            compose.onNodeWithTag("$kind-songs").performScrollToNode(hasTestTag("$kind-song-2"))
+            compose.onNodeWithTag("$kind-song-2").performClick()
+            compose.runOnIdle {
+                assertEquals(CollectionSongSelection(connection.id, kind, id, 2, repeated), actions.collectionSongs.last())
+                assertTrue(covers.containsAll(listOf("one", "two")))
+                assertTrue(actions.playedSongs.isEmpty())
+            }
+        }
+    }
+
+    @Test fun queueHasCollapsedActualPlayedSeparateCurrentAndUpcomingWithoutNumbers() {
+        val tracks = listOf(song.copy(title = "Earlier but skipped"), song.copy(id = "second", title = "Started visit", coverArtId = "second-cover"), song.copy(title = "Selected duplicate", coverArtId = "first-cover"), song.copy(id = "last", title = "Future", coverArtId = "last-cover"))
+        val saved = ListeningSession(connection.id, "p", "Playlist", tracks, index = 2, queueId = "queue", played = listOf(1))
+        render(playerState().copy(screen = Screen.QUEUE, session = saved))
+        compose.onNodeWithText("Played").assertIsDisplayed()
+        compose.onNodeWithText("Now playing").assertIsDisplayed()
+        compose.onNodeWithText("Up next").assertIsDisplayed()
+        compose.onNodeWithText("Started visit").assertDoesNotExist()
+        compose.onNodeWithText("Earlier but skipped").assertDoesNotExist()
+        compose.onNodeWithText("3").assertDoesNotExist()
+        compose.onNodeWithTag("queue-played-toggle").performClick()
+        compose.onNodeWithText("Started visit").assertIsDisplayed().performClick()
+        compose.runOnIdle { assertEquals(Triple(connection.id, "queue", 1), actions.queueSongs.single()) }
+        compose.onNodeWithTag("queue-played-toggle").performClick()
+        compose.onNodeWithText("Started visit").assertDoesNotExist()
+    }
+
     @Test fun pullToRefreshWorksOnBrowsePagesIncludingEmptyCollectionsButNotDownloads() {
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLISTS,
             selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = listOf(song),
@@ -940,6 +975,10 @@ class AudioScreensTest {
     private data class ConnectCall(val name: String, val url: String, val username: String, val password: String)
 
     private class RecordingActions : AudioUiActions {
+        val collectionSongs = mutableListOf<CollectionSongSelection>()
+        val queueSongs = mutableListOf<Triple<String, String, Int>>()
+        override fun playCollectionSong(selection: CollectionSongSelection) { collectionSongs += selection }
+        override fun playQueueSong(connectionId: String, queueId: String, occurrence: Int) { queueSongs += Triple(connectionId, queueId, occurrence) }
         val collectionQueries = mutableListOf<Pair<CollectionKind, String>>()
         val collectionLayouts = mutableListOf<Pair<CollectionKind, CollectionLayout>>()
         val collectionRefreshes = mutableListOf<CollectionKind>()

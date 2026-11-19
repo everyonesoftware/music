@@ -1,0 +1,112 @@
+import com.everyonesoftware.audio.data.*
+import com.everyonesoftware.audio.playback.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.test.*
+
+class Item(val mediaId: String)
+class Controller(session: ListeningSession) {
+    var playWhenReady = false
+    var isPlaying = false
+    var mediaItemCount = session.queue.size
+    var currentMediaItemIndex = session.index
+    var currentMediaItem: Item? = Item(CarMediaIds.queued(session.connectionId, session.queueId, session.occurrences[session.index]))
+    var currentPosition = 999L
+    var repeatMode = 2
+}
+class Coordinator {
+    var failures = 0
+    fun beginInstall() = Unit to Unit
+    fun permissionRequired(value: Boolean) = Unit
+    fun installFailed() { failures++ }
+    fun installerReturned() = Unit
+}
+class Updates {
+    val coordinator = Coordinator()
+    fun canInstall() = true
+    fun permissionIntent() = Unit
+    suspend fun verifiedInstallIntent(file: Unit, release: Unit) = Unit
+}
+class Store(initial: ListeningSession) {
+    var saved = initial
+    var saving = CompletableDeferred<Unit>()
+    var release: CompletableDeferred<Unit>? = null
+    suspend fun saveSession(session: ListeningSession) {
+        saving.complete(Unit)
+        release?.await()
+        saved = session
+    }
+}
+class Graph(initial: ListeningSession) {
+    val currentSession = MutableStateFlow<ListeningSession?>(initial)
+    val session = currentSession
+    val lock = Mutex()
+    val store = Store(initial)
+    val updates = Updates()
+/* PROGRESS_METHOD */
+}
+data class State(val session: ListeningSession?)
+class Model(val graph: Graph, val viewModelScope: CoroutineScope, var player: Controller) {
+    val current = MutableStateFlow(State(graph.session.value))
+    var installOperation: Job? = null
+    val installRequests = Channel<Unit>(Channel.UNLIMITED)
+    suspend fun controller() = player
+/* INSTALL_METHOD */
+}
+
+@OptIn(ExperimentalCoroutinesApi::class)
+fun main(args: Array<String>) = runTest {
+    val selector = args.single()
+    val duplicate = Song("same", "Same", "Fixture")
+    val original = ListeningSession("account", "playlist", "Duplicates", listOf(duplicate, duplicate),
+        queueId = "queue", index = 1, positionMs = 12, repeatMode = 0, occurrenceIds = listOf(0, 1))
+    val graph = Graph(original)
+    val model = Model(graph, backgroundScope, Controller(original))
+    when (selector) {
+        "progress", "handoff" -> {
+            // installUpdate captures occurrence 1 at index 1, then waits behind a
+            // shuffle holding the actual graph mutex. IDs and queueId are unchanged.
+            graph.lock.lock()
+            model.installUpdate()
+            runCurrent()
+            check(model.installOperation!!.isActive)
+            val reordered = original.copy(occurrenceIds = listOf(1, 0), index = 0, positionMs = 12)
+            graph.currentSession.value = reordered
+            graph.store.saved = reordered
+            graph.lock.unlock()
+            runCurrent()
+            if (selector == "progress") {
+                check(graph.session.value == reordered) { "stale captured progress overwrote identical-song occurrence order" }
+                check(graph.store.saved == reordered) { "stale progress reached durable store" }
+            } else {
+                check(model.installRequests.tryReceive().isFailure) { "installer handed off after captured occurrence order changed" }
+                check(graph.updates.coordinator.failures == 1)
+            }
+        }
+        "controller", "resume" -> {
+            graph.store.release = CompletableDeferred()
+            model.installUpdate()
+            runCurrent()
+            check(graph.store.saving.isCompleted)
+            if (selector == "controller") model.player = Controller(original)
+            else model.player.playWhenReady = true
+            graph.store.release!!.complete(Unit)
+            runCurrent()
+            check(model.installRequests.tryReceive().isFailure) { "installer handed off after controller changed/resumed during save" }
+            check(graph.updates.coordinator.failures == 1)
+        }
+        "success" -> {
+            model.installUpdate()
+            runCurrent()
+            check(model.installRequests.tryReceive().isSuccess) { "valid paused install did not hand off" }
+            check(graph.store.saved.positionMs == 999L)
+            check(graph.store.saved.index == 1)
+            check(graph.updates.coordinator.failures == 0)
+        }
+        else -> error("Unknown selector")
+    }
+    println("installUpdate/$selector: PASS")
+}

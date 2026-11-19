@@ -1,3 +1,5 @@
+import './playing-callback.test.mjs';
+import './played-queue.test.mjs';
 import './updates-card.test.mjs';
 import './collection-transport.test.mjs';
 import './navigation-contracts.test.mjs';
@@ -105,7 +107,7 @@ test('collection detail virtualizes data rows in a bounded viewport without entr
   const detail = method('RenderDetail');
   assert.doesNotMatch(detail, /AddSongs\(|SongRow\(|\.Items.Add\(/);
   assert.match(detail, /view.ItemsSource = detailSongs/);
-  assert.match(detail, /Select\(\(song, index\) => new DetailSong\(song, index\)\)\.ToArray\(\)/);
+  assert.match(detail, /Select\(\(song, index\) => new DetailSong\(song, index\) \{ Owner = connectionLease \}\)\.ToArray\(\)/);
   assert.doesNotMatch(detail, /\.Take\(|Distinct/);
   assert.match(detail, /view.ItemContainerTransitions = new .*TransitionCollection\(\)/);
   assert.match(source, /ContainerContentChanging \+=/);
@@ -196,23 +198,28 @@ test('unrealized song covers release decoded images and restore their placeholde
   assert.match(unloaded, /fallback.Visibility = Visibility.Visible/);
 });
 
-test('queue rows share artwork layout without breaking selection, reuse, or occurrence indices', () => {
+test('queue lazily realizes occurrence-identified artwork rows and reuses unchanged queue state', () => {
+  const row = method('CreateQueueSong');
+  assert.match(row, /SongCell\(song, copy, CancellationToken.None, connectionLease, 10\)/);
+  assert.match(row, /Tag = entry.Index/);
+  assert.match(row, /MinHeight = 60/);
+  assert.match(row, /Padding = new Thickness\(8, 10, 8, 10\)/);
+  assert.match(row, /entry.Current.*title.Foreground = Sage/);
+  assert.match(row, /AutomationProperties.SetName\(row,/);
+  assert.doesNotMatch(row, /Text\(.*entry.Index|entry.Index \+ 1/); // No queue track numbers.
+  const initialize = method('InitializeQueueList');
+  assert.match(initialize, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
+  assert.match(initialize, /PaddingProperty, new Thickness\(0\)/);
+  assert.match(initialize, /host.Children.Clear\(\)/);
+  assert.match(initialize, /args.InRecycleQueue/);
+  assert.match(initialize, /SelectTrack\(entry.Index, true\)/);
+  assert.match(initialize, /ReferenceEquals\(entry.Queue, queue\)/);
   const queue = method('RenderQueue');
-  assert.match(queue, /SongCell\(song, copy, CancellationToken.None, connectionLease, 10\)/);
-  assert.match(queue, /new QueueSongRow\(title\).*Tag = i/);
-  assert.match(queue, /MinHeight = 60/);
-  assert.match(queue, /Padding = new Thickness\(8, 10, 8, 10\)/);
-  assert.match(queue, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
-  assert.match(queue, /PaddingProperty, new Thickness\(0\)/);
-  assert.match(queue, /AutomationProperties.SetName\(row, song.Title/);
   assert.match(queue, /ReferenceEquals\(renderedQueue, queue\)/);
-  const selection = method('UpdateQueueSelection');
-  assert.match(selection, /is QueueSongRow oldRow/);
-  assert.match(selection, /oldRow.Title.Foreground =/);
-  assert.match(selection, /is QueueSongRow row/);
-  assert.match(selection, /row.Title.Foreground = Sage/);
-  assert.match(selection, /list.SelectedIndex = queueIndex/);
-  assert.match(source, /Tag: int index.*SelectTrack\(index, true\)/);
+  assert.match(queue, /renderedQueueState == state\) return/);
+  assert.match(queue, /FindIndex\(x => x.Current\)/);
+  assert.match(queue, /list.SelectedIndex = renderedSelection/);
+  assert.doesNotMatch(queue, /SongCell\(|CreateQueueSong\(/);
 });
 
 test('sidebar uses borderless navigation rather than default outlined buttons', () => {

@@ -35,4 +35,12 @@ data class ListeningSession(
     val repeatMode: Int = 0,
     val queueId: String = "",
     val sourceType: String = "playlist",
-)
+    /** Stable occurrence tokens survive in-session shuffle; legacy sessions use queue indices. */
+    val occurrenceIds: List<Int> = emptyList(),
+    /** Completed/left visits proven by the service's isPlaying evidence, not a queue prefix. */
+    val played: List<Int> = emptyList(),
+) {
+    val occurrences: List<Int> get() = occurrenceIds.takeIf { it.size == queue.size && it.distinct().size == it.size && it.all { token -> token >= 0 } }
+        ?: queue.indices.toList()
+    val playedIndices: List<Int> get() = played.mapNotNull { token -> occurrences.indexOf(token).takeIf { it >= 0 } }
+}
