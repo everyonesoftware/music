@@ -134,12 +134,8 @@ def publish(root, directory, repository, run=None):
     if existing_tag is not None and existing_tag != expected["sha"]:
         raise ValueError("Existing tag points at another commit; refusing to reuse its version.")
     if current is None:
-        notes = (f"Android alpha build {expected['version']}.\n\nCommit: {expected['sha']}\n"
-                 f"Git commit count / Android versionCode: {expected['count']}\n\n"
-                 "Install the signed APK. SHA-256 and release metadata are attached.\n"
-                 "Keep the same signing key for future updates. No offline downloads or Android Auto yet.")
         gh("release", "create", tag, "--repo", repository, "--target", expected["sha"], "--draft",
-           "--title", f"Music {expected['version']}", "--notes", notes)
+           "--title", f"Music {expected['version']}", "--notes", "")
         current = view()
     if current is None or not current["isDraft"] or current["targetCommitish"] != expected["sha"]:
         raise ValueError("The draft release does not target this exact commit.")

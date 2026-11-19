@@ -7,6 +7,15 @@ const directory = new URL('../.github/workflows/', import.meta.url);
 const read = name => readFileSync(new URL(name, directory), 'utf8');
 const triggers = text => '\n' + (text.split('\non:\n')[1]?.split('\npermissions:')[0] ?? '');
 
+test('new Android releases omit build and installation boilerplate', () => {
+  const publisher = readFileSync(new URL('../scripts/android-release.py', import.meta.url), 'utf8');
+  assert.match(publisher, /"--notes", ""/);
+  for (const text of ['Android alpha build', 'Git commit count / Android versionCode:',
+    'Install the signed APK.', 'Keep the same signing key', 'No offline downloads or Android Auto yet.']) {
+    assert.ok(!publisher.includes(text), text);
+  }
+});
+
 test('one workflow owns main pushes and pull requests without completion-triggered fan-out', () => {
   const files = readdirSync(directory).filter(name => /\.ya?ml$/.test(name));
   const mainPushes = files.filter(name => /\n  push:\n    branches: \[main\]/.test(triggers(read(name))));
