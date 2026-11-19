@@ -66,6 +66,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private val initialization: Job
     private var generation = 0L
     private var firstLibrarySetup = false
+    private var foreground = false
     private var installOperation: Job? = null
     private val installRequests = Channel<Intent>(Channel.RENDEZVOUS)
     val installIntents = installRequests.receiveAsFlow()
@@ -281,6 +282,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val credentials = graph.credentials.value ?: return
         val page = current.value
         if (page.connection != credentials.connection) return
+        graph.artworkCache.retryFailed(credentials)
         when (page.screen) {
             Screen.PLAYLISTS -> {
                 refreshCollection(CollectionKind.PLAYLISTS)
@@ -290,7 +292,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             Screen.ALL_ALBUMS -> loadAlbums()
             Screen.PLAYLIST -> if (!page.playlistLoading) page.selectedPlaylist?.let { loadPlaylistDetail(it) }
             Screen.ALBUM -> if (!page.albumLoading) page.selectedAlbum?.let { loadAlbumDetail(it.id) }
-            Screen.SEARCH -> if (page.searchQuery.isNotBlank()) loadSearch(page.searchQuery, retainResults = true)
+            Screen.SEARCH -> {
+                if (page.albumsError != null) loadAlbums()
+                if (page.searchQuery.isNotBlank()) loadSearch(page.searchQuery, retainResults = true)
+            }
             else -> Unit
         }
     }
@@ -365,13 +370,38 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     fun onForeground() {
+        foreground = true
         mediaOutput?.start()
         mediaOutput?.refresh()
         if (connectController) graph.updates.onForeground()
-        if (!current.value.booting && current.value.screen == Screen.PLAYLISTS) loadPlaylists()
+        recoverBrowsing(refreshLibrary = true)
     }
 
-    fun onBackground() { installOperation?.cancel(); mediaOutput?.stop() }
+    internal fun onNetworkRecovered() {
+        if (!foreground) return
+        recoverBrowsing()
+        if (connectController) graph.updates.coordinator.check(automatic = true)
+    }
+
+    private fun recoverBrowsing(refreshLibrary: Boolean = false) {
+        if (!foreground || current.value.booting || graph.networkPolicy.offline) return
+        val credentials = graph.credentials.value ?: return
+        val page = current.value
+        if (page.connection != credentials.connection) return
+        graph.artworkCache.retryFailed(credentials)
+        val failed = when (page.screen) {
+            Screen.PLAYLISTS -> refreshLibrary || page.playlistError != null || page.albumsError != null
+            Screen.ALL_PLAYLISTS -> page.playlistError != null
+            Screen.ALL_ALBUMS -> page.albumsError != null
+            Screen.PLAYLIST -> page.playlistDetailError != null
+            Screen.ALBUM -> page.albumError != null
+            Screen.SEARCH -> page.searchError != null || page.albumsError != null
+            else -> false
+        }
+        if (failed) refreshCurrentPage()
+    }
+
+    fun onBackground() { foreground = false; installOperation?.cancel(); mediaOutput?.stop() }
 
 
     override fun setOfflineSettings(settings: com.everyonesoftware.audio.data.OfflineSettings) {

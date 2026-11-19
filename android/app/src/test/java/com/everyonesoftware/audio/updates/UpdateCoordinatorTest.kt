@@ -52,6 +52,22 @@ class UpdateCoordinatorTest {
         updater.check(automatic = true); runCurrent()
         assertEquals(3, f.requests)
     }
+    @Test fun failedAutomaticCheckRetriesAfterOneMinuteInsteadOfOneDay() = runTest {
+        val f = Fixture(folder.newFolder()).apply { fetch = { error("private URI") } }
+        val updater = f.coordinator(this)
+        updater.check(automatic = true); runCurrent()
+        f.clock += 59_999L
+        updater.check(automatic = true); runCurrent()
+        assertEquals(1, f.requests)
+        f.clock++
+        f.fetch = { null }
+        updater.check(automatic = true); runCurrent()
+        assertEquals(2, f.requests)
+        assertEquals(UpdateStage.IDLE, updater.state.value.stage)
+        assertNull(updater.state.value.error)
+        updater.check(automatic = true); runCurrent()
+        assertEquals(2, f.requests)
+    }
     @Test fun disabledChecksNeverContactNetworkButManualStillWorks() = runTest {
         val f = Fixture(folder.newFolder())
         val updater = f.coordinator(this, UpdateUiState(automaticChecks = false))
@@ -71,6 +87,112 @@ class UpdateCoordinatorTest {
         restored.check(automatic = true); runCurrent()
         assertEquals(1, f.requests)
     }
+    @Test fun latestFailedCheckSurvivesRecreationWithoutShowingUpToDate() = runTest {
+        val f = Fixture(folder.newFolder())
+        val updater = f.coordinator(this)
+        updater.check(); runCurrent()
+        val successfulAt = updater.state.value.lastCheckedAt
+        f.clock++
+        f.fetch = { error("https://private.example/?token=secret") }
+        updater.check(); runCurrent()
+        val (saved, attempt) = f.persisted.last()
+        val restored = f.coordinator(this, saved, attempt)
+        assertEquals(UpdateStage.ERROR, restored.state.value.stage)
+        assertEquals(successfulAt, restored.state.value.lastCheckedAt)
+        assertNotNull(restored.state.value.error)
+        assertFalse(restored.state.value.error!!.contains("secret"))
+        f.clock += 60_000L
+        f.fetch = { null }
+        restored.check(automatic = true); runCurrent()
+        assertEquals(3, f.requests)
+        assertEquals(UpdateStage.IDLE, restored.state.value.stage)
+    }
+    @Test fun repeatedFailuresBackOffToFifteenMinutesAcrossRecreationAndSuccessResets() = runTest {
+        val f = Fixture(folder.newFolder()).apply { fetch = { error("offline") } }
+        var updater = f.coordinator(this)
+        updater.check(automatic = true); runCurrent()
+        for (delay in listOf(60_000L, 120_000L, 240_000L, 480_000L, 900_000L, 900_000L)) {
+            val (saved, attempt) = f.persisted.last()
+            updater = f.coordinator(this, saved, attempt)
+            val count = f.requests
+            f.clock += delay - 1
+            updater.check(automatic = true); runCurrent()
+            assertEquals("Retry must wait $delay ms", count, f.requests)
+            f.clock++
+            updater.check(automatic = true); runCurrent()
+            assertEquals(count + 1, f.requests)
+        }
+        f.fetch = { null }
+        updater.check(); runCurrent()
+        f.fetch = { error("offline") }
+        updater.check(); runCurrent()
+        val count = f.requests
+        f.clock += 60_000L
+        updater.check(automatic = true); runCurrent()
+        assertEquals(count + 1, f.requests)
+    }
+    @Test fun typedFailuresPersistSafeMessagesAndUseLongerBoundedCooldown() = runTest {
+        for (kind in listOf(UpdateFailureKind.RATE_LIMITED, UpdateFailureKind.INVALID_METADATA)) {
+            val f = Fixture(folder.newFolder()).apply { fetch = { throw UpdateException(kind) } }
+            val updater = f.coordinator(this)
+            updater.check(); runCurrent()
+            assertEquals(kind, updater.state.value.checkFailure)
+            assertEquals(kind.checkMessage, updater.state.value.error)
+            val (saved, attempt) = f.persisted.last()
+            val restored = f.coordinator(this, saved.copy(error = "https://user:secret@example.test"), attempt)
+            assertEquals(kind.checkMessage, restored.state.value.error)
+            f.clock += 899_999L
+            restored.check(automatic = true); runCurrent()
+            assertEquals(1, f.requests)
+            f.clock++
+            restored.check(automatic = true); runCurrent()
+            assertEquals(2, f.requests)
+            restored.check(); runCurrent()
+            assertEquals(3, f.requests)
+        }
+    }
+    @Test fun rateLimitDeadlineSurvivesRecreationAndManualChecksRemainExplicit() = runTest {
+        val f = Fixture(folder.newFolder()).apply {
+            fetch = { throw UpdateException(UpdateFailureKind.RATE_LIMITED, retryAfterMs = 3_600_000L) }
+        }
+        val updater = f.coordinator(this)
+        updater.check(automatic = true); runCurrent()
+        val (saved, attempt) = f.persisted.last()
+        val restored = f.coordinator(this, saved, attempt)
+        f.clock += 3_599_999L
+        restored.check(automatic = true); runCurrent()
+        assertEquals("Server cooldown must outlast the local fifteen-minute fallback", 1, f.requests)
+        f.clock++
+        f.fetch = { null }
+        restored.check(automatic = true); runCurrent()
+        assertEquals(2, f.requests)
+        restored.check(); runCurrent()
+        assertEquals(3, f.requests)
+    }
+    @Test fun failedManualChecksCannotEraseOrShortenAnOutstandingServerCooldown() = runTest {
+        val f = Fixture(folder.newFolder()).apply {
+            fetch = { throw UpdateException(UpdateFailureKind.RATE_LIMITED, retryAfterMs = 3_600_000L) }
+        }
+        val updater = f.coordinator(this)
+        updater.check(); runCurrent()
+        val deadline = updater.state.value.checkRetryAt
+        f.clock += 1000L
+        f.fetch = { throw UpdateException() }
+        updater.check(); runCurrent()
+        assertEquals(deadline, updater.state.value.checkRetryAt)
+        f.fetch = { throw UpdateException(UpdateFailureKind.RATE_LIMITED, retryAfterMs = 60_000L) }
+        updater.check(); runCurrent()
+        assertEquals(deadline, updater.state.value.checkRetryAt)
+        val (saved, attempt) = f.persisted.last()
+        val restored = f.coordinator(this, saved, attempt)
+        f.clock += 900_000L
+        restored.check(automatic = true); runCurrent()
+        assertEquals(3, f.requests)
+        f.fetch = { null }
+        restored.check(); runCurrent()
+        assertNull(restored.state.value.checkRetryAt)
+    }
+
     @Test fun checksCoalesceAndDoNotDiscardAvailableReleaseWhilePending() = runTest {
         val gate = CompletableDeferred<UpdateRelease?>()
         val f = Fixture(folder.newFolder()).apply { fetch = { gate.await() } }

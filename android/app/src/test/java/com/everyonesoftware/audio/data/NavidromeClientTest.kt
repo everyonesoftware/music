@@ -30,6 +30,94 @@ class NavidromeClientTest {
         throw AssertionError("Expected ${T::class.java.simpleName}")
     }
 
+    @Test fun playlistReadRecoversOnceFromAnInterruptedConnectionWithFreshAuthentication() = runBlocking {
+        MockWebServer().use { server ->
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val salts = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                salts.add(chain.request().url.queryParameter("s")!!)
+                if (attempts.incrementAndGet() == 1) throw IOException("Fixture interrupted connection")
+                chain.proceed(chain.request())
+            }.build()
+            server.enqueue(ok(",\"playlist\":{\"entry\":[{\"id\":\"song\",\"title\":\"Track\"}]}"))
+            val client = NavidromeClient(credentials(server.url("/").toString()), http, allowLocalHttp = true)
+            assertEquals("song", client.playlist("playlist").single().id)
+            assertEquals(2, attempts.get())
+            assertNotEquals(salts[0], salts[1])
+        }
+    }
+
+    @Test fun artworkReadRecoversOnceFromAnInterruptedConnection() = runBlocking {
+        MockWebServer().use { server ->
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor { chain ->
+                if (attempts.incrementAndGet() == 1) throw IOException("Fixture interrupted connection")
+                chain.proceed(chain.request())
+            }.build()
+            server.enqueue(MockResponse().setBody("fixture bytes"))
+            val client = NavidromeClient(credentials(server.url("/").toString()), http, allowLocalHttp = true)
+            assertArrayEquals("fixture bytes".toByteArray(), client.coverArt("cover"))
+            assertEquals(2, attempts.get())
+        }
+    }
+
+    @Test fun readRecoveryIsBoundedAndDoesNotReplayRatingsOrAuthenticationFailures() = runBlocking {
+        MockWebServer().use { server ->
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor {
+                attempts.incrementAndGet()
+                throw IOException("Fixture interrupted connection")
+            }.build()
+            val client = NavidromeClient(credentials(server.url("/").toString()), http, allowLocalHttp = true)
+            rejects<NavidromeException> { runBlocking { client.playlist("playlist") } }
+            assertEquals("Only one retry is allowed", 2, attempts.get())
+            attempts.set(0)
+            rejects<NavidromeException> { runBlocking { client.rateSong("song", 3) } }
+            assertEquals("A mutation must not be automatically replayed", 1, attempts.get())
+            server.enqueue(MockResponse().setResponseCode(401))
+            rejects<NavidromeException> { runBlocking { client(server).playlist("playlist") } }
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun interruptedResponseBodiesRecoverOnceForMetadataAndArtwork() = runBlocking {
+        for (artwork in listOf(false, true)) MockWebServer().use { server ->
+            val content = if (artwork) "fixture artwork bytes" else
+                """{"subsonic-response":{"status":"ok","playlist":{"entry":[]}}}"""
+            server.enqueue(MockResponse().setBody(content)
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY))
+            server.enqueue(MockResponse().setBody(content))
+            val failures = java.util.concurrent.CopyOnWriteArrayList<String>()
+            val http = OkHttpClient.Builder().eventListener(object : EventListener() {
+                override fun callFailed(call: Call, ioe: IOException) { failures.add(ioe.javaClass.simpleName) }
+            }).build()
+            val client = NavidromeClient(credentials(server.url("/music/").toString()), http, allowLocalHttp = true)
+            try {
+                if (artwork) assertArrayEquals(content.toByteArray(), client.coverArt("cover"))
+                else assertTrue(client.playlist("playlist").isEmpty())
+            } catch (error: NavidromeException) {
+                throw AssertionError("artwork=$artwork requests=${server.requestCount} failures=$failures", error)
+            }
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun cancellationDuringReadRecoveryDoesNotSendAnotherRequest() = runBlocking {
+        MockWebServer().use { server ->
+            val entered = CountDownLatch(1)
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            val http = OkHttpClient.Builder().addInterceptor {
+                attempts.incrementAndGet(); entered.countDown()
+                throw IOException("Fixture interrupted connection")
+            }.build()
+            val client = NavidromeClient(credentials(server.url("/").toString()), http, allowLocalHttp = true)
+            val reading = async { client.playlist("playlist") }
+            assertTrue(withContext(Dispatchers.IO) { entered.await(2, TimeUnit.SECONDS) })
+            reading.cancelAndJoin()
+            assertEquals(1, attempts.get())
+        }
+    }
+
     @Test fun baseUrlPreservesReverseProxyPath() {
         assertEquals("https://example.com/navidrome/", NavidromeClient.validateBaseUrl("https://example.com/navidrome"))
     }
@@ -357,6 +445,8 @@ class NavidromeClientTest {
             assertFalse(transport.toString().contains("private"))
             assertFalse(transport.toString().contains("http"))
 
+            server.enqueue(MockResponse().setBody("private body").setHeader("Content-Length", 100)
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END))
             server.enqueue(MockResponse().setBody("private body").setHeader("Content-Length", 100)
                 .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END))
             val body = rejects<NavidromeException> { runBlocking { client(server).coverArt("private-art") } }

@@ -40,7 +40,7 @@ data class UpdateRelease(
 )
 
 /** Deliberately carries neither a URL nor an underlying transport/parser exception. */
-class UpdateException : IOException("Update unavailable. Please try again.")
+class UpdateException(val kind: UpdateFailureKind = UpdateFailureKind.TRANSIENT, val retryAfterMs: Long? = null) : IOException("Update unavailable. Please try again.")
 
 /** JVM-only seam: canonical URLs are still validated, then transported to this exact loopback origin. */
 internal data class UpdateTestConfig(val origin: HttpUrl)
@@ -219,6 +219,11 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                         FetchResult<T>(next = next)
                     }
                     else -> {
+                        if (response.code == 429 || (response.code == 403 &&
+                                (response.header("X-RateLimit-Remaining") == "0" || response.header("Retry-After") != null))) {
+                            throw UpdateException(UpdateFailureKind.RATE_LIMITED, rateLimitDelay(response))
+                        }
+                        if (response.code in 500..599 || response.code == 408) throw UpdateException(UpdateFailureKind.TRANSIENT)
                         check(response.code == 200)
                         check(response.header("Content-Encoding").let { it == null || it.equals("identity", true) })
                         FetchResult(value = consume(response))
@@ -229,6 +234,21 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
             url = requireNotNull(result.next)
         }
         error("Redirect limit")
+    }
+
+    private fun rateLimitDelay(response: Response): Long? {
+        val now = response.receivedResponseAtMillis
+        val retryAfter = response.header("Retry-After")?.let { value ->
+            value.toLongOrNull()?.takeIf { it >= 0 }?.coerceAtMost(86_400L)?.times(1000L)
+                ?: runCatching {
+                    (java.time.ZonedDateTime.parse(value, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME)
+                        .toInstant().toEpochMilli() - now).coerceIn(0L, 86_400_000L)
+                }.getOrNull()
+        }
+        val reset = response.header("X-RateLimit-Reset")?.toLongOrNull()?.takeIf { it >= 0 }?.let {
+            (it.coerceAtMost(now / 1000L + 86_400L) * 1000L - now).coerceIn(0L, 86_400_000L)
+        }
+        return listOfNotNull(retryAfter, reset).maxOrNull()
     }
 
     private fun checkAllowed(url: HttpUrl, api: Boolean) {
@@ -266,9 +286,12 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         block()
     } catch (cancelled: CancellationException) {
         throw cancelled
-    } catch (_: Exception) {
+    } catch (failure: UpdateException) {
         currentCoroutineContext().ensureActive()
-        throw UpdateException()
+        throw failure
+    } catch (failure: Exception) {
+        currentCoroutineContext().ensureActive()
+        throw UpdateException(if (failure is IOException) UpdateFailureKind.TRANSIENT else UpdateFailureKind.INVALID_METADATA)
     }
 
     private data class FetchResult<T>(val value: T? = null, val next: HttpUrl? = null)

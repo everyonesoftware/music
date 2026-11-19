@@ -28,11 +28,20 @@ class UpdateManager(context: Context, scope: CoroutineScope, private val client:
         verify = { file, release -> installer.verify(file, release) },
         initialState = UpdateUiState(automaticChecks = preferences.getBoolean("automatic", true),
             lastCheckedAt = preferences.getLong("checked_at", 0L).takeIf { it > 0 }, release = restored,
-            installPermissionRequired = !installer.canInstall()),
+            installPermissionRequired = !installer.canInstall(),
+            checkOutcome = UpdateCheckOutcome.entries.firstOrNull { it.name == preferences.getString("check_outcome", null) }
+                ?: UpdateCheckOutcome.NEVER,
+            consecutiveCheckFailures = preferences.getInt("check_failures", 0).coerceIn(0, 5),
+            checkRetryAt = preferences.getLong("check_retry_at", 0L).takeIf { it > 0 },
+            checkFailure = UpdateFailureKind.entries.firstOrNull { it.name == preferences.getString("check_failure", null) }),
         initialLastAttemptAt = preferences.getLong("attempt_at", 0L).takeIf { it > 0 },
         persist = { state, lastAttempt ->
             preferences.edit().putBoolean("automatic", state.automaticChecks)
                 .putLong("checked_at", state.lastCheckedAt ?: 0L).putLong("attempt_at", lastAttempt ?: 0L)
+                .putString("check_outcome", state.checkOutcome.name)
+                .putInt("check_failures", state.consecutiveCheckFailures.coerceIn(0, 5))
+                .putLong("check_retry_at", state.checkRetryAt ?: 0L)
+                .putString("check_failure", state.checkFailure?.name)
                 .putString("release", state.release?.let(::encodeRelease)).apply()
         })
     val state = coordinator.state

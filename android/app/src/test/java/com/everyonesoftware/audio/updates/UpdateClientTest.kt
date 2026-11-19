@@ -38,6 +38,36 @@ class UpdateClientTest {
     }
     private fun temporary() = File.createTempFile("music-update-", ".apk").also { it.delete() }
 
+    @Test fun rateLimitsPreserveOnlyBoundedRetryDelayNotRawHeaders() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "3600"))
+            assertEquals(3_600_000L, failure { client(server).latest(1) }.retryAfterMs)
+            server.enqueue(MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "0")
+                .setHeader("X-RateLimit-Reset", (System.currentTimeMillis() / 1000 + 3600).toString()))
+            val delay = failure { client(server).latest(1) }.retryAfterMs!!
+            assertTrue(delay in 3_590_000L..3_600_000L)
+            server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "private-invalid-header"))
+            assertNull(failure { client(server).latest(1) }.retryAfterMs)
+        }
+    }
+
+    @Test fun distinguishesRateLimitsTransientFailuresAndInvalidMetadataWithoutLeakingResponse() = runBlocking<Unit> {
+        val responses = listOf(
+            MockResponse().setResponseCode(429) to UpdateFailureKind.RATE_LIMITED,
+            MockResponse().setResponseCode(403).setHeader("X-RateLimit-Remaining", "0") to UpdateFailureKind.RATE_LIMITED,
+            MockResponse().setResponseCode(403).setHeader("Retry-After", "60") to UpdateFailureKind.RATE_LIMITED,
+            MockResponse().setResponseCode(503) to UpdateFailureKind.TRANSIENT,
+            MockResponse().setResponseCode(404) to UpdateFailureKind.INVALID_METADATA,
+            response("{private-invalid-json") to UpdateFailureKind.INVALID_METADATA,
+        )
+        for ((reply, expected) in responses) {
+            MockWebServer().use { server ->
+                server.enqueue(reply.setHeader("X-Private", "https://user:secret@example.test"))
+                assertEquals(expected, failure { client(server).latest(1) }.kind)
+            }
+        }
+    }
+
     @Test fun selectsHighestAndroidVersionNotPublicationOrderOrOtherPlatform() = runBlocking<Unit> {
         MockWebServer().use { server ->
             val windows = item(80).replace("Music-0.1.80.apk", "Music-0.1.80.zip")

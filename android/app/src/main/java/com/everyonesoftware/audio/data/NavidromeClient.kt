@@ -1,6 +1,9 @@
 package com.everyonesoftware.audio.data
 
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.serialization.json.*
 import okhttp3.*
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -11,20 +14,21 @@ import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resumeWithException
 
 /** No cause: transport exceptions often contain authenticated URLs. */
-class NavidromeException(message: String) : IOException(message)
+class NavidromeException(message: String, internal val retryableTransport: Boolean = false) : IOException(message)
 
 class NavidromeClient(
     private val credentials: Credentials,
     http: OkHttpClient = secureClient(),
     allowLocalHttp: Boolean = false,
-    networkPolicy: MusicNetworkPolicy? = null,
+    private val networkPolicy: MusicNetworkPolicy? = null,
 ) {
     private val base = validateBaseUrl(credentials.connection.baseUrl, allowLocalHttp).toHttpUrlOrNull()!!
     private val http = http.newBuilder().followRedirects(false).followSslRedirects(false)
         .cache(null).retryOnConnectionFailure(false)
         .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
         .callTimeout(45, TimeUnit.SECONDS).build().let { networkPolicy?.guard(it) ?: it }
-    private val artworkHttp = this.http.newBuilder().callTimeout(10, TimeUnit.SECONDS).build()
+    private val readHttp = this.http.newBuilder().retryOnConnectionFailure(true).build()
+    private val artworkHttp = readHttp.newBuilder().callTimeout(10, TimeUnit.SECONDS).build()
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun ping() { api("ping") }
@@ -102,7 +106,9 @@ class NavidromeClient(
     fun coverArtUri(id: String): String = authenticatedMediaUri(endpoint("getCoverArt").addQueryParameter("id", id).build().toString())
 
     /** Bounded authenticated bytes; signed URLs never leave this download operation. */
-    suspend fun coverArt(id: String): ByteArray {
+    suspend fun coverArt(id: String): ByteArray = readWithRecovery { coverArtOnce(id) }
+
+    private suspend fun coverArtOnce(id: String): ByteArray {
         val request = Request.Builder().url(authenticated(endpoint("getCoverArt")
             .addQueryParameter("id", id).addQueryParameter("size", "1024")).build())
             .header("Cache-Control", "no-store").build()
@@ -113,7 +119,7 @@ class NavidromeClient(
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
                     if (continuation.isActive) continuation.resumeWithException(
-                        NavidromeException("Cannot reach the music server. Check your connection and retry."))
+                        transportFailure(e))
                 }
                 override fun onResponse(call: Call, response: Response) {
                     val result = runCatching {
@@ -131,6 +137,7 @@ class NavidromeClient(
                                 source.readByteArray()
                             }
                         } catch (safe: NavidromeException) { throw safe }
+                        catch (transport: IOException) { throw transportFailure(transport) }
                         catch (_: Exception) { throw invalidResponse() }
                     }
                     if (continuation.isActive) continuation.resumeWith(result)
@@ -147,18 +154,33 @@ class NavidromeClient(
             .addQueryParameter("t", token).addQueryParameter("s", salt)
             .addQueryParameter("v", "1.16.1").addQueryParameter("c", "EveryoneMusic").addQueryParameter("f", "json")
     }
-    private suspend fun api(name: String, vararg parameters: Pair<String, String>): JsonObject {
+    /** Replay only known reads, once. Never reset the streaming client or replay a mutation. */
+    private suspend fun <T> readWithRecovery(enabled: Boolean = true, read: suspend () -> T): T {
+        try { return read() }
+        catch (error: NavidromeException) {
+            if (!enabled || !error.retryableTransport || networkPolicy?.offline == true) throw error
+            currentCoroutineContext().ensureActive()
+            delay(250)
+            if (networkPolicy?.offline == true) throw error
+            return read()
+        }
+    }
+
+    private suspend fun api(name: String, vararg parameters: Pair<String, String>): JsonObject =
+        readWithRecovery(name in READ_APIS) { apiOnce(name, parameters) }
+
+    private suspend fun apiOnce(name: String, parameters: Array<out Pair<String, String>>): JsonObject {
         val builder = endpoint(name)
         parameters.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         val request = Request.Builder().url(authenticated(builder).build()).header("Accept", "application/json")
             .header("Cache-Control", "no-store").build()
         // Cancellation stays connected until the bounded body has been completely consumed.
         return suspendCancellableCoroutine { continuation ->
-            val call = http.newCall(request)
+            val call = (if (name in READ_APIS) readHttp else http).newCall(request)
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    if (continuation.isActive) continuation.resumeWithException(NavidromeException("Cannot reach the music server. Check your connection and retry."))
+                    if (continuation.isActive) continuation.resumeWithException(transportFailure(e))
                 }
                 override fun onResponse(call: Call, response: Response) {
                     val result = runCatching { response.use { parse(it) } }
@@ -189,6 +211,7 @@ class NavidromeClient(
             }
             return root
         } catch (safe: NavidromeException) { throw safe }
+        catch (transport: IOException) { throw transportFailure(transport) }
         catch (_: Exception) { throw invalidResponse() }
     }
     private fun JsonObject.obj(key: String): JsonObject = this[key]?.let {
@@ -211,6 +234,10 @@ class NavidromeClient(
         else -> throw invalidResponse()
     }
     companion object {
+        private val READ_APIS = setOf("ping", "getMusicFolders", "getPlaylists", "search3", "getAlbumList2", "getAlbum", "getPlaylist", "getSong")
+        private fun transportFailure(error: IOException) = NavidromeException(
+            "Cannot reach the music server. Check your connection and retry.",
+            retryableTransport = error !is javax.net.ssl.SSLHandshakeException && error !is javax.net.ssl.SSLPeerUnverifiedException)
         internal const val MAX_COVER_ART_BYTES = 2L * 1024 * 1024
         private const val MAX_RESPONSE = 8L * 1024 * 1024
         private val random = SecureRandom()

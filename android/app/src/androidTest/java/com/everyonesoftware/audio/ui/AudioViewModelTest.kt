@@ -16,6 +16,218 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AudioViewModelTest {
+    @Test fun foregroundRecoversFailedSearchAlbumCatalogWithBlankQuery() = runBlocking {
+        assertSearchAlbumRecovery(network = false, query = "   ")
+    }
+
+    @Test fun foregroundRecoversFailedSearchAlbumCatalogWithSongQuery() = runBlocking {
+        assertSearchAlbumRecovery(network = false, query = "  artist  ")
+    }
+
+    @Test fun networkRecoversFailedSearchAlbumCatalogWithBlankQuery() = runBlocking {
+        assertSearchAlbumRecovery(network = true, query = "   ")
+    }
+
+    @Test fun networkRecoversFailedSearchAlbumCatalogWithSongQuery() = runBlocking {
+        assertSearchAlbumRecovery(network = true, query = "  artist  ")
+    }
+
+    private suspend fun assertSearchAlbumRecovery(network: Boolean, query: String) {
+        withAlbumFixture { model, graph, server ->
+            val failAlbums = java.util.concurrent.atomic.AtomicBoolean(false)
+            val albumRequests = java.util.concurrent.atomic.AtomicInteger()
+            val songRequests = java.util.concurrent.atomic.AtomicInteger()
+            val entered = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            val recovering = java.util.concurrent.atomic.AtomicBoolean(false)
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                    request.requestUrl!!.encodedPath.endsWith("getAlbumList2.view") -> {
+                        albumRequests.incrementAndGet()
+                        if (failAlbums.get()) MockResponse().setResponseCode(503)
+                        else {
+                            if (recovering.get()) {
+                                entered.countDown()
+                                check(release.await(10, java.util.concurrent.TimeUnit.SECONDS))
+                            }
+                            ok(""", "albumList2":{"album":[{"id":"recovered","name":"Recovered album"}]}""")
+                        }
+                    }
+                    request.requestUrl!!.encodedPath.endsWith("search3.view") -> {
+                        songRequests.incrementAndGet()
+                        assertEquals("artist", request.requestUrl!!.queryParameter("query"))
+                        ok(""", "searchResult3":{"song":[{"id":"result","title":"Result"}]}""")
+                    }
+                    else -> MockResponse().setResponseCode(404)
+                }
+            }
+            try {
+                failAlbums.set(true)
+                onMain { model.showScreen(Screen.SEARCH); model.search(query) }
+                until { !model.state.value.albumsRefreshing && model.state.value.albumsError != null && !model.state.value.searchLoading }
+                val before = model.state.value
+                assertEquals("a", before.albums.single().id)
+                assertNull(before.searchError)
+                val session = graph.session.value
+                val storage = graph.songCache.state.value
+                albumRequests.set(0)
+                songRequests.set(0)
+                failAlbums.set(false)
+                recovering.set(true)
+                onMain { model.onBackground(); model.onNetworkRecovered() }
+                Thread.sleep(100)
+                assertEquals(0, albumRequests.get())
+                graph.networkPolicy.offline = true
+                try {
+                    onMain { model.onForeground(); model.onNetworkRecovered() }
+                    Thread.sleep(100)
+                    assertEquals(0, albumRequests.get())
+                    assertEquals(0, songRequests.get())
+                } finally { graph.networkPolicy.offline = false }
+                onMain {
+                    if (network) { model.onNetworkRecovered(); model.onNetworkRecovered() }
+                    else { model.onBackground(); model.onForeground(); model.onForeground() }
+                }
+                assertTrue("Search must retry its failed album catalog for query '$query'", entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                assertTrue(model.state.value.albumsRefreshing)
+                assertEquals(before.albums, model.state.value.albums)
+                assertEquals(before.searchSongs, model.state.value.searchSongs)
+                release.countDown()
+                until { !model.state.value.albumsRefreshing && !model.state.value.searchLoading }
+                assertNull(model.state.value.albumsError)
+                assertEquals("recovered", model.state.value.albums.single().id)
+                assertEquals(1, albumRequests.get())
+                assertEquals(if (query.isBlank()) 0 else 1, songRequests.get())
+                assertEquals(query, model.state.value.searchQuery)
+                assertEquals(before.searchSongs, model.state.value.searchSongs)
+                assertEquals(before.screen, model.state.value.screen)
+                assertEquals(before.backDestination, model.state.value.backDestination)
+                assertEquals(session, graph.session.value)
+                assertEquals(session, graph.store.session("vm-browse-fixture"))
+                assertEquals(storage, graph.songCache.state.value)
+                assertFalse(model.state.value.playing)
+                onMain { model.onBackground(); model.onForeground(); model.onNetworkRecovered() }
+                Thread.sleep(100)
+                assertEquals("Healthy Search catalog must not refetch on resume", 1, albumRequests.get())
+                assertEquals(if (query.isBlank()) 0 else 1, songRequests.get())
+                onMain { model.refreshCurrentPage(); model.refreshCurrentPage() }
+                until { !model.state.value.searchLoading }
+                assertEquals("Song-only explicit refresh must not refetch a healthy catalog", 1, albumRequests.get())
+                assertEquals(if (query.isBlank()) 0 else 2, songRequests.get())
+            } finally { release.countDown() }
+        }
+    }
+
+    @Test fun foregroundRecoversFailedDetailsWithoutChangingNavigationPlaybackOrDownloads() = runBlocking {
+        for (album in listOf(false, true)) withAlbumFixture { model, graph, server ->
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = if (album)
+                    ok(""", "album":{"id":"a","name":"Album","song":[{"id":"remote","title":"Track"}]}""")
+                else ok(""", "playlist":{"entry":[{"id":"remote","title":"Track"}]}""")
+            }
+            onMain { if (album) model.openAlbum("a") else model.openPlaylist("p") }
+            fun songs() = if (album) model.state.value.albumSongs else model.state.value.playlistSongs
+            fun loading() = if (album) model.state.value.albumLoading else model.state.value.playlistLoading
+            fun error() = if (album) model.state.value.albumError else model.state.value.playlistDetailError
+            until { !loading() && songs().isNotEmpty() }
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { model.refreshCurrentPage() }
+            until { !loading() && error() != null }
+            val before = model.state.value
+            val session = graph.session.value
+            val storage = graph.songCache.state.value
+            val requests = java.util.concurrent.atomic.AtomicInteger()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    requests.incrementAndGet()
+                    return if (album) ok(""", "album":{"id":"a","name":"Recovered","song":[{"id":"recovered","title":"Recovered"}]}""")
+                    else ok(""", "playlist":{"entry":[{"id":"recovered","title":"Recovered"}]}""")
+                }
+            }
+            onMain { model.onBackground(); model.onForeground(); model.onForeground() }
+            until { !loading() && error() == null && songs().singleOrNull()?.id == "recovered" }
+            assertEquals(1, requests.get())
+            assertEquals(before.screen, model.state.value.screen)
+            assertEquals(before.backDestination, model.state.value.backDestination)
+            assertEquals(session, graph.session.value)
+            assertEquals(session, graph.store.session("vm-browse-fixture"))
+            assertEquals(storage, graph.songCache.state.value)
+            assertFalse(model.state.value.playing)
+            onMain { model.onBackground(); model.onForeground() }
+            Thread.sleep(100)
+            assertEquals("Healthy details must not refetch on every resume", 1, requests.get())
+        }
+    }
+
+    @Test fun foregroundInvalidatesFailedArtworkCooldownSoVisibleArtworkCanLoadAgain() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            onMain { model.showScreen(Screen.PLAYER) }
+            val credentials = graph.credentials.value!!
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            assertNull(graph.artworkCache.load(credentials, "resume-cover"))
+            val revision = graph.artworkCache.state.value
+            val bitmap = android.graphics.Bitmap.createBitmap(2, 2, android.graphics.Bitmap.Config.ARGB_8888)
+            val image = java.io.ByteArrayOutputStream().use { output ->
+                try { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); output.toByteArray() }
+                finally { bitmap.recycle() }
+            }
+            val requests = java.util.concurrent.atomic.AtomicInteger()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    requests.incrementAndGet()
+                    return MockResponse().setBody(okio.Buffer().write(image))
+                }
+            }
+            val session = graph.session.value
+            onMain { model.onBackground(); model.onForeground() }
+            until { model.state.value.artworkRevision > revision }
+            onMain { repeat(10) { model.artworkUrl("resume-cover") } }
+            until { graph.artworkCache.cachedUri(credentials, "resume-cover") != null }
+            assertEquals(1, requests.get())
+            assertEquals(session, graph.session.value)
+        }
+    }
+
+    @Test fun networkRecoveryRetriesVisibleFailureOnlyWhileForegroundAndOnline() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            onMain { model.onForeground() }
+            until { !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) = MockResponse().setResponseCode(503)
+            }
+            onMain { model.openPlaylist("p") }
+            until { !model.state.value.playlistLoading && model.state.value.playlistDetailError != null }
+            val session = graph.session.value
+            val requests = java.util.concurrent.atomic.AtomicInteger()
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                    requests.incrementAndGet()
+                    return ok(""", "playlist":{"entry":[{"id":"recovered","title":"Recovered"}]}""")
+                }
+            }
+            onMain { model.onBackground(); model.onNetworkRecovered() }
+            Thread.sleep(100)
+            assertEquals(0, requests.get())
+            graph.networkPolicy.offline = true
+            try {
+                onMain { model.onForeground(); model.onNetworkRecovered() }
+                Thread.sleep(100)
+                assertEquals(0, requests.get())
+            } finally { graph.networkPolicy.offline = false }
+            onMain { model.onNetworkRecovered(); model.onNetworkRecovered() }
+            until { !model.state.value.playlistLoading && model.state.value.playlistSongs.singleOrNull()?.id == "recovered" }
+            assertEquals(1, requests.get())
+            assertNull(model.state.value.playlistDetailError)
+            assertEquals(session, graph.session.value)
+        }
+    }
+
     @Test fun currentPageDetailRefreshRetainsSongsCoalescesRequestsAndPreservesPlaybackAndDownloads() = runBlocking {
         for (album in listOf(false, true)) withBrowseFixture { model, graph, server ->
             until { !model.state.value.albumsRefreshing }

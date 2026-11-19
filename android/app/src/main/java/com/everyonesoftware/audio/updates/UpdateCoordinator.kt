@@ -30,8 +30,14 @@ class UpdateCoordinator(
     private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val initialRelease = initialState.release?.takeIf { it.count > installedCode }
+    private val unfinishedCheck = initialState.checkOutcome in listOf(UpdateCheckOutcome.CHECKING, UpdateCheckOutcome.FAILED) ||
+        (initialState.checkOutcome == UpdateCheckOutcome.NEVER && initialLastAttemptAt != null &&
+            (initialState.lastCheckedAt == null || initialLastAttemptAt > initialState.lastCheckedAt))
     private val current = MutableStateFlow(initialState.copy(release = initialRelease,
-        stage = if (initialRelease != null) UpdateStage.AVAILABLE else UpdateStage.IDLE, error = null))
+        stage = when { unfinishedCheck -> UpdateStage.ERROR; initialRelease != null -> UpdateStage.AVAILABLE; else -> UpdateStage.IDLE },
+        checkOutcome = if (unfinishedCheck) UpdateCheckOutcome.FAILED else initialState.checkOutcome,
+        checkFailure = if (unfinishedCheck) initialState.checkFailure ?: UpdateFailureKind.TRANSIENT else null,
+        error = if (unfinishedCheck) (initialState.checkFailure ?: UpdateFailureKind.TRANSIENT).checkMessage else null))
     val state = current.asStateFlow()
     private var request: Job? = null
     private var automaticRequest = false
@@ -42,26 +48,43 @@ class UpdateCoordinator(
     fun check(automatic: Boolean = false): Job? {
         if (installationOpen || request?.isCompleted == false || current.value.stage in listOf(UpdateStage.DOWNLOADING, UpdateStage.VERIFYING)) return request
         val time = now()
-        if (automatic && (!current.value.automaticChecks || lastAttemptAt?.let { time >= it && time - it < DAY_MS } == true)) return null
+        val failed = current.value.checkOutcome == UpdateCheckOutcome.FAILED
+        val interval = if (failed) retryDelay() else DAY_MS
+        val serverCooldown = failed && current.value.checkRetryAt?.let { it > time && it - time <= DAY_MS } == true
+        if (automatic && (!current.value.automaticChecks || serverCooldown ||
+                lastAttemptAt?.let { time >= it && time - it < interval } == true)) return null
         val ticket = ++generation
         val before = current.value
         lastAttemptAt = time
         automaticRequest = automatic
-        current.update { it.copy(stage = UpdateStage.CHECKING, error = null) }
+        current.update { it.copy(stage = UpdateStage.CHECKING, error = null, checkOutcome = UpdateCheckOutcome.CHECKING) }
         save()
         request = scope.launch {
             try {
                 val found = latest(installedCode)?.takeIf { it.count > installedCode }
                 if (ticket == generation) {
                     current.update { it.copy(release = found, lastCheckedAt = now(), error = null,
+                        checkOutcome = UpdateCheckOutcome.SUCCESS, checkFailure = null, consecutiveCheckFailures = 0, checkRetryAt = null,
                         downloadedBytes = if (found == before.release && before.stage == UpdateStage.READY) before.downloadedBytes else 0,
                         stage = when { found == null -> UpdateStage.IDLE; found == before.release && before.stage == UpdateStage.READY -> UpdateStage.READY; else -> UpdateStage.AVAILABLE }) }
                     save()
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
-                if (ticket == generation) current.update { it.copy(stage = if (before.stage == UpdateStage.READY) UpdateStage.READY else UpdateStage.ERROR,
-                    error = "Unable to check for updates. Check your connection and try again.") }
+            catch (failure: Exception) {
+                if (ticket == generation) {
+                    val kind = (failure as? UpdateException)?.kind ?: UpdateFailureKind.TRANSIENT
+                    val failedAt = now()
+                    val retryAt = listOfNotNull(
+                        before.checkRetryAt?.takeIf { it > failedAt },
+                        (failure as? UpdateException)?.retryAfterMs?.let { failedAt + it.coerceIn(0L, DAY_MS) },
+                    ).maxOrNull()
+                    current.update { it.copy(stage = if (before.stage == UpdateStage.READY) UpdateStage.READY else UpdateStage.ERROR,
+                        consecutiveCheckFailures = before.consecutiveCheckFailures.coerceIn(0, 4) + 1,
+                        checkOutcome = UpdateCheckOutcome.FAILED, checkFailure = kind,
+                        checkRetryAt = retryAt,
+                        error = kind.checkMessage) }
+                    save()
+                }
             } finally {
                 if (ticket == generation && current.value.stage == UpdateStage.CHECKING) current.value = before.copy(automaticChecks = current.value.automaticChecks)
             }
@@ -151,7 +174,16 @@ class UpdateCoordinator(
         current.update { it.copy(stage = UpdateStage.ERROR,
             error = "Unable to open the installer. Recheck the download and try again.") }
     }
+    private fun retryDelay(): Long {
+        if (current.value.checkFailure in listOf(UpdateFailureKind.RATE_LIMITED, UpdateFailureKind.INVALID_METADATA)) return 15 * RETRY_MS
+        return (RETRY_MS * (1L shl (current.value.consecutiveCheckFailures.coerceIn(1, 5) - 1)))
+            .coerceAtMost(15 * RETRY_MS)
+    }
+
     private fun save() { persist(current.value, lastAttemptAt) }
 
-    private companion object { const val DAY_MS = 86_400_000L }
+    private companion object {
+        const val DAY_MS = 86_400_000L
+        const val RETRY_MS = 60_000L
+    }
 }

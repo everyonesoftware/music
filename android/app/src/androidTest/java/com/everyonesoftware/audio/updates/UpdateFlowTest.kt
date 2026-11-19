@@ -182,6 +182,34 @@ class UpdateFlowTest {
         assertUnauthenticated()
     }
 
+    @Test fun failedCheckAfterSuccessRestoresErrorAndServerCooldownWithoutTouchingPlayback() = runBlocking {
+        configure(BuildConfig.VERSION_CODE, bytes)
+        val successful = withContext(Dispatchers.Main) { graph.updates.coordinator.check() }
+        successful!!.join()
+        val checkedAt = graph.updates.state.value.lastCheckedAt
+        assertNotNull(checkedAt)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                requests.add(request)
+                return MockResponse().setResponseCode(429).setHeader("Retry-After", "3600")
+                    .setBody("private server details must never be persisted")
+            }
+        }
+        val failed = withContext(Dispatchers.Main) { graph.updates.coordinator.check() }
+        failed!!.join()
+        val restored = newManager()
+        assertEquals(UpdateStage.ERROR, restored.state.value.stage)
+        assertEquals(UpdateCheckOutcome.FAILED, restored.state.value.checkOutcome)
+        assertEquals(UpdateFailureKind.RATE_LIMITED.checkMessage, restored.state.value.error)
+        assertEquals(checkedAt, restored.state.value.lastCheckedAt)
+        assertTrue(restored.state.value.checkRetryAt!! > System.currentTimeMillis() + 3_500_000L)
+        val count = requests.size
+        onMain { restored.onForeground() }
+        assertEquals(count, requests.size)
+        assertPreserved()
+        assertUnauthenticated()
+    }
+
     @Test fun duplicateChecksShareOneRequestAndAutomaticChecksHonorCachedAttempt() = runBlocking {
         val gate = CountDownLatch(1)
         releaseGate = gate

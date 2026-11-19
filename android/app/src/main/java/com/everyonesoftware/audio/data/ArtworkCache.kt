@@ -22,6 +22,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -62,7 +63,7 @@ class ArtworkCache(
     val state = mutable.asStateFlow()
     private val errors = MutableStateFlow<String?>(null)
     val error = errors.asStateFlow()
-    private fun changed() { mutable.value = mutable.value + 1 }
+    private fun changed() { mutable.update { it + 1 } }
     private fun allowed(credentials: Credentials, epoch: Long = generation) =
         epoch == generation && credentials == activeCredentials() && credentials.connection.id !in removed
     private fun safeId(id: String) = id.isNotBlank() && id.length <= 4096 &&
@@ -71,6 +72,14 @@ class ArtworkCache(
     fun cachedUri(credentials: Credentials, id: String): String? {
         if (credentials != activeCredentials() || !safeId(id)) return null
         return resolved[key(credentials.connection, id)]
+    }
+
+    /** Foreground/reconnect invalidation is memory-only; visible consumers re-admit their covers. */
+    fun retryFailed(credentials: Credentials) {
+        if (!allowed(credentials) || networkPolicy.offline || failedUntil.isEmpty()) return
+        failedUntil.clear()
+        errors.value = null
+        changed()
     }
     private fun resolve(key: String) {
         val uri = Uri.fromFile(File(directory, "$key.image")).toString()
@@ -97,6 +106,7 @@ class ArtworkCache(
                             caller.ensureActive()
                             if (!allowed(credentials, epoch) || networkPolicy.offline) return@synchronized null
                             store.put(credentials.connection, id, bytes)
+                            failedUntil.remove(key)
                             resolved.keys.retainAll(store.keys())
                             resolve(key)
                             errors.value = null
