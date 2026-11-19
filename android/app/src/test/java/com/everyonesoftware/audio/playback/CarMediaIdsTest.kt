@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CarMediaIdsTest {
+    @Test fun albumIdsAreCanonicalConnectionScopedCollections() {
+        assertEquals(CarMediaIds.Item("album", "c", "p"), CarMediaIds.parse("audio:album:Yw:cA"))
+        assertNull(CarMediaIds.parse("audio:album:Yw==:cA"))
+        assertNull(CarMediaIds.parse("audio:album:Yw:cA:0"))
+    }
+
+    @Test fun albumActionsAndOccurrencesRoundTripWithoutPlaylistNamespaceCollisions() {
+        assertEquals(CarMediaIds.Item("albumplay", "c", "p"), CarMediaIds.parse(CarMediaIds.albumPlay("c", "p")))
+        assertEquals(CarMediaIds.Item("albumshuffle", "c", "p"), CarMediaIds.parse(CarMediaIds.albumShuffle("c", "p")))
+        val track = CarMediaIds.albumTrack("c", "p", 2, "song:雨")
+        assertEquals(CarMediaIds.Item("albumtrack", "c", "p", 2, "song:雨"), CarMediaIds.parse(track))
+        assertNotEquals(track, CarMediaIds.track("c", "p", 2, "song:雨"))
+        assertNotEquals(track, CarMediaIds.albumTrack("c", "p", 0, "song:雨"))
+        for (id in listOf(track.replace(":2:", ":02:"), track.replace(":2:", ":-1:"), track + ":extra",
+            "audio:albumplay:Yw==:cA", "audio:albumshuffle:Yw:cA:0", "audio:albumtrack:Yw:cA:0")) assertNull(CarMediaIds.parse(id))
+    }
+
     @Test fun opaqueIdsPreserveUnicodeAndPunctuationExactly() {
         val connection = "connection: / 雨"
         val playlist = "playlist/one:two"

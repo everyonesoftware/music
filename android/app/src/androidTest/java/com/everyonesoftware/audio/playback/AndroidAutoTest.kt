@@ -54,11 +54,14 @@ class AndroidAutoTest {
     @Volatile private var otherPlaylistGate: java.util.concurrent.CountDownLatch? = null
     private val otherPlaylistStarted = java.util.concurrent.CountDownLatch(1)
     @Volatile private var fixtureCount = 3
+    @Volatile private var fixtureAlbumCount = 1
     @Volatile private var fixtureRating = 0
     @Volatile private var delayedPlaylist: java.util.concurrent.CountDownLatch? = null
     private val playlistRequestStarted = java.util.concurrent.CountDownLatch(1)
     private val changedParents = java.util.concurrent.ConcurrentLinkedQueue<String>()
     private val fixtureSongs = listOf(Song("one", "First song", "Fixture artist"), Song("two", "Second song", "Fixture artist"), Song("one", "First song", "Fixture artist"))
+    private lateinit var fixtureWav: ByteArray
+    private lateinit var fixtureCover: ByteArray
 
     private fun ok(body: String) = MockResponse().setHeader("Content-Type", "application/json")
         .setBody("{\"subsonic-response\":{\"status\":\"ok\",$body}}")
@@ -70,6 +73,14 @@ class AndroidAutoTest {
             putShort(1); putShort(1); putInt(8000); putInt(16000); putShort(2); putShort(16)
             put("data".toByteArray()); putInt(sampleBytes)
         }.array()
+        fixtureWav = wav
+        val bitmap = android.graphics.Bitmap.createBitmap(16, 16, android.graphics.Bitmap.Config.ARGB_8888)
+        fixtureCover = java.io.ByteArrayOutputStream().use { output ->
+            bitmap.eraseColor(android.graphics.Color.rgb(38, 112, 83))
+            assertTrue(bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, output))
+            output.toByteArray()
+        }
+        bitmap.recycle()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 if (unavailable) return MockResponse().setResponseCode(503)
@@ -91,9 +102,19 @@ class AndroidAutoTest {
                             check(it.await(15, TimeUnit.SECONDS))
                         }
                         val extra = if (duplicatePlaylistNames || otherPlaylist) ",{\"id\":\"other\",\"name\":\"${if (duplicatePlaylistNames) "Drive fixture" else "Other fixture"}\",\"songCount\":3}" else ""
-                        ok("\"playlists\":{\"playlist\":[{\"id\":\"p/with:punctuation\",\"name\":\"Drive fixture\",\"songCount\":3}$extra]}")
+                        ok("\"playlists\":{\"playlist\":[{\"id\":\"p/with:punctuation\",\"name\":\"Drive fixture\",\"songCount\":3,\"coverArt\":\"playlist-cover\"}$extra]}")
                     }
                     "getPlaylist.view" -> ok("\"playlist\":{\"entry\":[${fixtureSongs.take(fixtureCount).joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":60}" }}]}")
+                    "getAlbumList2.view" -> {
+                        val offset = url.queryParameter("offset")?.toIntOrNull() ?: 0
+                        val size = url.queryParameter("size")?.toIntOrNull() ?: 100
+                        ok("\"albumList2\":{\"album\":[${(offset until fixtureAlbumCount).take(size).joinToString(",") { index ->
+                            val suffix = if (index == 0) "" else "-$index"
+                            "{\"id\":\"album-fixture$suffix\",\"name\":\"Album fixture$suffix\",\"artist\":\"Fixture artist\",\"songCount\":3,\"coverArt\":\"album-cover$suffix\"}"
+                        }}]}")
+                    }
+                    "getAlbum.view" -> ok("\"album\":{\"id\":\"album-fixture\",\"name\":\"Album fixture\",\"artist\":\"Fixture artist\",\"coverArt\":\"album-cover\",\"song\":[${fixtureSongs.joinToString(",") { "{\"id\":\"${it.id}\",\"title\":\"${it.title}\",\"artist\":\"Fixture artist\",\"duration\":60}" }}]}")
+                    "getCoverArt.view" -> MockResponse().setHeader("Content-Type", "image/jpeg").setBody(Buffer().write(fixtureCover))
                     "setRating.view" -> { fixtureRating = url.queryParameter("rating")!!.toInt(); fixtureCount = 1; ok("\"fixture\":true") }
                     "getSong.view" -> ok("\"song\":{\"id\":\"${url.queryParameter("id")}\",\"userRating\":$fixtureRating}")
                     "stream.view" -> MockResponse().setHeader("Content-Type", "audio/wav").setBody(Buffer().write(wav))
@@ -114,6 +135,7 @@ class AndroidAutoTest {
         lateinit var future: ListenableFuture<MediaBrowser>
         instrumentation.runOnMainSync {
             future = MediaBrowser.Builder(app, SessionToken(app, ComponentName(app, PlaybackService::class.java)))
+                .setMaxCommandsForMediaItems(2)
                 .setListener(object : MediaBrowser.Listener {
                     override fun onChildrenChanged(browser: MediaBrowser, parentId: String, itemCount: Int, params: androidx.media3.session.MediaLibraryService.LibraryParams?) {
                         changedParents.add(parentId)
@@ -170,21 +192,35 @@ class AndroidAutoTest {
         while (!condition()) { check(System.nanoTime() < deadline) { "Auto fixture state timed out" }; Thread.sleep(25) }
     }
 
-    @Test fun browsePlaylistWithoutReplacingTheSavedQueue() {
+    @Test fun browseCollectionsAndContentsWithoutReplacingTheSavedQueue() {
         val saved = graph.session.value!!
-        val items = children(playlist().mediaId)
-        assertEquals(4, items.size) // Shuffle action plus every occurrence, including duplicate songs.
-        assertEquals("Shuffle and play", items.first().mediaMetadata.title)
-        assertEquals(4, items.map { it.mediaId }.toSet().size)
-        assertTrue(items.all { it.mediaMetadata.isPlayable == true && it.localConfiguration == null })
-        assertEquals(saved, graph.session.value)
+        val folders = children(root().mediaId)
+        assertEquals(listOf("Playlists", "Albums", "Queue"), folders.map { it.mediaMetadata.title.toString() })
+        for (title in listOf("Playlists", "Albums")) {
+            val folder = folders.single { it.mediaMetadata.title == title }
+            val items = children(folder.mediaId)
+            assertEquals(1, items.size)
+            val collection = items.single()
+            assertTrue(collection.mediaMetadata.isBrowsable == true)
+            assertFalse(collection.mediaMetadata.isPlayable == true)
+            assertTrue(collection.mediaMetadata.supportedCommands.isEmpty())
+            assertTrue(onMain { browser.getCommandButtonsForMediaItem(collection) }.isEmpty())
+            val contents = children(collection.mediaId)
+            assertEquals(listOf("Play", "Shuffle play"), contents.take(2).map { it.mediaMetadata.title.toString() })
+            assertEquals(fixtureSongs.map { it.title }, contents.drop(2).map { it.mediaMetadata.title.toString() })
+            assertEquals(5, contents.map { it.mediaId }.toSet().size)
+            assertTrue(contents.all { it.mediaMetadata.isPlayable == true && it.mediaMetadata.isBrowsable != true && it.localConfiguration == null })
+            assertEquals(contents.take(2), children(collection.mediaId, 0, 2))
+            assertEquals(items, children(folder.mediaId, 0, 1))
+            assertTrue(children(folder.mediaId, Int.MAX_VALUE, 100).isEmpty())
+        }
+        assertEquals(saved.queueId, graph.session.value!!.queueId)
+        assertEquals(saved.queue, graph.session.value!!.queue)
         assertFalse(onMain { browser.playWhenReady })
-        assertEquals(items.take(2), children(playlist().mediaId, 0, 2))
-        assertTrue(children(playlist().mediaId, Int.MAX_VALUE, 100).isEmpty())
     }
 
     @Test fun shuffleSelectionStartsSharedPlaybackAndPreservesDuplicateOccurrences() {
-        val shuffle = children(playlist().mediaId).first()
+        val shuffle = MediaItem.Builder().setMediaId(CarMediaIds.shuffle(credentials.connection.id, "p/with:punctuation")).build()
         onMain { browser.setMediaItem(shuffle); browser.prepare(); browser.play() }
         until { graph.playback.value.playing }
         val saved = graph.session.value!!
@@ -230,19 +266,26 @@ class AndroidAutoTest {
     }
 
     @Test fun unavailableServerReturnsAnErrorAndTheSameRequestCanRecover() {
-        val p = playlist()
+        playlist()
+        // Browse returns once summaries arrive, before count reconciliation finishes. Drain
+        // that healthy job so refresh() cannot coalesce the outage probe into an older success.
+        runBlocking { graph.playlists.refresh().join() }
         unavailable = true
-        val failed = onMain { browser.getChildren(p.mediaId, 0, 100, null) }.get(15, TimeUnit.SECONDS)
+        runBlocking { graph.playlists.refresh().join() }
+        val failed = onMain { browser.getChildren(CarMediaIds.PLAYLISTS, 0, 100, null) }.get(15, TimeUnit.SECONDS)
         assertNotEquals(0, failed.resultCode)
+        // The error result also precedes the refresh job's completion. Keep the fixture in
+        // outage mode until that job exits, rather than racing recovery with its old failure.
+        runBlocking { graph.playlists.refresh().join() }
         unavailable = false
-        assertEquals(4, children(p.mediaId).size)
+        assertEquals(1, children(CarMediaIds.PLAYLISTS).size)
         assertFalse(onMain { browser.playWhenReady })
     }
 
-    @Test fun playlistRowAdvertisesAndExecutesDirectShuffleAction() {
+    @Test fun playlistRowOmitsActionsButLegacyShuffleCommandRemainsCompatible() {
         val p = playlist()
         val action = "com.everyonesoftware.audio.SHUFFLE_PLAYLIST"
-        assertTrue(p.mediaMetadata.supportedCommands.contains(action))
+        assertTrue(p.mediaMetadata.supportedCommands.isEmpty())
         val args = Bundle().apply { putString(MediaConstants.EXTRA_KEY_MEDIA_ID, p.mediaId) }
         val result = onMain { browser.sendCustomCommand(SessionCommand(action, Bundle.EMPTY), args) }.get(15, TimeUnit.SECONDS)
         assertEquals(0, result.resultCode)
@@ -254,6 +297,200 @@ class AndroidAutoTest {
         val rejected = onMain { browser.sendCustomCommand(SessionCommand(action, Bundle.EMPTY), invalidArgs) }.get(15, TimeUnit.SECONDS)
         assertNotEquals(0, rejected.resultCode)
         assertEquals(saved.queueId, graph.session.value!!.queueId)
+    }
+
+    @Test fun playlistAndAlbumContentsOfferOrderedPlayThenImmediateShuffleWithFreshQueues() {
+        for (parent in listOf(CarMediaIds.PLAYLISTS, CarMediaIds.ALBUMS)) {
+            val collection = children(parent).single()
+            val actions = children(collection.mediaId).take(2)
+            assertEquals(listOf("Play", "Shuffle play"), actions.map { it.mediaMetadata.title.toString() })
+            for (action in listOf(actions[0], actions[1], actions[1], actions[0])) {
+                val before = graph.session.value!!.queueId
+                onMain { browser.setMediaItem(action); browser.prepare(); browser.play() }
+                until { graph.playback.value.playing && graph.session.value?.queueId != before }
+                val selected = graph.session.value!!
+                assertEquals(if (parent == CarMediaIds.PLAYLISTS) "playlist" else "album", selected.sourceType)
+                assertEquals(0, selected.index)
+                assertEquals(action == actions[1], selected.shuffle)
+                assertEquals(listOf("one", "one", "two"), selected.queue.map { it.id }.sorted())
+                if (action == actions[0]) assertEquals(fixtureSongs.map { it.id }, selected.queue.map { it.id })
+                onMain { assertFalse(browser.shuffleModeEnabled) }
+                val queue = children(CarMediaIds.QUEUE)
+                assertEquals(3, queue.map { it.mediaId }.toSet().size)
+            }
+        }
+    }
+
+    @Test fun selectedPlaylistAndAlbumSongKeepsWholeOrderedQueueAndDuplicateOccurrence() {
+        for (parent in listOf(CarMediaIds.PLAYLISTS, CarMediaIds.ALBUMS)) {
+            val collection = children(parent).single()
+            val tracks = children(collection.mediaId).drop(2)
+            assertNotEquals(tracks[0].mediaId, tracks[2].mediaId)
+            for (index in listOf(1, 2)) {
+                val previous = graph.session.value!!.queueId
+                onMain { browser.setMediaItem(tracks[index]); browser.prepare(); browser.play() }
+                until { graph.playback.value.playing && graph.session.value?.queueId != previous && graph.session.value?.index == index }
+                val session = graph.session.value!!
+                // Media3 masks setMediaItem with its single request until the asynchronous
+                // service result reaches this controller; graph persistence can arrive first.
+                until { onMain { browser.mediaItemCount == fixtureSongs.size && browser.currentMediaItemIndex == index &&
+                    browser.currentMediaItem?.mediaId == CarMediaIds.queued(session.connectionId, session.queueId, index) } }
+                assertEquals(fixtureSongs.map { it.id }, session.queue.map { it.id })
+                assertEquals(if (parent == CarMediaIds.PLAYLISTS) "playlist" else "album", session.sourceType)
+                assertFalse(session.shuffle)
+                onMain {
+                    assertEquals(3, browser.mediaItemCount)
+                    assertEquals(index, browser.currentMediaItemIndex)
+                    assertFalse(browser.shuffleModeEnabled)
+                    browser.seekToPreviousMediaItem()
+                }
+                until { graph.session.value?.index == index - 1 }
+                assertEquals(session.queueId, graph.session.value!!.queueId)
+                assertEquals(session.queue, graph.session.value!!.queue)
+            }
+        }
+    }
+
+    @Test fun collectionArtworkIsReadableOfflineAndRevokedAfterAccountSwitch() {
+        val saved = graph.session.value!!
+        val artwork = listOf(CarMediaIds.PLAYLISTS, CarMediaIds.ALBUMS).map { parent ->
+            val collection = children(parent).single()
+            val uri = requireNotNull(collection.mediaMetadata.artworkUri)
+            assertEquals("content", uri.scheme)
+            assertEquals("${app.packageName}.artwork", uri.authority)
+            assertFalse(uri.toString().contains("auto-fixture"))
+            assertFalse(uri.toString().contains("fixture-only-password"))
+            assertFalse(uri.toString().contains("playlist-cover"))
+            assertFalse(uri.toString().contains("album-cover"))
+            val bytes = requireNotNull(app.contentResolver.openInputStream(uri)).use { it.readBytes() }
+            val cover = requireNotNull(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+            assertTrue(cover.width > 0 && cover.height > 0)
+            cover.recycle()
+            uri
+        }
+        assertEquals(saved.queueId, graph.session.value!!.queueId)
+        val settings = graph.songCache.state.value.settings
+        try {
+            runBlocking { graph.songCache.setSettings(settings.copy(offline = true)) }
+            unavailable = true
+            artwork.forEach { uri ->
+                val bytes = requireNotNull(app.contentResolver.openInputStream(uri)).use { it.readBytes() }
+                val cover = requireNotNull(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+                cover.recycle()
+            }
+        } finally {
+            unavailable = false
+            runBlocking { graph.songCache.setSettings(settings) }
+        }
+        runBlocking {
+            val other = credentials.copy(connection = credentials.connection.copy(id = UUID.randomUUID().toString(), name = "Other account"))
+            noSessionConnectionId = other.connection.id
+            graph.store.saveConnection(other)
+            graph.activate(other.connection.id)
+        }
+        artwork.forEach { uri ->
+            val bytes = runCatching { app.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+            assertTrue("Old account's cover must be revoked", bytes == null || bytes.isEmpty())
+        }
+    }
+
+    @Test fun largeAlbumCatalogKeepsPagedAndUnpagedArtworkCapabilitiesReadable() {
+        fixtureAlbumCount = 512
+        val saved = graph.session.value!!
+        val firstPage = children(CarMediaIds.ALBUMS, 0, 100)
+        assertEquals(100, firstPage.size)
+        val tail = children(CarMediaIds.ALBUMS, 5, 100)
+        assertEquals(12, tail.size)
+        // Legacy subscriptions can request the entire catalogue with this page size.
+        val all = children(CarMediaIds.ALBUMS, 0, Int.MAX_VALUE)
+        assertEquals(512, all.size)
+        for (item in firstPage + tail + all) {
+            val uri = requireNotNull(item.mediaMetadata.artworkUri)
+            assertEquals("Issued cover URI must survive catalogue traversal", "image/jpeg", app.contentResolver.getType(uri))
+        }
+        for (item in listOf(firstPage.first(), tail.last(), all.last())) {
+            val bytes = requireNotNull(app.contentResolver.openInputStream(requireNotNull(item.mediaMetadata.artworkUri))).use { it.readBytes() }
+            val cover = requireNotNull(android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+            cover.recycle()
+        }
+        assertEquals(saved.queueId, graph.session.value!!.queueId)
+        assertEquals(saved.queue, graph.session.value!!.queue)
+        assertFalse(onMain { browser.playWhenReady })
+    }
+
+    @Test fun collectionActionsRejectWrongAccountAndQueueIdsWithoutReplacingPlayback() {
+        playlist()
+        val saved = graph.session.value!!
+        val queueId = children(CarMediaIds.QUEUE).first().mediaId
+        for (mediaId in listOf(queueId, CarMediaIds.playlist("different-account", "p/with:punctuation"))) {
+            for (command in listOf(CarLibrary.PLAY_COLLECTION, CarLibrary.SHUFFLE_COLLECTION)) {
+                val args = Bundle().apply { putString(MediaConstants.EXTRA_KEY_MEDIA_ID, mediaId) }
+                val result = onMain { browser.sendCustomCommand(SessionCommand(command, Bundle.EMPTY), args) }.get(15, TimeUnit.SECONDS)
+                assertNotEquals(0, result.resultCode)
+                assertEquals(saved.queueId, graph.session.value!!.queueId)
+                assertEquals(saved.queue, graph.session.value!!.queue)
+                assertFalse(onMain { browser.playWhenReady })
+            }
+        }
+    }
+
+    @Test fun offlinePlaylistAndAlbumActionsRequireCompleteSnapshotsAndUseSavedOccurrences() = runBlocking {
+        val settings = graph.songCache.state.value.settings
+        val active = requireNotNull(graph.credentials.value)
+        val snapshots = listOf(
+            com.everyonesoftware.audio.data.OfflineCollection("playlist", "p/with:punctuation", "Drive fixture", songs = fixtureSongs),
+            com.everyonesoftware.audio.data.OfflineCollection("album", "album-fixture", "Album fixture", songs = fixtureSongs)
+        )
+        try {
+            graph.songCache.setSettings(settings.copy(offline = true))
+            snapshots.forEach { graph.songCache.downloadCollection(active, it) }
+            unavailable = true
+            val saved = graph.session.value!!
+            for (parent in listOf(CarMediaIds.PLAYLISTS, CarMediaIds.ALBUMS)) {
+                val collection = children(parent).single()
+                val contents = children(collection.mediaId)
+                assertEquals(5, contents.size)
+                for (item in contents) {
+                    try {
+                        CarLibrary(graph).resolve(item.mediaId)
+                        fail("Partial offline collection must not start")
+                    } catch (_: IllegalArgumentException) { }
+                    assertEquals(saved.queueId, graph.session.value!!.queueId)
+                }
+            }
+            graph.songCache.setSettings(settings.copy(offline = false, autoSave = true, prefetch = 0))
+            fixtureSongs.distinctBy { it.id }.forEach { song ->
+                val source = graph.songCache.factory(active, song, androidx.media3.datasource.DataSource.Factory {
+                    androidx.media3.datasource.ByteArrayDataSource(fixtureWav)
+                }).createDataSource()
+                source.open(androidx.media3.datasource.DataSpec.Builder().setUri("https://fixture.invalid/${song.id}").build())
+                try { val buffer = ByteArray(8192); while (source.read(buffer, 0, buffer.size) != -1) { } }
+                finally { source.close() }
+            }
+            graph.songCache.setSettings(settings.copy(offline = true))
+            for (parent in listOf(CarMediaIds.PLAYLISTS, CarMediaIds.ALBUMS)) {
+                val collection = children(parent).single()
+                val contents = children(collection.mediaId)
+                for ((index, item) in contents.take(2).withIndex()) {
+                    val previous = graph.session.value!!.queueId
+                    onMain { browser.setMediaItem(item); browser.prepare(); browser.play() }
+                    until { graph.playback.value.playing && graph.session.value?.queueId != previous }
+                    val session = graph.session.value!!
+                    assertEquals(index == 1, session.shuffle)
+                    assertEquals(listOf("one", "one", "two"), session.queue.map { it.id }.sorted())
+                    if (index == 0) assertEquals(fixtureSongs, session.queue)
+                }
+                val previous = graph.session.value!!.queueId
+                onMain { browser.setMediaItem(contents.last()); browser.prepare(); browser.play() }
+                until { graph.playback.value.playing && graph.session.value?.queueId != previous }
+                assertEquals(fixtureSongs, graph.session.value!!.queue)
+                assertEquals(2, graph.session.value!!.index)
+                assertFalse(graph.session.value!!.shuffle)
+            }
+        } finally {
+            unavailable = false
+            graph.songCache.setSettings(settings)
+        }
     }
 
     @Test fun voiceSearchSelectsAMatchingPlaylistAndBlankSearchResumes() {
@@ -503,11 +740,19 @@ class AndroidAutoTest {
             }
             val folders = legacyChildren(onMain { legacy.root })
             val playlists = legacyChildren(folders.single { it.description.title == "Playlists" }.mediaId!!)
-            val shuffle = legacyChildren(playlists.single().mediaId!!).first()
+            val collection = playlists.single()
+            assertTrue(collection.isBrowsable)
+            assertFalse(collection.isPlayable)
+            val contents = legacyChildren(collection.mediaId!!)
+            assertEquals(listOf("Play", "Shuffle play"), contents.take(2).map { it.description.title.toString() })
+            assertEquals(5, contents.size)
+            assertTrue(contents.all { it.isPlayable && !it.isBrowsable })
             val controller = onMain { android.media.session.MediaController(app, legacy.sessionToken) }
-            onMain { controller.transportControls.playFromMediaId(shuffle.mediaId, null) }
+            onMain { controller.transportControls.playFromMediaId(contents.first().mediaId, null) }
             until { graph.playback.value.playing }
             assertEquals(3, graph.session.value!!.queue.size)
+            assertFalse(graph.session.value!!.shuffle)
+            assertEquals(fixtureSongs.map { it.id }, graph.session.value!!.queue.map { it.id })
             val saved = graph.session.value!!
             val state = onMain { requireNotNull(controller.playbackState) }
             val actions = state.actions

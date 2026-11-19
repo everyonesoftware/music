@@ -25,6 +25,7 @@ data class PlaybackSnapshot(val playing: Boolean = false, val positionMs: Long =
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) {
     private val currentCredentials = MutableStateFlow<Credentials?>(null)
+    internal val browseArtwork = com.everyonesoftware.audio.playback.BrowseArtworkRegistry("${BuildConfig.APPLICATION_ID}.artwork") { currentCredentials.value }
     val networkPolicy = com.everyonesoftware.audio.data.MusicNetworkPolicy()
     val artworkCache = com.everyonesoftware.audio.data.ArtworkCache(context, networkPolicy, { currentCredentials.value })
     @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -32,6 +33,7 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
     val store = AudioStore(context) { id ->
         if (currentCredentials.value?.connection?.id == id) {
             currentCredentials.value = null
+            browseArtwork.clear()
             currentSession.value = null
             playback.value = PlaybackSnapshot()
             songCache.accountChanged()
@@ -88,6 +90,7 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         store.selectConnection(id)
         playlists.activate(credentials)
         if (currentCredentials.value != credentials) {
+            browseArtwork.clear()
             songCache.accountChanged()
             artworkCache.accountChanged()
         }

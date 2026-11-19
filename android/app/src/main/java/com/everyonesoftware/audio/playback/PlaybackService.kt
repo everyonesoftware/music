@@ -5,7 +5,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import androidx.media3.session.LibraryResult
-import androidx.media3.session.CommandButton
 import androidx.media3.session.MediaConstants
 import androidx.media3.session.SessionCommand
 import androidx.media3.session.SessionError
@@ -136,19 +135,19 @@ class PlaybackService : MediaLibraryService() {
                 Futures.immediateFuture(LibraryResult.ofItem(carLibrary.root(), params))
 
             override fun onGetChildren(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, parentId: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-                libraryFuture { LibraryResult.ofItemList(CarLibrary.page(carLibrary.children(parentId), page, pageSize), params) }
+                libraryFuture { LibraryResult.ofItemList(carLibrary.children(parentId, page, pageSize), params) }
 
             override fun onGetItem(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, mediaId: String): ListenableFuture<LibraryResult<MediaItem>> =
                 libraryFuture { LibraryResult.ofItem(carLibrary.item(mediaId), null) }
 
             override fun onSearch(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, params: LibraryParams?): ListenableFuture<LibraryResult<Void>> =
                 libraryFuture {
-                    session.notifySearchResultChanged(browser, query, carLibrary.search(query).size, params)
+                    session.notifySearchResultChanged(browser, query, carLibrary.searchCount(query), params)
                     LibraryResult.ofVoid()
                 }
 
             override fun onGetSearchResult(session: MediaLibrarySession, browser: MediaSession.ControllerInfo, query: String, page: Int, pageSize: Int, params: LibraryParams?): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> =
-                libraryFuture { LibraryResult.ofItemList(CarLibrary.page(carLibrary.search(query), page, pageSize), params) }
+                libraryFuture { LibraryResult.ofItemList(carLibrary.search(query, page, pageSize), params) }
 
             override fun onSetMediaItems(session: MediaSession, controller: MediaSession.ControllerInfo, mediaItems: List<MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
                 val generation = ++selectionGeneration
@@ -163,15 +162,19 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
-                if (customCommand.customAction != CarLibrary.SHUFFLE_PLAYLIST) return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
+                if (customCommand.customAction !in setOf(CarLibrary.PLAY_COLLECTION, CarLibrary.SHUFFLE_COLLECTION, CarLibrary.SHUFFLE_PLAYLIST))
+                    return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
                 val generation = ++selectionGeneration
                 return future {
                     try {
-                        val id = requireNotNull(CarMediaIds.parse(args.getString(MediaConstants.EXTRA_KEY_MEDIA_ID).orEmpty()))
-                        require(id.kind == "playlist")
-                        selectMedia(CarMediaIds.shuffle(id.connection, id.parent), generation)
+                        val mediaId = requireNotNull(args.getString(MediaConstants.EXTRA_KEY_MEDIA_ID))
+                        selectMedia(mediaId, generation, command = customCommand.customAction)
                         player.play()
-                        SessionResult(SessionResult.RESULT_SUCCESS)
+                        SessionResult(SessionResult.RESULT_SUCCESS, Bundle().apply {
+                            // Android Auto's browse-action protocol. Media3 1.8 forwards result
+                            // extras to legacy browsers; navigation remains the host's decision.
+                            putBoolean("androidx.media.utils.extras.KEY_CUSTOM_BROWSER_ACTION_RESULT_SHOW_PLAYING_ITEM", true)
+                        })
                     } catch (cancelled: CancellationException) { throw cancelled }
                     catch (_: Exception) { SessionResult(SessionError.ERROR_BAD_VALUE) }
                 }
@@ -191,7 +194,9 @@ class PlaybackService : MediaLibraryService() {
                     .build()
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
-                        .add(SessionCommand(CarLibrary.SHUFFLE_PLAYLIST, Bundle.EMPTY)).build())
+                        .add(SessionCommand(CarLibrary.SHUFFLE_PLAYLIST, Bundle.EMPTY))
+                        .add(SessionCommand(CarLibrary.PLAY_COLLECTION, Bundle.EMPTY))
+                        .add(SessionCommand(CarLibrary.SHUFFLE_COLLECTION, Bundle.EMPTY)).build())
                     .setAvailablePlayerCommands(commands).build()
             }
 
@@ -204,10 +209,6 @@ class PlaybackService : MediaLibraryService() {
             }
         }
         val builder = MediaLibrarySession.Builder(this, player, callback)
-            .setCommandButtonsForMediaItems(listOf(CommandButton.Builder(CommandButton.ICON_SHUFFLE_ON)
-                .setDisplayName("Shuffle and play")
-                .setIconUri(Uri.parse("android.resource://$packageName/${R.drawable.ic_shuffle}"))
-                .setSessionCommand(SessionCommand(CarLibrary.SHUFFLE_PLAYLIST, Bundle.EMPTY)).build()))
         packageManager.getLaunchIntentForPackage(packageName)?.let { intent ->
             intent.action = MainActivity.ACTION_OPEN_PLAYER
             builder.setSessionActivity(PendingIntent.getActivity(this, 0, intent,
@@ -425,8 +426,8 @@ class PlaybackService : MediaLibraryService() {
         }
     }
 
-    private suspend fun selectMedia(mediaId: String, generation: Long, searchQuery: String? = null): ListeningSession {
-        val selected = if (searchQuery != null) carLibrary.resolveSearch(searchQuery) else carLibrary.resolve(mediaId)
+    private suspend fun selectMedia(mediaId: String, generation: Long, searchQuery: String? = null, command: String? = null): ListeningSession {
+        val selected = if (searchQuery != null) carLibrary.resolveSearch(searchQuery) else carLibrary.resolve(mediaId, command)
         require(generation == selectionGeneration) { "A newer selection is already active." }
         graph.setSession(selected.session, selected.credentials, selected.previous)
         require(generation == selectionGeneration) { "A newer selection is already active." }

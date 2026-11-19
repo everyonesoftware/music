@@ -16,6 +16,7 @@ import android.provider.Settings
 import com.everyonesoftware.audio.AudioApplication
 import java.io.FileNotFoundException
 import java.io.IOException
+import kotlinx.coroutines.runBlocking
 
 /** Exported for trusted media consumers, never for general-purpose URL or filesystem access. */
 class ArtworkContentProvider : ContentProvider() {
@@ -24,20 +25,31 @@ class ArtworkContentProvider : ContentProvider() {
 
     override fun getType(uri: Uri): String? {
         enforceTrustedCaller()
-        return if (readCurrent(uri) != null) "image/jpeg" else null
+        return if (readCurrent(uri) != null || browseRegistry()?.resolve(uri.toString()) != null) "image/jpeg" else null
     }
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
         if (mode != "r") throw SecurityException("Artwork is read-only")
         enforceTrustedCaller()
-        val bytes = readCurrent(uri) ?: throw FileNotFoundException("Artwork is unavailable")
+        val bytes = readCurrent(uri)
+        val registry = browseRegistry()
+        if (bytes == null && registry?.resolve(uri.toString()) == null) throw FileNotFoundException("Artwork is unavailable")
         // openPipeHelper dispatches the writer to Android's worker executor. Writing a full cover
         // on the calling/binder/Main thread could deadlock before the caller gets the read end.
         return openPipeHelper(uri, "image/jpeg", null, bytes) { output, _, _, _, data ->
             try {
-                ParcelFileDescriptor.AutoCloseOutputStream(output).use { it.write(data) }
-            } catch (_: IOException) {
-                // A consumer may close the pipe without reading it. use() still closes our end.
+                ParcelFileDescriptor.AutoCloseOutputStream(output).use { stream ->
+                    val current = data ?: runBlocking {
+                        registry?.read(uri.toString()) { request ->
+                            val app = context?.applicationContext as? AudioApplication
+                            app?.graph?.artworkCache?.load(request.credentials, request.coverArtId)
+                        }
+                    }
+                    if (current != null) stream.write(current)
+                }
+            } catch (_: Exception) {
+                // Consumer closure or account-change cancellation must close the pipe, not crash
+                // the provider's worker. No stale or partially loaded cover is published.
             }
         }
     }
@@ -46,6 +58,9 @@ class ArtworkContentProvider : ContentProvider() {
         val app = context?.applicationContext as? AudioApplication ?: return null
         return SessionArtworkStore.read(uri, app.graph.credentials.value)
     }
+
+    private fun browseRegistry(): BrowseArtworkRegistry? =
+        (context?.applicationContext as? AudioApplication)?.graph?.browseArtwork
 
     private fun enforceTrustedCaller() {
         val context = context ?: throw SecurityException("Artwork caller is not trusted")
