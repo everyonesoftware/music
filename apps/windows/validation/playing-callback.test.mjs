@@ -3,13 +3,14 @@ import assert from 'node:assert/strict';
 import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 test('real native Playing callback retains evidence across blocked dispatch and rejects stale visits/sources', () => {
   const main = readFileSync(new URL('../Music.App/MainWindow.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
   const start = main.indexOf('            player.Source = item;');
   const callback = main.slice(start, main.indexOf('            if (playIntended) player.Play();', start));
-  const dir = mkdtempSync(join(process.env.TMPDIR || '/tmp', 'music-playing-'));
+  const dir = mkdtempSync(join(tmpdir(), 'music-playing-'));
   try {
     const order = fileURLToPath(new URL('../Music.Core/PlaybackOrder.cs', import.meta.url));
     writeFileSync(join(dir, 'Checks.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Compile Include="${order}"/></ItemGroup></Project>`);
