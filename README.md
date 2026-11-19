@@ -20,6 +20,10 @@ The download tables are refreshed automatically after platform publication. See 
 
 [Selective component builds](docs/SELECTIVE-BUILDS.md) compare each platform against its last successful publication: unchanged apps are not rebuilt, and their existing installers stay linked above. Manual workflow runs can force a component build.
 
+## Privacy
+
+Read the [Music Android privacy policy](https://www.everyonesoftware.net/music/privacy/), also maintained in [`docs/PRIVACY.md`](docs/PRIVACY.md). Privacy questions: [contact@everyonesoftware.net](mailto:contact@everyonesoftware.net).
+
 ## Windows — first implementation checkpoint
 
 The native C#/WinUI 3 client is in `apps/windows/`, following the approved Familiar sage desktop design. It has a separate .NET protocol/SQLite core and tests, native XAML shell, connection settings backed by Windows Credential Locker, collection browsing, and Windows MediaPlayer integration. There is no embedded browser or production demo library.
