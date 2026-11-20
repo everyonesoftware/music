@@ -24,6 +24,17 @@ test('both native compact entry points use the same account-bound rating path', 
   assert.match(main, /queue\.Select\(ApplyConfirmedRating\)/);
 });
 
+test('the now-playing footer reserves room for the rating button before measuring long track text', () => {
+  const row = shell.match(/<Grid>\s*<Grid\.ColumnDefinitions>(?:(?!<\/Grid>)[\s\S])*?x:Name="PlayerRatingButton"[^>]*\/>/)?.[0];
+  assert.ok(row, 'missing now-playing artwork, text and rating row');
+  const columns = Array.from(row.matchAll(/<ColumnDefinition\b[^>]*\bWidth="([^"]+)"/g), match => match[1]);
+  assert.deepEqual(columns, ['48', '*', 'Auto'], 'track text must take only the space left after artwork and rating');
+  for (const name of ['TrackTitle', 'TrackArtist']) {
+    assert.match(row, new RegExp(`<TextBlock x:Name="${name}"[^>]*TextTrimming="CharacterEllipsis"`));
+  }
+  assert.match(row, /x:Name="PlayerRatingButton"[^>]*Grid\.Column="2"[^>]*MinWidth="40"/);
+});
+
 test('ratings are opted into only for Songs and playlist details', () => {
   assert.match(main, /AddSongs\(section,[^\n]+showRatings: page == "songs"/);
   assert.match(main, /SongRow\(item\.Song,[^\n]+showRatings: detailIdentity\.Kind == "playlist"/);
