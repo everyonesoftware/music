@@ -492,6 +492,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun selectMediaOutput(id: String) { mediaOutput?.select(id) }
 
     override fun checkForUpdates() { graph.updates.coordinator.check() }
+    override fun retryUpdateChangelog() { graph.updates.coordinator.retryChangelog() }
     override fun setAutomaticUpdates(enabled: Boolean) { graph.updates.coordinator.setAutomaticChecks(enabled) }
     override fun downloadUpdate() { graph.updates.coordinator.download() }
     override fun cancelUpdateDownload() { graph.updates.coordinator.cancelDownload() }

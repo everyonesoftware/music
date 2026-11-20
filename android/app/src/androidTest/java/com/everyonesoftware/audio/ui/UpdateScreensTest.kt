@@ -1,8 +1,17 @@
 package com.everyonesoftware.audio.ui
 
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import android.view.KeyEvent
 import androidx.test.platform.app.InstrumentationRegistry
@@ -12,6 +21,9 @@ import com.everyonesoftware.audio.data.Song
 import com.everyonesoftware.audio.updates.UpdateRelease
 import com.everyonesoftware.audio.updates.UpdateStage
 import com.everyonesoftware.audio.updates.UpdateUiState
+import com.everyonesoftware.audio.updates.ChangelogStage
+import com.everyonesoftware.audio.updates.UpdateChangelog
+import com.everyonesoftware.audio.updates.UpdateChangeCommit
 import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
@@ -22,7 +34,29 @@ import org.junit.runner.RunWith
 class UpdateScreensTest {
     @get:Rule val compose = createComposeRule()
     private val actions = RecordingActions()
-    private val release = UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", 10_000_000L, "a".repeat(64), "https://github.com/example/music/releases/download/v42/Music.apk", "Playback fixes and improvements.")
+    private val release = UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", 10_000_000L, "a".repeat(64), "https://github.com/example/music/releases/download/v42/Music.apk", "## Current downloads\n| Android | installer |\nRaw release body must never appear", sourceSha = "b".repeat(40))
+    private val changelog = UpdateChangelog(
+        fromSha = "a".repeat(40), toSha = "b".repeat(40),
+        improvements = listOf("Faster library browsing"),
+        fixes = listOf("Keep playback position", "Keep duplicate songs"),
+        commits = listOf(UpdateChangeCommit("c".repeat(40), "[verified] feat(android): faster library browsing"),
+            UpdateChangeCommit("d".repeat(40), "fix(android): keep playback position"),
+            UpdateChangeCommit("e".repeat(40), "fix(android): keep duplicate songs"),
+            UpdateChangeCommit("f".repeat(40), "docs: refresh downloads")),
+    )
+    private fun available() = UpdateUiState(stage = UpdateStage.AVAILABLE, release = release,
+        changelogStage = ChangelogStage.AVAILABLE, changelog = changelog)
+    private fun capture(name: String) {
+        if (InstrumentationRegistry.getArguments().getString("captureUpdates") != "true") return
+        compose.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val image = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try {
+            java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "$name.png").outputStream().use {
+                check(image.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally { image.recycle() }
+    }
     private val session = ListeningSession("test-server", "test-playlist", "Test playlist", listOf(Song("test-song", "Test song", "Test artist")))
     private fun state(screen: Screen = Screen.UPDATES, updates: UpdateUiState = UpdateUiState()) = AudioUiState(
         booting = false, screen = screen,
@@ -140,12 +174,40 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(0, actions.pauses); assertEquals(0, actions.installs) }
     }
 
-    @Test fun availableShowsVersionSizeNotesAndExplicitDownload() {
-        render(state(updates = UpdateUiState(stage = UpdateStage.AVAILABLE, release = release)))
-        compose.onNodeWithText("Version 0.1.42 · 10.0 MB").assertExists()
-        compose.onNodeWithText(release.notes).assertExists()
-        compose.onNodeWithTag("updates-download").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(1, actions.downloads); assertEquals(0, actions.installs) }
+    @Test fun availableChangelogIsGroupedCollapsedAndNeverUsesReleaseBody() {
+        render(state(updates = available()))
+        compose.onNodeWithText("Update available").assertIsDisplayed()
+        compose.onNodeWithText("Music 0.1.42").assertIsDisplayed()
+        compose.onNodeWithText("3 changes").assertExists()
+        compose.onNodeWithTag("updates-changelog").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Collapsed"))
+        compose.onNodeWithText(release.notes).assertDoesNotExist()
+        compose.onNodeWithText("Current downloads", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("Improvements").assertDoesNotExist()
+        compose.onNodeWithTag("updates-commit-details").assertDoesNotExist()
+        capture("updates-collapsed")
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithTag("updates-changelog").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+        compose.onNodeWithText("Improvements").assertExists()
+        compose.onNodeWithText("Faster library browsing").assertExists()
+        compose.onNodeWithText("Fixes").assertExists()
+        compose.onNodeWithText("Keep playback position").assertExists()
+        compose.onNodeWithText("Keep duplicate songs").assertExists()
+        compose.onNodeWithText(changelog.commits.first().subject).assertDoesNotExist()
+        capture("updates-expanded")
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        compose.onNodeWithText(changelog.commits.first().subject).assertExists()
+        compose.onNodeWithText(changelog.commits.first().sha.take(7)).assertExists()
+        compose.onNodeWithText("${changelog.fromSha} → ${changelog.toSha}").assertExists()
+        compose.onNodeWithText(changelog.commits.last().subject).assertExists()
+        compose.onNodeWithText(release.notes).assertDoesNotExist()
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        compose.onNodeWithText(changelog.commits.first().subject).assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog").performScrollTo().performClick()
+        compose.onNodeWithText("Improvements").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithText("Faster library browsing").assertExists()
+        compose.onNodeWithTag("updates-download").performScrollTo().assertIsEnabled().performClick()
+        compose.runOnIdle { assertEquals(1, actions.downloads); assertEquals(0, actions.installs); assertEquals(0, actions.changelogRetries) }
     }
 
     @Test fun downloadShowsProgressAndCancelThenVerificationDoesNotOfferInstall() {
@@ -156,6 +218,149 @@ class UpdateScreensTest {
         compose.runOnIdle { assertEquals(1, actions.cancels); current.value = current.value.copy(updates = current.value.updates.copy(stage = UpdateStage.VERIFYING)) }
         compose.onNodeWithText("Verifying download…").assertExists()
         compose.onNodeWithTag("updates-install").assertDoesNotExist()
+    }
+
+    @Test fun loadingAndUnavailableHaveUnknownCountsAndRetryDoesNotBlockDownload() {
+        val current = mutableStateOf(state(updates = available().copy(changelogStage = ChangelogStage.IDLE, changelog = null)))
+        compose.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
+        compose.onNodeWithText("0 changes").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, actions.changelogRetries) }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
+        compose.onNodeWithTag("updates-changelog-load").assertExists()
+        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
+        compose.onNodeWithText("Loading changes…").assertDoesNotExist()
+        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.LOADING)) }
+        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog-loading").assertExists()
+        compose.onNodeWithText("Loading changes…").assertExists()
+        compose.onNodeWithText("3 changes").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog").performScrollTo().performClick()
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.runOnIdle { assertEquals(1, actions.changelogRetries); current.value = current.value.copy(playing = true) }
+        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
+        compose.onNodeWithTag("updates-download").performScrollTo().assertIsEnabled()
+        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.UNAVAILABLE)) }
+        compose.onNodeWithText("0 changes").assertDoesNotExist()
+        compose.onNodeWithText("Improvements").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog-retry").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(2, actions.changelogRetries); assertEquals(0, actions.downloads) }
+        compose.onNodeWithTag("updates-download").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(1, actions.downloads); current.value = current.value.copy(updates = available()) }
+        compose.onNodeWithText("Faster library browsing").assertExists()
+        compose.onNodeWithText("3 changes").assertExists()
+    }
+
+    @Test fun emptyGroupsAreOmittedAndEmptyAvailableHistoryIsAnHonestZero() {
+        val current = mutableStateOf(state(updates = available().copy(changelog = changelog.copy(improvements = emptyList(), fixes = listOf("One fix")))))
+        compose.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
+        compose.onNodeWithText("1 change").assertExists()
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithText("Improvements").assertDoesNotExist()
+        compose.onNodeWithText("Fixes").assertExists()
+        compose.onNodeWithText("One fix").assertExists()
+        compose.runOnIdle { current.value = current.value.copy(updates = available().copy(changelog = changelog.copy(improvements = listOf("One improvement"), fixes = emptyList()))) }
+        compose.onNodeWithText("Improvements").assertExists()
+        compose.onNodeWithText("Fixes").assertDoesNotExist()
+        compose.runOnIdle { current.value = current.value.copy(updates = available().copy(changelog = changelog.copy(improvements = emptyList(), fixes = emptyList(), commits = emptyList()))) }
+        compose.onNodeWithText("0 changes").assertExists()
+        compose.onNodeWithText("Improvements").assertDoesNotExist()
+        compose.onNodeWithText("Fixes").assertDoesNotExist()
+    }
+
+    @Test fun restoredExpandedDisclosureWithoutTransientHistoryOffersExplicitLoad() {
+        val current = mutableStateOf(state(updates = available()))
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithText("Faster library browsing").assertExists()
+        // The manager restores the release, but not its transient changelog.
+        compose.runOnIdle { current.value = current.value.copy(updates = available().copy(changelogStage = ChangelogStage.IDLE, changelog = null)) }
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithTag("updates-changelog").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
+        compose.onNodeWithText("Loading changes…").assertDoesNotExist()
+        compose.onNodeWithText("Loading…").assertDoesNotExist()
+        compose.onNodeWithText("Faster library browsing").assertDoesNotExist()
+        compose.runOnIdle { assertEquals(0, actions.changelogRetries) }
+        compose.onNodeWithTag("updates-changelog-load").performScrollTo().assertIsDisplayed().assertIsEnabled()
+            .assertHeightIsAtLeast(48.dp).performClick()
+        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
+        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
+        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.LOADING)) }
+        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog-loading").assertExists()
+        compose.onNodeWithText("Loading changes…").assertExists()
+        compose.runOnIdle { current.value = current.value.copy(updates = available()) }
+        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
+        compose.onNodeWithText("Faster library browsing").assertExists()
+        compose.onNodeWithText("3 changes").assertExists()
+        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
+    }
+
+    @Test fun disclosuresSurviveRestorationAndDownloadStagesButResetForEachReleaseIdentityPart() {
+        val current = mutableStateOf(state(updates = available()))
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText(changelog.commits.first().subject).assertExists()
+        for (stage in listOf(UpdateStage.CHECKING, UpdateStage.DOWNLOADING, UpdateStage.VERIFYING, UpdateStage.READY, UpdateStage.ERROR)) {
+            compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(stage = stage)) }
+            compose.onNodeWithText(changelog.commits.first().subject).assertExists()
+            compose.onNodeWithText("Version 0.1.42 · 10.0 MB").assertDoesNotExist()
+            compose.onNodeWithText("Downloading does not interrupt playback.", substring = true).assertDoesNotExist()
+        }
+        val replacements = listOf(release.copy(sha256 = "f".repeat(64)),
+            release.copy(sha256 = "f".repeat(64), sourceSha = "c".repeat(40)),
+            release.copy(count = 43, sha256 = "f".repeat(64), sourceSha = "c".repeat(40)))
+        for (replacement in replacements) {
+            compose.runOnIdle { current.value = current.value.copy(updates = available().copy(release = replacement)) }
+            compose.onNodeWithText("Improvements").assertDoesNotExist()
+            compose.onNodeWithTag("updates-changelog").performScrollTo().performClick()
+            compose.onNodeWithText("Improvements").assertExists()
+            compose.onNodeWithText(changelog.commits.first().subject).assertDoesNotExist()
+            compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+            compose.onNodeWithText(changelog.commits.first().subject).assertExists()
+        }
+    }
+
+    @Test fun compactOfferWrapsWithoutOverlapAtPhoneWidthsAndLargeFonts() {
+        val width = mutableStateOf(320.dp)
+        val fontScale = mutableStateOf(1f)
+        compose.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalDensity provides Density(density, fontScale.value)) {
+                AudioTheme { Box(Modifier.width(width.value)) { AudioApp(state(updates = available()), actions) { null } } }
+            }
+        }
+        for (phoneWidth in listOf(320.dp, 412.dp)) for (scale in listOf(1f, 2f)) {
+            compose.runOnIdle { width.value = phoneWidth; fontScale.value = scale }
+            compose.onNodeWithTag("updates-changelog").performScrollTo().assertIsDisplayed()
+            val offer = compose.onNodeWithTag("updates-offer").fetchSemanticsNode()
+            val label = compose.onNodeWithTag("updates-available-label").fetchSemanticsNode()
+            val version = compose.onNodeWithTag("updates-offered-version").fetchSemanticsNode()
+            // Layout coordinates stay meaningful when scrolling clips a heading.
+            org.junit.Assert.assertTrue(label.positionInRoot.x + label.size.width <= version.positionInRoot.x ||
+                label.positionInRoot.y + label.size.height <= version.positionInRoot.y)
+            org.junit.Assert.assertTrue(label.positionInRoot.x >= offer.positionInRoot.x &&
+                label.positionInRoot.x + label.size.width <= offer.positionInRoot.x + offer.size.width)
+            org.junit.Assert.assertTrue(version.positionInRoot.x >= offer.positionInRoot.x &&
+                version.positionInRoot.x + version.size.width <= offer.positionInRoot.x + offer.size.width)
+            val disclosure = compose.onNodeWithTag("updates-changelog").fetchSemanticsNode()
+            val download = compose.onNodeWithTag("updates-download").fetchSemanticsNode()
+            org.junit.Assert.assertTrue(disclosure.positionInRoot.y + disclosure.size.height <= download.positionInRoot.y)
+            compose.onNodeWithTag("updates-changelog").performClick()
+            compose.onNodeWithText("Keep duplicate songs").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("updates-commit-details").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("updates-download").performScrollTo().assertIsDisplayed()
+            compose.onNodeWithTag("mini-player").assertIsDisplayed()
+            compose.onNodeWithTag("updates-changelog").performScrollTo().performClick()
+            compose.onNodeWithContentDescription("Back").assertIsDisplayed()
+            compose.onNodeWithTag("settings-gear").assertIsDisplayed()
+        }
     }
 
     @Test fun downloadErrorOffersRetryWhileCheckFailureOffersCheckAgain() {
@@ -255,11 +460,13 @@ class UpdateScreensTest {
         val screens = mutableListOf<Screen>()
         val automatic = mutableListOf<Boolean>()
         var checks = 0
+        var changelogRetries = 0
         var downloads = 0
         var cancels = 0
         var installs = 0
         var pauses = 0
         override fun checkForUpdates() { checks++ }
+        override fun retryUpdateChangelog() { changelogRetries++ }
         override fun setAutomaticUpdates(enabled: Boolean) { automatic += enabled }
         override fun downloadUpdate() { downloads++ }
         override fun cancelUpdateDownload() { cancels++ }

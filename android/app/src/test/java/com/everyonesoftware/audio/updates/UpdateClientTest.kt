@@ -206,13 +206,23 @@ class UpdateClientTest {
     @Test fun discoversExactPublishedReleaseAndSendsNoCredentials() = runBlocking<Unit> {
         MockWebServer().use { server ->
             val found = release(server)
-            assertEquals(UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", payload.size.toLong(), hash, "${base}Music-0.1.42.apk", "Release notes"), found)
+            assertEquals(UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", payload.size.toLong(), hash, "${base}Music-0.1.42.apk", sourceSha = "a".repeat(40)), found)
             assertEquals("/repos/everyonesoftware/music/releases?per_page=100&page=1", server.takeRequest().path)
             val manifestRequest = server.takeRequest()
             assertEquals("/everyonesoftware/music/releases/download/v0.1.42/release.json", manifestRequest.path)
             assertNull(manifestRequest.getHeader("Authorization")); assertNull(manifestRequest.getHeader("Cookie"))
         }
     }
+    @Test fun currentDownloadsMarkdownIsNeverUsedAsChangelogNotes() = runBlocking<Unit> {
+        MockWebServer().use { server ->
+            server.enqueue(response(metadata().replace("Release notes", "## Current downloads | Platform | Download | Android | APK |")))
+            server.enqueue(response(manifest()))
+            val found = client(server).latest(1)!!
+            assertEquals("", found.notes)
+            assertEquals("a".repeat(40), found.sourceSha)
+        }
+    }
+
     @Test fun neverOffersEqualOrOlderBuild() = runBlocking<Unit> {
         MockWebServer().use { server ->
             for (installed in listOf(42L, 43L)) {
@@ -270,7 +280,7 @@ class UpdateClientTest {
             server.enqueue(response(" ".repeat(1024 * 1024 + 1))); failure { client(server).latest(1) }
             server.enqueue(response(metadata().replace("Release notes", "n".repeat(20000))))
             server.enqueue(response(manifest()))
-            assertEquals(16000, client(server).latest(1)!!.notes.length)
+            assertEquals("", client(server).latest(1)!!.notes)
             server.enqueue(response(metadata())); server.enqueue(response(" ".repeat(65537)))
             failure { client(server).latest(1) }
         }

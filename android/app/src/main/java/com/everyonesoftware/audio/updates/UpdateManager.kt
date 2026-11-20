@@ -24,7 +24,7 @@ class UpdateManager(context: Context, scope: CoroutineScope, private val client:
     private val installedCode = BuildConfig.VERSION_CODE.toLong()
     private val restored = readRelease()?.takeIf { it.count > installedCode }
     val coordinator = UpdateCoordinator(scope, installedCode, directory,
-        latest = client::latest, download = client::download,
+        latest = client::latest, download = client::download, loadChangelog = client::changelog,
         verify = { file, release -> installer.verify(file, release) },
         initialState = UpdateUiState(automaticChecks = preferences.getBoolean("automatic", true),
             lastCheckedAt = preferences.getLong("checked_at", 0L).takeIf { it > 0 }, release = restored,
@@ -46,6 +46,7 @@ class UpdateManager(context: Context, scope: CoroutineScope, private val client:
         })
     val state = coordinator.state
 
+
     /** No automatic installer launch on return from permission settings. A fresh tap is required. */
     fun onForeground() {
         coordinator.installerReturned()
@@ -64,7 +65,7 @@ class UpdateManager(context: Context, scope: CoroutineScope, private val client:
     private fun encodeRelease(release: UpdateRelease): String = buildJsonObject {
         put("count", release.count); put("version", release.version); put("apk", release.apk)
         put("bytes", release.bytes); put("sha256", release.sha256)
-        put("downloadUrl", release.downloadUrl); put("notes", release.notes.take(12_000))
+        put("downloadUrl", release.downloadUrl); put("sourceSha", release.sourceSha)
     }.toString()
 
     private fun readRelease(): UpdateRelease? = try {
@@ -74,10 +75,12 @@ class UpdateManager(context: Context, scope: CoroutineScope, private val client:
             val release = UpdateRelease(item.getValue("count").jsonPrimitive.int,
                 item.getValue("version").jsonPrimitive.content, item.getValue("apk").jsonPrimitive.content,
                 item.getValue("bytes").jsonPrimitive.long, item.getValue("sha256").jsonPrimitive.content,
-                item.getValue("downloadUrl").jsonPrimitive.content, item.getValue("notes").jsonPrimitive.content.take(12_000))
+                item.getValue("downloadUrl").jsonPrimitive.content,
+                sourceSha = item["sourceSha"]?.jsonPrimitive?.content.orEmpty())
             require(release.count in 1..2_100_000_000 && release.version == "0.1.${release.count}")
             require(release.apk == "Music-${release.version}.apk" && release.bytes in 1..157_286_400L)
             require(Regex("[0-9a-f]{64}").matches(release.sha256))
+            require(release.sourceSha.isEmpty() || Regex("[0-9a-f]{40}").matches(release.sourceSha))
             require(release.downloadUrl == "https://github.com/everyonesoftware/music/releases/download/v${release.version}/${release.apk}")
             release
         }

@@ -1,6 +1,7 @@
 package com.everyonesoftware.audio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -10,6 +11,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -20,8 +23,11 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
 import com.everyonesoftware.audio.updates.UpdateStage
+import com.everyonesoftware.audio.updates.ChangelogStage
+import com.everyonesoftware.audio.updates.UpdateUiState
 import java.util.Locale
 
 /** A quiet header affordance, never a banner over the music library. */
@@ -42,7 +48,7 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
     val release = update.release
     val busy = update.stage in listOf(UpdateStage.CHECKING, UpdateStage.DOWNLOADING, UpdateStage.VERIFYING)
     // A resumed player or changed release invalidates any previous install consent.
-    var confirmInstall by rememberSaveable(release?.count, update.stage, state.playing, update.installPermissionRequired) { mutableStateOf(false) }
+    var confirmInstall by rememberSaveable(release?.count, release?.sha256, release?.sourceSha, update.stage, state.playing, update.installPermissionRequired) { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -86,9 +92,7 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
                 }
             }
             if (release != null) {
-                HorizontalDivider()
-                Text(if (update.stage == UpdateStage.READY) "Ready to install" else "A new version is available", style = MaterialTheme.typography.titleLarge)
-                Text("Version ${release.version} · ${updateSize(release.bytes)}", style = MaterialTheme.typography.titleMedium)
+                UpdateOffer(update, actions::retryUpdateChangelog)
             }
             if (update.error != null) {
                 Text(update.error, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
@@ -96,7 +100,6 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
             when (update.stage) {
                 UpdateStage.AVAILABLE, UpdateStage.ERROR -> if (release != null) {
                     UpdateButton(if (update.stage == UpdateStage.ERROR) "Retry download" else "Download update", "updates-download", actions::downloadUpdate)
-                    UpdateHint("Downloading does not interrupt playback. Installation is a separate step.")
                 }
                 UpdateStage.DOWNLOADING -> {
                     val total = release?.bytes ?: 0L
@@ -114,10 +117,8 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
                 UpdateStage.VERIFYING -> {
                     LinearProgressIndicator(Modifier.fillMaxWidth())
                     Text("Verifying download…", Modifier.semantics { liveRegion = LiveRegionMode.Polite })
-                    UpdateHint("Checking the file before making it available to install.")
                 }
                 UpdateStage.READY -> if (release != null) {
-                    UpdateHint("Installation closes Music. Your queue and position are preserved, and playback stays paused when you reopen the app.")
                     if (state.playing) {
                         UpdateHint("Pause playback before continuing. The update will not pause your music automatically.")
                         UpdateButton("Pause playback", "updates-pause", actions::pauseForUpdate)
@@ -127,11 +128,6 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
                     }
                 }
                 else -> Unit
-            }
-            if (release != null && release.notes.isNotBlank()) {
-                Text("What’s new", style = MaterialTheme.typography.titleMedium)
-                // Plain text only; release notes cannot launch links or execute markup.
-                Text(release.notes, style = MaterialTheme.typography.bodyMedium)
             }
         }
     }
@@ -151,6 +147,101 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
             },
             dismissButton = { TextButton({ confirmInstall = false }) { Text("Not now") } },
         )
+    }
+}
+
+/** The release body is download inventory, never changelog evidence. */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun UpdateOffer(update: UpdateUiState, retry: () -> Unit) {
+    val release = update.release ?: return
+    // Do not reset disclosures on progress, retry or changelog-stage transitions.
+    var expanded by rememberSaveable(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
+    var commitsExpanded by rememberSaveable(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
+    val changelog = update.changelog.takeIf { update.changelogStage == ChangelogStage.AVAILABLE }
+    Column(Modifier.fillMaxWidth().testTag("updates-offer"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Update available", Modifier.padding(end = 12.dp).testTag("updates-available-label"), style = MaterialTheme.typography.titleMedium)
+            Text("Music ${release.version}", Modifier.testTag("updates-offered-version"), style = MaterialTheme.typography.titleMedium)
+        }
+        val detail = changelog?.let { "${it.count} ${if (it.count == 1) "change" else "changes"}" }
+            ?: when (update.changelogStage) {
+                ChangelogStage.IDLE -> null
+                ChangelogStage.LOADING -> "Loading…"
+                else -> "Unavailable"
+            }
+        UpdateDisclosure("What’s new", "updates-changelog", expanded, detail = detail) {
+            expanded = !expanded
+            // Loading is user initiated, never a side effect of composition or update checks.
+            if (expanded && update.changelogStage == ChangelogStage.IDLE) retry()
+        }
+        if (expanded) {
+            Column(Modifier.fillMaxWidth().padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                when (update.changelogStage) {
+                    ChangelogStage.IDLE -> {
+                        TextButton(retry, Modifier.heightIn(min = 48.dp).testTag("updates-changelog-load")) { Text("Load changes") }
+                    }
+                    ChangelogStage.LOADING -> {
+                        LinearProgressIndicator(Modifier.fillMaxWidth().testTag("updates-changelog-loading"))
+                        UpdateHint("Loading changes…")
+                    }
+                    ChangelogStage.UNAVAILABLE -> ChangelogUnavailable(retry)
+                    ChangelogStage.AVAILABLE -> if (changelog != null) {
+                        UpdateChangeGroup("Improvements", changelog.improvements)
+                        UpdateChangeGroup("Fixes", changelog.fixes)
+                        UpdateDisclosure("Commit details", "updates-commit-details", commitsExpanded) { commitsExpanded = !commitsExpanded }
+                        if (commitsExpanded) {
+                            Text("${changelog.fromSha} → ${changelog.toSha}", Modifier.testTag("updates-source-range"),
+                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            changelog.commits.forEach { commit ->
+                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(commit.subject, style = MaterialTheme.typography.bodyMedium)
+                                    Text(commit.sha.take(7), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    } else ChangelogUnavailable(retry)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ChangelogUnavailable(retry: () -> Unit) {
+    UpdateHint("Couldn’t load the changelog. You can still download this update.")
+    TextButton(retry, Modifier.heightIn(min = 48.dp).testTag("updates-changelog-retry")) { Text("Retry changelog") }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun UpdateDisclosure(label: String, tag: String, expanded: Boolean, detail: String? = null, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).testTag(tag)
+        .semantics { stateDescription = if (expanded) "Expanded" else "Collapsed" }
+        .clickable(onClickLabel = if (expanded) "Collapse $label" else "Expand $label", onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Icon(if (expanded) Icons.Default.ExpandMore else Icons.AutoMirrored.Filled.KeyboardArrowRight,
+            contentDescription = null, modifier = Modifier.size(24.dp))
+        FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, Modifier.padding(end = 12.dp), style = MaterialTheme.typography.titleMedium)
+            if (detail != null) Text(detail, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+@Composable
+private fun UpdateChangeGroup(title: String, changes: List<String>) {
+    if (changes.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(title, Modifier.semantics { heading() }, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+        changes.forEach { change ->
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text("•", style = MaterialTheme.typography.bodyMedium)
+                Text(change, Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            }
+        }
     }
 }
 

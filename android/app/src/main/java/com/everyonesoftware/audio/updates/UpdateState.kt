@@ -4,6 +4,8 @@ import com.everyonesoftware.audio.BuildConfig
 
 enum class UpdateStage { IDLE, CHECKING, AVAILABLE, DOWNLOADING, VERIFYING, READY, ERROR }
 
+enum class ChangelogStage { IDLE, LOADING, AVAILABLE, UNAVAILABLE }
+
 enum class UpdateCheckOutcome { NEVER, CHECKING, SUCCESS, FAILED }
 
 enum class UpdateFailureKind(val checkMessage: String) {
@@ -25,4 +27,6 @@ data class UpdateUiState(
     val checkFailure: UpdateFailureKind? = null,
     val consecutiveCheckFailures: Int = 0,
     val checkRetryAt: Long? = null,
+    val changelogStage: ChangelogStage = ChangelogStage.IDLE,
+    val changelog: UpdateChangelog? = null,
 )
