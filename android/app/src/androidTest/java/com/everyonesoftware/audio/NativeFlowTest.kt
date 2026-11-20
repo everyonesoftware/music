@@ -104,6 +104,7 @@ class NativeFlowTest {
                 if (url.queryParameter("u") != "native-fixture-user" || url.queryParameter("t").isNullOrBlank() || url.queryParameter("p") != null) return MockResponse().setResponseCode(401)
                 return when (url.encodedPath.substringAfterLast('/')) {
                     "ping.view" -> ok()
+                    "getArtists.view" -> ok(",\"artists\":{}")
                     "getAlbumList2.view" -> ok(",\"albumList2\":{\"album\":[{\"id\":\"fixture-album\",\"name\":\"Fixture album\",\"artist\":\"Audio test\",\"songCount\":4}]}")
                     "getAlbum.view" -> ok(",\"album\":{\"id\":\"fixture-album\",\"name\":\"Fixture album\",\"artist\":\"Audio test\",\"song\":[${listOf("s1", "s2", "s1", "s3").joinToString(",") { song(it) }}]}")
                     "search3.view" -> ok(",\"searchResult3\":{\"song\":[${song("s1")}]}")
@@ -210,7 +211,7 @@ class NativeFlowTest {
             // connection/UI state. Wait for that boundary, not only the earlier graph write.
             compose.waitUntil(20_000) { compose.onAllNodesWithTag("mini-player").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
-            compose.onNodeWithText("Search playlists, albums, and songs").assertIsDisplayed()
+            compose.onNodeWithText("Search playlists, albums, artists, and songs").assertIsDisplayed()
             compose.onNodeWithTag("player-toggle").assertDoesNotExist()
             compose.onNodeWithTag("mini-player").assertIsDisplayed()
             Assert.assertEquals(expected, graph.session.value)
@@ -245,7 +246,7 @@ class NativeFlowTest {
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Choose a playlist").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Choose a playlist").performClick()
         compose.waitUntil(15_000) { compose.onAllNodesWithTag("playlist-card-routine").fetchSemanticsNodes().isNotEmpty() }
-        compose.onNodeWithText("Search playlists, albums, and songs").performClick()
+        compose.onNodeWithText("Search playlists, albums, artists, and songs").performClick()
         compose.onNodeWithTag("library-search").performTextInput("s1")
         compose.waitUntil(15_000) { compose.onAllNodesWithText("Fixture s1").fetchSemanticsNodes().isNotEmpty() }
         compose.onNodeWithText("Fixture s1").performClick()

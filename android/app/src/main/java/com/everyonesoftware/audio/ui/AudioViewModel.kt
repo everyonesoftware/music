@@ -57,6 +57,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private var operation: Job? = null
     private var albumsOperation: Job? = null
     private var albumsInitialized = false
+    private var artistsOperation: Job? = null
+    private var artistsInitialized = false
+    private var artistDetailOperation: Job? = null
+    private var artistDetailGeneration = 0L
     private var searchOperation: Job? = null
     private var searchGeneration = 0L
     private var playlistDetailOperation: Job? = null
@@ -129,6 +133,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     private suspend fun restoreConnection() {
+        artistsOperation?.cancel()
+        artistsInitialized = false
+        ++artistDetailGeneration
+        artistDetailOperation?.cancel()
         ++playlistDetailGeneration
         playlistDetailOperation?.cancel()
         ++searchGeneration
@@ -142,6 +150,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val selected = connection?.let { graph.store.selectedLibraries(it.id) }.orEmpty()
         val connections = graph.store.connections()
         current.update { it.copy(connection = connection, connections = connections, selectedOfflineCollection = null, playlists = playlists, albums = emptyList(), albumsError = null, selectedAlbum = null, albumSongs = emptyList(), albumError = null,
+            artists = emptyList(), artistsRefreshing = false, artistsError = null, artistCollectionQuery = "",
+            selectedArtist = null, artistContents = null, artistLoading = false, artistError = null, artistReturnScreen = Screen.PLAYLISTS,
             selectedPlaylist = null, playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null,
             searchQuery = "", searchSongs = emptyList(), searchLoading = false, searchError = null,
             playlistCollectionQuery = "", albumCollectionQuery = "",
@@ -202,9 +212,11 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         when (screen) {
             Screen.PLAYLISTS -> loadPlaylists()
             Screen.ALL_ALBUMS -> if (!albumsInitialized) loadAlbums()
+            Screen.ALL_ARTISTS -> if (!artistsInitialized) loadArtists()
             Screen.SEARCH -> {
                 current.update { it.copy(screen = screen, error = null) }
                 loadAlbums()
+                if (!artistsInitialized) loadArtists()
             }
             Screen.ALBUM -> current.update { it.copy(screen = screen, error = null) }
             Screen.LIBRARIES -> {
@@ -241,6 +253,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun loadPlaylists() {
         current.update { it.copy(screen = Screen.PLAYLISTS) }
         loadAlbums()
+        loadArtists()
         viewModelScope.launch {
             initialization.join()
             graph.playlists.refresh()
@@ -287,16 +300,92 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             Screen.PLAYLISTS -> {
                 refreshCollection(CollectionKind.PLAYLISTS)
                 loadAlbums()
+                loadArtists()
             }
+            Screen.ALL_ARTISTS -> loadArtists()
+            Screen.ARTIST -> if (!page.artistLoading) page.selectedArtist?.let { openArtist(it.id) }
             Screen.ALL_PLAYLISTS -> refreshCollection(CollectionKind.PLAYLISTS)
             Screen.ALL_ALBUMS -> loadAlbums()
             Screen.PLAYLIST -> if (!page.playlistLoading) page.selectedPlaylist?.let { loadPlaylistDetail(it) }
             Screen.ALBUM -> if (!page.albumLoading) page.selectedAlbum?.let { loadAlbumDetail(it.id) }
             Screen.SEARCH -> {
                 if (page.albumsError != null) loadAlbums()
+                if (page.artistsError != null) loadArtists()
                 if (page.searchQuery.isNotBlank()) loadSearch(page.searchQuery, retainResults = true)
             }
             else -> Unit
+        }
+    }
+
+    override fun setArtistQuery(query: String) { current.update { it.copy(artistCollectionQuery = query) } }
+
+    override fun loadArtists() {
+        val credentials = graph.credentials.value ?: return
+        if (current.value.connection != credentials.connection || current.value.artistsRefreshing) return
+        if (graph.networkPolicy.offline) {
+            current.update { it.copy(artistsError = "Artists are unavailable offline. Open Saved music for downloaded albums and songs.") }
+            return
+        }
+        artistsOperation?.cancel()
+        current.update { it.copy(artistsRefreshing = true, artistsError = null) }
+        artistsOperation = viewModelScope.launch {
+            try {
+                val artists = graph.clientFor(credentials).artists()
+                if (graph.credentials.value == credentials) {
+                    artistsInitialized = true
+                    current.update { it.copy(artists = artists) }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (graph.credentials.value == credentials) current.update { it.copy(artistsError = safeMessage(error)) }
+            } finally {
+                if (graph.credentials.value == credentials) current.update { it.copy(artistsRefreshing = false) }
+            }
+        }
+    }
+
+    override fun openArtist(id: String) {
+        val credentials = graph.credentials.value ?: return
+        if (current.value.connection != credentials.connection) return
+        val artist = current.value.artists.firstOrNull { it.id == id }
+            ?: current.value.selectedArtist?.takeIf { it.id == id } ?: return
+        val ticket = ++artistDetailGeneration
+        artistDetailOperation?.cancel()
+        current.update { it.navigateTo(Screen.ARTIST).copy(selectedArtist = artist, artistContents = null,
+            artistLoading = !graph.networkPolicy.offline, artistError = if (graph.networkPolicy.offline)
+                "Artists are unavailable offline. Open Saved music for downloaded albums and songs." else null) }
+        if (graph.networkPolicy.offline) return
+        artistDetailOperation = viewModelScope.launch {
+            try {
+                val contents = graph.clientFor(credentials).artist(id)
+                if (ticket == artistDetailGeneration && graph.credentials.value == credentials && current.value.selectedArtist?.id == id) {
+                    current.update { it.copy(selectedArtist = contents.artist, artistContents = contents, artistLoading = false) }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (ticket == artistDetailGeneration && graph.credentials.value == credentials && current.value.selectedArtist?.id == id) {
+                    current.update { it.copy(artistLoading = false, artistError = safeMessage(error), artistContents = null) }
+                }
+            }
+        }
+    }
+
+    override fun playArtist(id: String, shuffle: Boolean) {
+        val page = current.value
+        val credentials = graph.credentials.value ?: return
+        if (credentials.connection != page.connection || graph.networkPolicy.offline) return
+        val songs = page.artistContents?.songs ?: return
+        val selection = CollectionSongSelection(credentials.connection.id, "artist", id, 0, songs)
+        val ordered = page.collectionSongSession(selection) ?: return
+        val session = if (shuffle) SessionRules.start(credentials.connection.id, id, ordered.playlistName, songs, sourceType = "artist", shuffle = true) else ordered
+        val previous = graph.session.value
+        work {
+            val controller = controller()
+            require(graph.credentials.value == credentials && !graph.networkPolicy.offline &&
+                current.value.copy(loading = false).collectionSongSession(selection) != null) { "This artist changed. Reopen it and retry." }
+            graph.setSession(session, credentials, previous)
+            controller.play()
+            current.update { it.copy(screen = Screen.PLAYER, ratingError = null) }
         }
     }
 
@@ -325,8 +414,15 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         if (graph.networkPolicy.offline) { openOfflineCollection("album", id); return }
         if (graph.credentials.value == null) return
         val saved = current.value.storage.collections.firstOrNull { it.kind == "album" && it.id == id }
-        val album = current.value.albums.firstOrNull { it.id == id }
+        val artistAlbum = current.value.artistContents?.albums?.firstOrNull { it.album.id == id }
+        val album = artistAlbum?.album ?: current.value.albums.firstOrNull { it.id == id }
             ?: saved?.let { Album(it.id, it.name, it.artist, it.coverArtId, it.songs.size, it.year) } ?: return
+        if (current.value.screen == Screen.ARTIST && artistAlbum != null && !current.value.artistLoading && current.value.artistError == null) {
+            ++albumDetailGeneration
+            albumDetailOperation?.cancel()
+            current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = artistAlbum.songs, albumLoading = false, albumError = null) }
+            return
+        }
         current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
         loadAlbumDetail(id, preferSaved = true)
     }
@@ -390,12 +486,14 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         if (page.connection != credentials.connection) return
         graph.artworkCache.retryFailed(credentials)
         val failed = when (page.screen) {
-            Screen.PLAYLISTS -> refreshLibrary || page.playlistError != null || page.albumsError != null
+            Screen.PLAYLISTS -> refreshLibrary || page.playlistError != null || page.albumsError != null || page.artistsError != null
+            Screen.ALL_ARTISTS -> page.artistsError != null
+            Screen.ARTIST -> page.artistError != null
             Screen.ALL_PLAYLISTS -> page.playlistError != null
             Screen.ALL_ALBUMS -> page.albumsError != null
             Screen.PLAYLIST -> page.playlistDetailError != null
             Screen.ALBUM -> page.albumError != null
-            Screen.SEARCH -> page.searchError != null || page.albumsError != null
+            Screen.SEARCH -> page.searchError != null || page.albumsError != null || page.artistsError != null
             else -> false
         }
         if (failed) refreshCurrentPage()
@@ -819,6 +917,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             current.update { it.copy(session = session, positionMs = session?.positionMs ?: 0, screen = if (session != null) Screen.PLAYER else Screen.PLAYLISTS) }
             if (session == null) {
                 loadAlbums()
+                loadArtists()
                 graph.playlists.refresh()
             }
         }

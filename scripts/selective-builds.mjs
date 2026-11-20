@@ -27,7 +27,7 @@ export function affectedComponents(paths) {
     }
     if (path.startsWith('apps/windows/') || /^scripts\/(?:.*windows.*|generate-windows-icons)\.(?:mjs|py|ps1)$/.test(path) || /^tests\/(?:windows-.*\.test\.mjs|ensure-windows-main-release\.test\.mjs|test_windows_.*\.py)$/.test(path) || /^\.github\/workflows\/windows-.*\.yml$/.test(path)) { add('windows'); continue; }
     if (/^scripts\/(?:android-release|test-android-.*)\.py$/.test(path) || /^tests\/test_android_.*\.py$/.test(path) || path === '.github/workflows/android-release.yml') { add('android'); continue; }
-    if (path.startsWith('mockups/') || ['package.json', 'package-lock.json', '.github/workflows/web-build.yml'].includes(path) || /^scripts\/(?:build-(?:onboarding|phone-size|readable)|serve)\.mjs$/.test(path) || /^scripts\/(?:v3-contact-sheet|v5-comparison)\.py$/.test(path) || /^tests\/(?:android-auto|bottom-chrome|first-install|media-output-mockup|mockups|now-playing-options|phone-size|playlist-workflow|queue-shuffle|readable-player|windows-native(?:-v[23])?)\.mjs$/.test(path)) { add('web'); continue; }
+    if (path.startsWith('mockups/') || ['package.json', 'package-lock.json', '.github/workflows/web-build.yml'].includes(path) || /^scripts\/(?:build-(?:onboarding|phone-size|readable)|serve)\.mjs$/.test(path) || /^scripts\/(?:v3-contact-sheet|v5-comparison)\.py$/.test(path) || /^tests\/(?:android-auto|artists-mockup|bottom-chrome|first-install|media-output-mockup|mockups|now-playing-options|phone-size|playlist-workflow|queue-shuffle|readable-player|windows-native(?:-v[23])?)\.mjs$/.test(path)) { add('web'); continue; }
     // Unknown build inputs are shared until explicitly classified. Never silently skip them.
     add(...components);
   }

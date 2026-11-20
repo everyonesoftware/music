@@ -12,7 +12,7 @@ import com.everyonesoftware.audio.playback.output.MediaOutputState
 
 import com.everyonesoftware.audio.updates.UpdateUiState
 
-enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES, OFFLINE }
+enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, ALL_ARTISTS, ARTIST, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES, OFFLINE }
 
 data class AudioUiState(
     val booting: Boolean = true,
@@ -35,6 +35,15 @@ data class AudioUiState(
     val searchLoading: Boolean = false,
     val searchError: String? = null,
     val albums: List<Album> = emptyList(),
+    val artists: List<com.everyonesoftware.audio.data.Artist> = emptyList(),
+    val artistsRefreshing: Boolean = false,
+    val artistsError: String? = null,
+    val artistCollectionQuery: String = "",
+    val selectedArtist: com.everyonesoftware.audio.data.Artist? = null,
+    val artistContents: com.everyonesoftware.audio.data.ArtistContents? = null,
+    val artistLoading: Boolean = false,
+    val artistError: String? = null,
+    val artistReturnScreen: Screen = Screen.PLAYLISTS,
     val albumsRefreshing: Boolean = false,
     val albumsError: String? = null,
     val selectedAlbum: Album? = null,
@@ -70,7 +79,7 @@ fun AudioUiState.withCollectionLayout(kind: CollectionKind, layout: CollectionLa
 
 /** Browsing navigation never issues playback commands or clears collection state. */
 fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
-    val origins = setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.SEARCH)
+    val origins = setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.ALL_ARTISTS, Screen.SEARCH)
     val returningToSettings = screen == Screen.LIBRARIES || screen == Screen.OFFLINE ||
         (screen == Screen.UPDATES && updatesReturnScreen == Screen.SETTINGS)
     return copy(
@@ -78,7 +87,8 @@ fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
         settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
         updatesReturnScreen = if (destination == Screen.UPDATES && screen != Screen.UPDATES) screen else updatesReturnScreen,
         playlistReturnScreen = if (destination == Screen.PLAYLIST && screen in origins) screen else playlistReturnScreen,
-        albumReturnScreen = if (destination == Screen.ALBUM && screen in origins) screen else albumReturnScreen,
+        albumReturnScreen = if (destination == Screen.ALBUM && (screen in origins || screen == Screen.ARTIST)) screen else albumReturnScreen,
+        artistReturnScreen = if (destination == Screen.ARTIST && screen in origins) screen else artistReturnScreen,
     )
 }
 
@@ -86,11 +96,12 @@ val AudioUiState.backDestination: Screen
     get() = when (screen) {
         Screen.PLAYLIST -> playlistReturnScreen
         Screen.ALBUM -> albumReturnScreen
+        Screen.ARTIST -> artistReturnScreen
         Screen.SETTINGS -> settingsReturnScreen ?: if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
         Screen.UPDATES -> updatesReturnScreen
         Screen.QUEUE -> Screen.PLAYER
         Screen.OFFLINE -> if (selectedOfflineCollection != null) Screen.OFFLINE else Screen.SETTINGS
-        Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYER -> Screen.PLAYLISTS
+        Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.ALL_ARTISTS, Screen.PLAYER -> Screen.PLAYLISTS
         else -> if (connection != null) Screen.PLAYLISTS else Screen.WELCOME
     }
 
@@ -111,6 +122,7 @@ fun AudioUiState.collectionSongSession(request: CollectionSongSelection): Listen
     val name = when (request.kind) {
         "playlist" -> if (screen == Screen.PLAYLIST && selectedPlaylist?.id == request.id && !playlistLoading && playlistDetailError == null && playlistSongs == request.songs) selectedPlaylist.name else null
         "album" -> if (screen == Screen.ALBUM && selectedAlbum?.id == request.id && !albumLoading && albumError == null && albumSongs == request.songs) selectedAlbum.name else null
+        "artist" -> if (screen == Screen.ARTIST && selectedArtist?.id == request.id && !artistLoading && artistError == null && artistContents?.songs == request.songs) selectedArtist.name else null
         else -> null
     } ?: return null
     if (request.index !in request.songs.indices) return null
@@ -119,6 +131,10 @@ fun AudioUiState.collectionSongSession(request: CollectionSongSelection): Listen
 }
 
 interface AudioUiActions {
+    fun loadArtists() = Unit
+    fun openArtist(id: String) = Unit
+    fun playArtist(id: String, shuffle: Boolean = false) = Unit
+    fun setArtistQuery(query: String) = Unit
     fun playCollectionSong(selection: CollectionSongSelection) = Unit
     fun playQueueSong(connectionId: String, queueId: String, occurrence: Int) = Unit
     fun setCollectionQuery(kind: CollectionKind, query: String) = Unit

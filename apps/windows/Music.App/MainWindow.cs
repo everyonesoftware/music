@@ -30,6 +30,8 @@ public sealed partial class MainWindow : Window
     private NavidromeClient? client;
     private IReadOnlyList<Album> albums = Array.Empty<Album>();
     private IReadOnlyList<Playlist> playlists = Array.Empty<Playlist>();
+    private IReadOnlyList<Artist> artists = Array.Empty<Artist>();
+    private bool artistsLoaded;
     private List<Song> songs = new(), queue = new();
     private List<Song>? renderedQueue;
     private int renderedQueueCount = -1, renderedSelection = -1;
@@ -70,7 +72,7 @@ public sealed partial class MainWindow : Window
         AppWindow.Resize(new Windows.Graphics.SizeInt32(1240, 850));
         AppWindow.TitleBar.ButtonBackgroundColor = ColorHelper.FromArgb(255, 36, 44, 40);
         AppWindow.TitleBar.ButtonForegroundColor = ColorHelper.FromArgb(255, 237, 240, 233);
-        foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
+        foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("ArtistsNav", "artists"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
         { string target = entry.Item2; C<Button>(entry.Item1).Click += async (_, _) => await NavigateAsync(target); }
         C<Button>("WelcomeConnect").Click += async (_, _) => await NavigateAsync("settings");
         C<Button>("ConnectButton").Click += async (_, _) => await ConnectAsync();
@@ -108,6 +110,7 @@ public sealed partial class MainWindow : Window
         C<Button>("CloseQueueButton").Click += (_, _) => { C<Border>("QueuePane").Visibility = Visibility.Collapsed; C<Button>("QueueButton").Focus(FocusState.Programmatic); };
         InitializeQueueList(C<ListView>("QueueList"));
         InitializeDetailList();
+        InitializeArtistAlbums();
         InitializeNavigation();
         player.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(UpdateTransport);
         player.MediaEnded += (_, _) =>
@@ -313,6 +316,7 @@ public sealed partial class MainWindow : Window
         StopPlayback();
         client?.Dispose();
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
+        artists = []; artistsLoaded = false;
         client.Offline = offlineSettings.Offline;
         cacheInitialization = ActivateCache(profile);
         songs.Clear(); artwork.Clear();
@@ -370,7 +374,7 @@ public sealed partial class MainWindow : Window
 
     private void SetNavigation()
     {
-        foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
+        foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("ArtistsNav", "artists"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
         {
             var button = C<Button>(entry.Item1);
             button.Background = entry.Item2 == page ? new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57)) : new SolidColorBrush(Colors.Transparent);
@@ -409,13 +413,29 @@ public sealed partial class MainWindow : Window
         {
             if (debounce) await Task.Delay(280, lease.Token);
             IReadOnlyList<Song> result = Array.Empty<Song>();
+            if (!artistsLoaded && requestedPage is "library" or "artists")
+            {
+                var index = await target.GetArtistsAsync(lease.Token);
+                if (!browseGate.IsCurrent(lease) || closed || target != client) return;
+                artists = index; artistsLoaded = true;
+            }
             if (requestedPage is "library" or "songs") result = await target.SearchSongsAsync(requestedQuery, 0, 100, lease.Token);
             if (!browseGate.IsCurrent(lease) || closed || target != client) return;
             songs = result.ToList(); songOffset = result.Count; moreSongs = result.Count == 100;
             RenderBrowse();
         }
         catch (OperationCanceledException) { }
-        catch { if (browseGate.IsCurrent(lease) && !closed) { songs.Clear(); moreSongs = false; RenderBrowse(); ShowError("Could not load songs. Check the connection and try searching again."); } }
+        catch
+        {
+            if (browseGate.IsCurrent(lease) && target == client && !closed)
+            {
+                songs.Clear(); moreSongs = false; RenderBrowse();
+                ShowError("Could not load the library. Check the connection and retry.");
+                var retry = new Button { Content = "Retry loading library" };
+                retry.Click += async (_, _) => { if (browseGate.IsCurrent(lease) && target == client && !closed) await LoadBrowseAsync(); };
+                C<StackPanel>("BrowsePanel").Children.Add(retry);
+            }
+        }
         finally
         {
             if (browseGate.IsCurrent(lease) && !closed)
@@ -435,6 +455,7 @@ public sealed partial class MainWindow : Window
         bool Match(string text) => text.Contains(query, StringComparison.OrdinalIgnoreCase);
         var foundAlbums = albums.Where(a => Match(a.Name + " " + a.Artist)).ToList();
         var foundPlaylists = playlists.Where(p => Match(p.Name)).ToList();
+        var foundArtists = artists.Where(a => Match(a.Name)).ToList();
         bool library = page == "library";
         if (BrowsePolicy.ShowSection(page, "playlists", foundPlaylists.Count))
         {
@@ -448,6 +469,12 @@ public sealed partial class MainWindow : Window
             AddCollection(section, foundAlbums.Select(a => new Card(a.Name, $"{a.Artist} · {a.Year}", a.CoverArtId, a)).ToList(), library ? "row" : mode, artLease.Token);
             panel.Children.Add(section);
         }
+        if (BrowsePolicy.ShowSection(page, "artists", foundArtists.Count))
+        {
+            var section = NewSection("Artists", "artists");
+            AddCollection(section, foundArtists.Select(a => new Card(a.Name, $"{a.AlbumCount} albums", a.CoverArtId, a)).ToList(), library ? "row" : mode, artLease.Token);
+            panel.Children.Add(section);
+        }
         if (BrowsePolicy.ShowSection(page, "songs", songs.Count, query))
         {
             var section = NewSection("Songs", "songs");
@@ -455,7 +482,7 @@ public sealed partial class MainWindow : Window
             if (!library && moreSongs) AddLoadMore(section);
             panel.Children.Add(section);
         }
-        if (panel.Children.Count == 0) panel.Children.Add(Text(string.IsNullOrEmpty(query) ? "No music found in this collection." : "No matching albums, playlists, or songs.", 16, true));
+        if (panel.Children.Count == 0) panel.Children.Add(Text(string.IsNullOrEmpty(query) ? "No music found in this collection." : "No matching albums, playlists, artists, or songs.", 16, true));
     }
 
     private StackPanel NewSection(string title, string target)
@@ -463,7 +490,7 @@ public sealed partial class MainWindow : Window
         var panel = new StackPanel { Spacing = 12 };
         if (page == "library")
         {
-            if (target is "playlists" or "albums")
+            if (target is "playlists" or "albums" or "artists")
             {
                 var heading = new HyperlinkButton
                 {
@@ -494,6 +521,8 @@ public sealed partial class MainWindow : Window
     private void AddCollection(StackPanel section, IReadOnlyList<Card> cards, string layout, CancellationToken token)
     {
         var owner = connectionLease;
+        long renderedVersion = browseResultsVersion;
+        string renderedPage = page;
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
         view.SelectionMode = ListViewSelectionMode.None; view.IsItemClickEnabled = true;
         view.HorizontalAlignment = HorizontalAlignment.Stretch;
@@ -507,11 +536,17 @@ public sealed partial class MainWindow : Window
             BindLibraryShelf(section, view);
         }
         foreach (var card in cards) view.Items.Add(CardElement(card, layout == "row" ? "grid" : layout, token));
-        view.ItemClick += async (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement item) await OpenCollectionAsync(item.Tag); };
+        view.ItemClick += async (_, e) =>
+        {
+            if (closed || !connectionGate.IsCurrent(owner) || e.ClickedItem is not FrameworkElement item) return;
+            if (item.Tag is Artist && (renderedVersion != browseResultsVersion || renderedPage != page)) return;
+            await OpenCollectionAsync(item.Tag);
+        };
         section.Children.Add(view);
     }
     private FrameworkElement CardElement(Card card, string layout, CancellationToken token, Song? song = null)
     {
+        if (card.Value is Artist artist) return ArtistCard(artist, layout, token);
         var outer = new Grid { Tag = card.Value, Margin = new Thickness(0, 0, 12, 12), Padding = new Thickness(4), MinHeight = 60 };
         var art = new Image { Stretch = Stretch.UniformToFill, Width = layout == "grid" ? 156 : 48, Height = layout == "grid" ? 156 : 48 };
         var cover = new Border { Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57)), CornerRadius = new CornerRadius(5), Child = art };
@@ -673,6 +708,9 @@ public sealed partial class MainWindow : Window
     }
     private void ClearDetail()
     {
+        C<GridView>("ArtistAlbumList").ItemsSource = null;
+        C<GridView>("ArtistAlbumList").Visibility = Visibility.Collapsed;
+        artistAlbums = [];
         C<ListView>("DetailList").ItemsSource = null;
         C<StackPanel>("DetailHeader").Children.Clear();
         C<Grid>("DetailHost").Visibility = Visibility.Collapsed;
@@ -681,6 +719,8 @@ public sealed partial class MainWindow : Window
     }
     private async Task OpenCollectionAsync(object? value, bool remember = true)
     {
+        if (value is ArtistNavigation origin) { await OpenArtistAsync(origin.Artist, remember, origin.View); return; }
+        if (value is Artist artist) { await OpenArtistAsync(artist, remember); return; }
         if (client is null) return;
         if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
         string title = value switch { Album album => album.Name, Playlist playlist => playlist.Name, _ => "" };
@@ -726,10 +766,11 @@ public sealed partial class MainWindow : Window
         C<ScrollViewer>("MainScroll").Visibility = Visibility.Collapsed;
         C<Grid>("DetailHost").Visibility = Visibility.Visible;
         var panel = C<StackPanel>("DetailHeader"); panel.Children.Clear(); panel.Spacing = 12;
+        if (detailIdentity.Kind == "artist") RenderArtistHeader(panel);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
         actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs", 13, true));
         panel.Children.Add(actions);
-        panel.Children.Add(CreateCollectionTransport());
+        panel.Children.Add(detailIdentity.Kind == "artist" ? CreateArtistTransport() : CreateCollectionTransport());
         var header = SongGrid(); header.MinHeight = 32;
         string[] headings = { "#", "Title / artist", "Album", "Time" };
         for (int column = 0; column < headings.Length; column++)
@@ -743,6 +784,12 @@ public sealed partial class MainWindow : Window
         var view = C<ListView>("DetailList");
         view.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
         view.ItemsSource = detailSongs.Select((song, index) => new DetailSong(song, index) { Owner = connectionLease }).ToArray();
+        bool showAlbums = detailIdentity.Kind == "artist" && artistView == "albums";
+        view.Visibility = showAlbums ? Visibility.Collapsed : Visibility.Visible;
+        header.Visibility = showAlbums ? Visibility.Collapsed : Visibility.Visible;
+        var albumView = C<GridView>("ArtistAlbumList");
+        albumView.Visibility = showAlbums ? Visibility.Visible : Visibility.Collapsed;
+        albumView.ItemsSource = showAlbums ? artistAlbums : null;
     }
 
     private static TextBlock Text(string text, double size, bool muted = false) => new() { Text = text, FontSize = size, Foreground = muted ? Muted : new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233)), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, FontFamily = new FontFamily("Segoe UI") };

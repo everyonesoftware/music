@@ -1,4 +1,6 @@
 import './playing-callback.test.mjs';
+import './artists-flow.test.mjs';
+import './artists-visual.test.mjs';
 import './up-next-shuffle.test.mjs';
 import './player-controls.test.mjs';
 import './played-queue.test.mjs';
@@ -54,7 +56,7 @@ test('library renders the playlists row before albums', () => {
 test('library collections use one horizontally scrolling row without the eight-card cap', () => {
   const browse = method('RenderBrowse');
   const collectionCalls = browse.split('\n').filter(line => line.includes('AddCollection(section,'));
-  assert.equal(collectionCalls.length, 2);
+  assert.equal(collectionCalls.length, 3);
   for (const call of collectionCalls) {
     assert.match(call, /library \? "row" : mode, artLease.Token\)/);
   }
@@ -146,7 +148,7 @@ test('collection detail keeps count above shared left transport without a Librar
   assert.doesNotMatch(detail, /actions.Children.Add\(back\)|←|NavigateAsync/);
   assert.match(detail, /actions.Children.Add\(Text\(/);
   assert.doesNotMatch(detail, /panel.Children.Add\((back|play)\)/);
-  assert.match(detail, /panel.Children.Add\(CreateCollectionTransport\(\)\)/);
+  assert.match(detail, /panel.Children.Add\(detailIdentity.Kind == "artist" \? CreateArtistTransport\(\) : CreateCollectionTransport\(\)\)/);
 });
 
 test('track list shares responsive columns with its headings and stretches item containers', () => {

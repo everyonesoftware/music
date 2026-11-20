@@ -9,6 +9,7 @@ const app = new URL('../Music.App/', import.meta.url);
 const read = name => readFileSync(new URL(name, app), 'utf8').replaceAll('\r\n', '\n');
 const main = read('MainWindow.cs');
 const navigation = read('MainWindow.Navigation.cs');
+const artistsSource = read('MainWindow.Artists.cs');
 const method = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
 
 test('delayed real startup/navigation methods preserve user destination and Back history without cancelling catalog load', () => {
@@ -33,6 +34,7 @@ ${method(main, '    private async Task NavigateAsync(', '    private void SetNav
 ${method(main, '    private async Task LoadBrowseAsync(', '    private StackPanel NewSection(')}
 ${method(main, '    private void AddLoadMore(', '    private string detailTitle')}
 ${method(main, '    private async Task OpenCollectionAsync(', '    private void RenderDetail()')}
+${method(artistsSource, '    private async Task OpenArtistAsync(', '    private void RenderArtistHeader(')}
 ${method(navigation, '    private async Task GoBackAsync()', '\n}')}
     readonly NavigationHistory navigationHistory = new();
     readonly RequestGate connectGate = new(), browseGate = new(), artworkGate = new(), connectionGate = new();
@@ -42,7 +44,10 @@ ${method(navigation, '    private async Task GoBackAsync()', '\n}')}
     ConnectionProfile? connection;
     readonly OfflineSettings offlineSettings = new();
     Task cacheInitialization = Task.CompletedTask;
-    bool closed, updatingNavigation, browsePending, detailLoading, detailError;
+    bool closed, updatingNavigation, browsePending, detailLoading, detailError, accountChangePending, artistsLoaded;
+    IReadOnlyList<Artist> artists = [];
+    IReadOnlyList<Album> artistAlbums = [];
+    string artistView = "albums";
     long browseResultsVersion;
     List<Song> songs = [];
     int songOffset;
@@ -97,6 +102,29 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
     public static async Task Run()
     {
+        {
+            var window = new MainWindow(); await window.InitializeAsync();
+            window.artists = new[] { new Artist("a", "Same"), new Artist("b", "Same"), new Artist("c", "Other") };
+            window.artistsLoaded = true;
+            await window.NavigateAsync("artists"); window.query = "same"; await window.LoadBrowseAsync();
+            Check(window.Rendered.SequenceEqual(new[] { "Same", "Same" }), "artist search preserves distinct same-name library artists");
+            await window.NavigateAsync("library"); window.query = "Same"; await window.LoadBrowseAsync();
+            Check(window.Rendered.SequenceEqual(new[] { "Same", "Same" }), "library search includes real artist matches");
+            Console.WriteLine("PASS artist destination and library search retain same-name artists");
+        }
+        foreach (var stale in new[] { "navigation", "account" })
+        {
+            var window = new MainWindow(); await window.InitializeAsync();
+            window.artistsLoaded = false; window.page = "artists";
+            var response = new TaskCompletionSource<IReadOnlyList<Artist>>();
+            window.client!.ArtistIndex = _ => response.Task;
+            var load = window.LoadBrowseAsync();
+            if (stale == "navigation") await window.NavigateAsync("settings");
+            else window.client = new NavidromeClient(new ConnectionProfile(), "");
+            response.SetResult(new[] { new Artist("old", "Old account") }); await load;
+            Check(window.artists.Count == 0 && !window.artistsLoaded, "stale artist index must not publish after " + stale);
+            Console.WriteLine("PASS artist index stale " + stale);
+        }
         foreach (var activePage in new[] { "albums", "playlists", "library" })
         {
             var window = new MainWindow { delay = "catalog" };
@@ -274,6 +302,9 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
 record Album(string Id, string Name, string Artist = "", int Year = 2026, string? CoverArtId = null);
 record Playlist(string Id, string Name, int SongCount = 0, string? CoverArtId = null);
 record Song(string Id);
+record Artist(string Id, string Name, int AlbumCount = 0, string? CoverArtId = null);
+record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs);
+record ArtistNavigation(Artist Artist, string View);
 record ConnectionProfile(string Name = "Saved", string ServerUrl = "https://example.test", string Username = "user");
 class ProfileStore { public string DirectoryPath => "."; public ConnectionProfile ReadProfile() => new(); public string ReadPassword(ConnectionProfile _) => ""; }
 class SessionStore { public SessionStore(string path) { } }
@@ -283,6 +314,9 @@ class NavidromeClient : IDisposable
     public NavidromeClient(ConnectionProfile profile, string password) { }
     public Func<Task> Ping = () => Task.CompletedTask;
     public Task PingAsync(CancellationToken token) => Ping();
+    public Func<CancellationToken, Task<IReadOnlyList<Artist>>> ArtistIndex = _ => Task.FromResult<IReadOnlyList<Artist>>([]);
+    public Task<IReadOnlyList<Artist>> GetArtistsAsync(CancellationToken token) => ArtistIndex(token);
+    public Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken token) => Task.FromResult(new ArtistLibrary(new Artist(id, "Artist"), [], []));
     public Func<string, int, CancellationToken, Task<IReadOnlyList<Song>>> Search = (_, _, _) => Task.FromResult<IReadOnlyList<Song>>([]);
     public Task<IReadOnlyList<Song>> SearchSongsAsync(string query, int offset, int count, CancellationToken token) => Search(query, offset, token);
     public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken token) => Task.FromResult<IReadOnlyList<Song>>([]);

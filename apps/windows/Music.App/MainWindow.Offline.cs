@@ -316,7 +316,7 @@ public sealed partial class MainWindow
             if (closed || connection != profile) return;
             cache = null; client?.Dispose(); client = null; connection = null;
             navigationHistory.Clear(); detailCollection = null;
-            pendingDownloads.Clear(); albums = []; playlists = []; songs.Clear(); artwork.Clear();
+            pendingDownloads.Clear(); albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
             C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";
             RefreshStorageUsage(); await NavigateAsync("settings", remember: false);

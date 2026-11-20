@@ -68,6 +68,17 @@ test('queue-shuffle browser regression changes do not rebuild native platforms',
   assert.equal(decideFromBaseline({ root: h.root, component: 'web', baseline: base }).build, true);
 });
 
+test('artist mockup regression changes select only browser checks', async t => {
+  const { decideFromBaseline } = await import('../scripts/selective-builds.mjs');
+  const h = history(t);
+  const base = h.commit('README.md');
+  h.commit('tests/artists-mockup.mjs', 'artist browser-only regression');
+  for (const component of ['android', 'windows']) {
+    assert.equal(decideFromBaseline({ root: h.root, component, baseline: base }).build, false);
+  }
+  assert.equal(decideFromBaseline({ root: h.root, component: 'web', baseline: base }).build, true);
+});
+
 function publication(component, count, sha) {
   const windows = component === 'windows';
   const version = `0.1.${count}`, tag = `${windows ? 'windows-' : ''}v${version}`;

@@ -57,6 +57,35 @@ public sealed class NavidromeClient : IDisposable
         return new Uri(new Uri(server, "rest/" + name + ".view"), "?" + string.Join('&', query.Select(x => Uri.EscapeDataString(x.Item1) + "=" + Uri.EscapeDataString(x.Item2))));
     }
 
+    public async Task<IReadOnlyList<Artist>> GetArtistsAsync(CancellationToken cancellationToken = default)
+    {
+        var root = Object(await Api("getArtists", cancellationToken).ConfigureAwait(false), "artists");
+        return Items(root, "index").SelectMany(index => Items(index, "artist")).Select(ParseArtist).ToArray();
+    }
+
+    /// <summary>Only ID3 library albums and their complete ordered tracks; never publishes a partial queue.</summary>
+    public async Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var root = Object(await Api("getArtist", cancellationToken, ("id", id)).ConfigureAwait(false), "artist");
+        var artist = ParseArtist(root);
+        if (artist.Id != id) throw InvalidResponse();
+        var artistAlbums = Items(root, "album").Select(x => new Album(Required(x, "id"), Required(x, "name"),
+            Text(x, "artist") ?? artist.Name, Text(x, "coverArt"), Number(x, "songCount"), Number(x, "year"))).ToArray();
+        if (artist.AlbumCount > 0 && artistAlbums.Length != artist.AlbumCount) throw InvalidResponse();
+        var tracks = new List<Song>();
+        foreach (var album in artistAlbums)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var albumTracks = await GetAlbumSongsAsync(album.Id, cancellationToken).ConfigureAwait(false);
+            if (album.SongCount > 0 && albumTracks.Count != album.SongCount) throw InvalidResponse();
+            tracks.AddRange(albumTracks);
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+        return new ArtistLibrary(artist, artistAlbums, tracks.ToArray());
+    }
+
+    private static Artist ParseArtist(JsonElement value) => new(Required(value, "id"), Required(value, "name"), Text(value, "coverArt"), Number(value, "albumCount"));
+
     public async Task PingAsync(CancellationToken cancellationToken = default) =>
         _ = await Api("ping", cancellationToken).ConfigureAwait(false);
 

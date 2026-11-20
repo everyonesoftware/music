@@ -23,6 +23,10 @@ data class PlaylistContents(val songs: List<Song>, val validUntilMs: Long? = nul
 @Serializable
 data class Album(val id: String, val name: String, val artist: String = "Unknown artist", val coverArtId: String? = null, val songCount: Int = 0, val year: Int = 0)
 data class AlbumContents(val album: Album, val songs: List<Song>)
+data class Artist(val id: String, val name: String, val coverArtId: String? = null, val albumCount: Int = 0)
+data class ArtistContents(val artist: Artist, val albums: List<AlbumContents>) {
+    val songs: List<Song> get() = albums.flatMap { it.songs }
+}
 @Serializable
 data class ListeningSession(
     val connectionId: String,

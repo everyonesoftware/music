@@ -83,6 +83,8 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.PLAYLISTS -> Playlists(state, actions, artworkUrl)
                         Screen.ALL_PLAYLISTS -> Collection(state, actions, CollectionKind.PLAYLISTS, artworkUrl)
                         Screen.ALL_ALBUMS -> Collection(state, actions, CollectionKind.ALBUMS, artworkUrl)
+                        Screen.ALL_ARTISTS -> Artists(state, actions, artworkUrl)
+                        Screen.ARTIST -> ArtistDetails(state, actions, artworkUrl)
                         Screen.PLAYLIST -> PlaylistDetails(state, actions, artworkUrl)
                         Screen.SEARCH -> Search(state, actions, artworkUrl)
                         Screen.ALBUM -> AlbumDetails(state, actions, artworkUrl)
@@ -93,7 +95,7 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                         Screen.OFFLINE -> OfflineSongs(state, actions, artworkUrl)
                     }
                 }
-                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES, Screen.OFFLINE)) {
+                if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.ALL_ARTISTS, Screen.ARTIST, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES, Screen.OFFLINE)) {
                     MiniPlayer(state, actions, artworkUrl)
                 }
             }
@@ -106,7 +108,9 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
 @Composable
 private fun RefreshablePage(state: AudioUiState, actions: AudioUiActions, modifier: Modifier, content: @Composable BoxScope.() -> Unit) {
     val refreshing = when (state.screen) {
-        Screen.PLAYLISTS -> state.playlistsRefreshing || state.albumsRefreshing
+        Screen.PLAYLISTS -> state.playlistsRefreshing || state.albumsRefreshing || state.artistsRefreshing
+        Screen.ALL_ARTISTS -> state.artistsRefreshing
+        Screen.ARTIST -> state.artistLoading
         Screen.ALL_PLAYLISTS -> state.playlistsRefreshing
         Screen.ALL_ALBUMS -> state.albumsRefreshing
         Screen.PLAYLIST -> state.playlistLoading
@@ -300,7 +304,7 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
         Surface(Modifier.fillMaxWidth().clickable { actions.showScreen(Screen.SEARCH) }, shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
             Row(Modifier.heightIn(min = 48.dp).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Default.Search, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                Hint("Search playlists, albums, and songs", Modifier.padding(start = 10.dp))
+                Hint("Search playlists, albums, artists, and songs", Modifier.padding(start = 10.dp))
             }
         }
         ErrorMessage(state.error)
@@ -329,6 +333,133 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                 if (state.albums.isEmpty() && !state.albumsRefreshing && state.albumsError == null) Hint("No albums available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.albums, key = { "album-${it.id}" }) { album -> AlbumTile(album, artworkUrl) { actions.openAlbum(album.id) } }
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("Artists", style = MaterialTheme.typography.titleLarge)
+                    TextButton({ actions.showScreen(Screen.ALL_ARTISTS) }, Modifier.testTag("view-all-artists").semantics { contentDescription = "View all artists" }) { Text("View all"); Icon(Icons.Default.ChevronRight, null) }
+                }
+                ArtistCatalogStatus(state, actions)
+                LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    items(state.artists, key = { it.id }) { artist ->
+                        Column(Modifier.width(132.dp).testTag("artist-card-${artist.id}").clickable { actions.openArtist(artist.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
+                            ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(132.dp))
+                            Text(artist.name, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistArtwork(id: String?, artworkUrl: (String?) -> String?, modifier: Modifier) {
+    val url = remember(id, artworkUrl) { id?.let(artworkUrl) }
+    Box(modifier.clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant), contentAlignment = Alignment.Center) {
+        Icon(Icons.Default.Person, null, Modifier.fillMaxSize(0.45f), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        if (url != null) AsyncImage(url, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+    }
+}
+
+@Composable
+private fun ArtistRow(artist: com.everyonesoftware.audio.data.Artist, artworkUrl: (String?) -> String?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Row(modifier.fillMaxWidth().heightIn(min = 76.dp).clickable(role = Role.Button, onClick = onClick).padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(56.dp))
+        Text(artist.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        Icon(Icons.Default.ChevronRight, null)
+    }
+}
+
+@Composable
+private fun ArtistCatalogStatus(state: AudioUiState, actions: AudioUiActions) {
+    ErrorMessage(state.artistsError)
+    if (state.artistsRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading artists" })
+    if (state.artistsError != null) TextButton(actions::loadArtists, enabled = !state.artistsRefreshing && !state.storage.settings.offline) { Text("Retry artists") }
+    if (state.storage.settings.offline) Hint("Artists are unavailable offline. Open Saved music for downloaded albums and songs.")
+    else if (state.artists.isEmpty() && !state.artistsRefreshing && state.artistsError == null) Hint("No artists available on this server.")
+}
+
+@Composable
+private fun Artists(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
+    val entries = state.artists.filter { it.name.contains(state.artistCollectionQuery.trim(), ignoreCase = true) }
+    Column(Modifier.fillMaxSize()) {
+        Header("Artists", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        OutlinedTextField(state.artistCollectionQuery, actions::setArtistQuery, Modifier.fillMaxWidth().testTag("artist-search"),
+            singleLine = true, label = { Text("Search artists") }, leadingIcon = { Icon(Icons.Default.Search, null) },
+            trailingIcon = { if (state.artistCollectionQuery.isNotEmpty()) AudioIcon(Icons.Default.Close, "Clear search") { actions.setArtistQuery("") } })
+        if (!state.artistsRefreshing && state.artistsError == null && !state.storage.settings.offline) Hint("${entries.size} artists", Modifier.padding(vertical = 12.dp).testTag("artist-count"))
+        ArtistCatalogStatus(state, actions)
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("artists-list"), contentPadding = PaddingValues(bottom = 16.dp)) {
+            if (entries.isEmpty() && state.artistCollectionQuery.isNotBlank()) item { Hint("No artists match “${state.artistCollectionQuery.trim()}”.") }
+            items(entries, key = { it.id }) { artist ->
+                ArtistRow(artist, artworkUrl, Modifier.testTag("artist-card-${artist.id}")) { actions.openArtist(artist.id) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
+    val artist = state.selectedArtist
+    val contents = state.artistContents
+    val songs = contents?.songs.orEmpty()
+    val ready = artist != null && contents != null && !state.artistLoading && state.artistError == null && !state.storage.settings.offline
+    val enabled = ready && songs.isNotEmpty() && !state.loading
+    var allSongs by rememberSaveable(state.connection?.id, artist?.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxSize()) {
+        CollectionDetailHeader("artist-header") { actions.showScreen(state.backDestination) }
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("artist-content"), contentPadding = PaddingValues(bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (artist != null) item {
+                Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(180.dp).testTag("artist-artwork"))
+                    Text(artist.name, Modifier.fillMaxWidth().testTag("artist-name").semantics { heading() },
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = MaterialTheme.typography.headlineSmall)
+                    if (ready) Text("${contents!!.albums.size} ${if (contents.albums.size == 1) "album" else "albums"} · ${songs.size} ${if (songs.size == 1) "song" else "songs"}", Modifier.fillMaxWidth().testTag("artist-summary"),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Row(Modifier.testTag("artist-transport"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        FilledIconButton({ actions.playArtist(artist.id, false) }, Modifier.size(56.dp).testTag("artist-play"), enabled = enabled, shape = CircleShape) {
+                            Icon(Icons.Default.PlayArrow, "Play artist in order", Modifier.size(30.dp))
+                        }
+                        IconButton({ actions.playArtist(artist.id, true) }, Modifier.size(48.dp).testTag("artist-shuffle"), enabled = enabled) {
+                            Icon(Icons.Default.Shuffle, "Shuffle artist", Modifier.size(24.dp))
+                        }
+                    }
+                }
+            }
+            item {
+                ErrorMessage(state.error)
+                ErrorMessage(state.artistError)
+                if (state.artistLoading) {
+                    LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading artist" })
+                    Hint("Loading albums and songs…")
+                }
+                if (state.storage.settings.offline) Hint("Artists are unavailable offline. Open Saved music for downloaded albums and songs.")
+                if (state.artistError != null && artist != null) TextButton({ actions.openArtist(artist.id) }, enabled = !state.storage.settings.offline) { Text("Retry artist") }
+                if (ready && songs.isEmpty()) Hint("This artist has no songs.")
+            }
+            if (ready) {
+                item {
+                    TabRow(selectedTabIndex = if (allSongs) 1 else 0) {
+                        Tab(!allSongs, { allSongs = false }, Modifier.testTag("artist-albums"), text = { Text("Albums") })
+                        Tab(allSongs, { allSongs = true }, Modifier.testTag("artist-all-songs"), text = { Text("All songs") })
+                    }
+                }
+                if (allSongs) items(songs.size, key = { "artist-song-$it" }) { index ->
+                    val song = songs[index]
+                    // No aggregate download action: only the existing per-song affordance.
+                    SongRow(song, artworkUrl, state.storage, enabled, { actions.downloadSongs(listOf(song)) }, Modifier.testTag("artist-song-$index")) {
+                        if (state.connection != null) actions.playCollectionSong(CollectionSongSelection(state.connection.id, "artist", artist!!.id, index, songs))
+                    }
+                } else items(contents!!.albums, key = { it.album.id }) { album ->
+                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).testTag("album-card-${album.album.id}").clickable { actions.openAlbum(album.album.id) },
+                        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Artwork(album.album.coverArtId, artworkUrl, Modifier.size(56.dp))
+                        Column(Modifier.weight(1f)) { Text(album.album.name, style = MaterialTheme.typography.titleMedium); Hint("${album.songs.size} ${if (album.songs.size == 1) "song" else "songs"}") }
+                        Icon(Icons.Default.ChevronRight, null)
+                    }
                 }
             }
         }
@@ -445,15 +576,23 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
     val term = state.searchQuery.trim()
     val playlists = state.playlists.filter { it.name.contains(term, ignoreCase = true) }
     val albums = state.albums.filter { it.name.contains(term, ignoreCase = true) || it.artist.contains(term, ignoreCase = true) }
+    val artists = state.artists.filter { it.name.contains(term, ignoreCase = true) }
     Column(Modifier.fillMaxSize()) {
         Header("Search", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
-        OutlinedTextField(state.searchQuery, actions::search, Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("library-search"), label = { Text("Playlists, albums, and songs") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true)
+        OutlinedTextField(state.searchQuery, actions::search, Modifier.fillMaxWidth().padding(bottom = 10.dp).testTag("library-search"), label = { Text("Playlists, albums, artists, and songs") }, leadingIcon = { Icon(Icons.Default.Search, null) }, singleLine = true)
+        ErrorMessage(state.artistsError)
+        if (state.artistsError != null) TextButton(actions::loadArtists, enabled = !state.artistsRefreshing && !state.storage.settings.offline) { Text("Retry artists") }
+        if (state.artistsRefreshing) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Loading artists" })
         ErrorMessage(state.albumsError)
         ErrorMessage(state.searchError)
         if (state.searchError != null) TextButton({ actions.search(state.searchQuery) }) { Text("Retry song search") }
         if (state.searchLoading) LinearProgressIndicator(Modifier.fillMaxWidth().semantics { contentDescription = "Searching songs" })
         LazyColumn(Modifier.weight(1f).testTag("search-results"), verticalArrangement = Arrangement.spacedBy(14.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
-            if (term.isBlank()) item { Hint("Search your playlists, albums, and songs by name or artist.") }
+            if (term.isBlank()) item { Hint("Search your playlists, albums, artists, and songs by name or artist.") }
+            if (artists.isNotEmpty()) item { Text("Artists", style = MaterialTheme.typography.titleLarge) }
+            items(artists, key = { "search-artist-${it.id}" }) { artist ->
+                ArtistRow(artist, artworkUrl, Modifier.testTag("search-artist-${artist.id}")) { actions.openArtist(artist.id) }
+            }
             if (playlists.isNotEmpty()) item { Text("Playlists", style = MaterialTheme.typography.titleLarge) }
             items(playlists, key = { "search-playlist-${it.id}" }) { playlist ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clickable { actions.openPlaylist(playlist.id) }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -476,7 +615,7 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
             items(state.searchSongs, key = { "search-song-${it.id}" }) { song ->
                 SongRow(song, artworkUrl, state.storage, enabled = !state.loading, onDownload = { actions.downloadSongs(listOf(song)) }) { actions.playSong(song) }
             }
-            if (term.isNotBlank() && playlists.isEmpty() && albums.isEmpty() && state.searchSongs.isEmpty() && !state.searchLoading && state.searchError == null) item { Hint("No playlists, albums, or songs match “$term”.") }
+            if (term.isNotBlank() && playlists.isEmpty() && albums.isEmpty() && artists.isEmpty() && state.searchSongs.isEmpty() && !state.searchLoading && !state.artistsRefreshing && state.searchError == null && state.artistsError == null) item { Hint("No playlists, albums, artists, or songs match “$term”.") }
         }
     }
 }

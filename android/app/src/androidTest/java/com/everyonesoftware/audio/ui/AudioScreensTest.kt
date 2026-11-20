@@ -27,6 +27,9 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onRoot
@@ -58,6 +61,56 @@ import org.junit.runner.RunWith
 /** Real native UI; all account/media fixtures and action spies live only in androidTest. */
 @RunWith(AndroidJUnit4::class)
 class AudioScreensTest {
+    @Test fun artistHeaderCentersNeutralImmediatePlayThenShuffleAtCompactAndPhoneWidths() {
+        val artist = com.everyonesoftware.audio.data.Artist("a", "A real artist")
+        val width = mutableStateOf(320.dp)
+        val state = mutableStateOf(playerState().copy(screen = Screen.ARTIST, session = null, selectedArtist = artist,
+            artistContents = com.everyonesoftware.audio.data.ArtistContents(artist, listOf(com.everyonesoftware.audio.data.AlbumContents(Album("b", "Album"), listOf(song, song))))))
+        compose.setContent { Box(Modifier.width(width.value)) { AudioTheme { AudioApp(state.value, actions) { null } } } }
+        for (size in listOf(320.dp, 412.dp)) {
+            compose.runOnIdle { width.value = size }
+            compose.onNodeWithTag("artist-summary").assertTextEquals("1 album · 2 songs")
+            compose.onNodeWithTag("artist-play").assertHeightIsAtLeast(56.dp).assertWidthIsAtLeast(56.dp).assertIsEnabled().performClick()
+            compose.onNodeWithTag("artist-shuffle").assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+                .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected))
+                .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription)).performClick().performClick()
+            val play = compose.onNodeWithTag("artist-play").fetchSemanticsNode().boundsInRoot
+            val shuffle = compose.onNodeWithTag("artist-shuffle").fetchSemanticsNode().boundsInRoot
+            val content = compose.onNodeWithTag("artist-content").fetchSemanticsNode().boundsInRoot
+            assertTrue(play.right < shuffle.left)
+            assertTrue(kotlin.math.abs((play.left + shuffle.right) / 2 - content.center.x) < 2f)
+            assertTrue(kotlin.math.abs(play.center.y - shuffle.center.y) < 2f)
+            compose.onNodeWithContentDescription("Play artist in order").assertIsDisplayed()
+            compose.onNodeWithContentDescription("Shuffle artist").assertIsDisplayed()
+            compose.onNodeWithText("Play").assertDoesNotExist()
+            compose.onNodeWithText("Shuffle").assertDoesNotExist()
+            compose.onNodeWithContentDescription("Download artist").assertDoesNotExist()
+            captureOutputEvidence("artist-header-${size.value.toInt()}", compose.onRoot())
+        }
+        compose.runOnIdle { assertEquals(listOf("a" to false, "a" to true, "a" to true, "a" to false, "a" to true, "a" to true), actions.playedArtists) }
+    }
+
+    @Test fun artistCountsAndActionsWaitForFullLoadAndErrorRetryIsExplicit() {
+        val artist = com.everyonesoftware.audio.data.Artist("a", "Artist", albumCount = 99)
+        val state = mutableStateOf(playerState().copy(screen = Screen.ARTIST, session = null, selectedArtist = artist, artistLoading = true))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions) { null } } }
+        compose.onNodeWithTag("artist-summary").assertDoesNotExist()
+        compose.onNodeWithTag("artist-play").assertIsNotEnabled()
+        compose.onNodeWithTag("artist-shuffle").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(artistLoading = false, artistError = "Fixture server failure") }
+        compose.onNodeWithText("Fixture server failure").assertIsDisplayed()
+        compose.onNodeWithText("Retry artist").performClick()
+        compose.runOnIdle { assertEquals(listOf("a"), actions.openedArtists) }
+        compose.onNodeWithTag("artist-summary").assertDoesNotExist()
+        compose.runOnIdle { state.value = state.value.copy(artistError = null, artistContents = com.everyonesoftware.audio.data.ArtistContents(artist, emptyList())) }
+        compose.onNodeWithTag("artist-summary").assertTextEquals("0 albums · 0 songs")
+        compose.onNodeWithText("This artist has no songs.").assertIsDisplayed()
+        compose.onNodeWithTag("artist-play").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(storage = state.value.storage.copy(settings = state.value.storage.settings.copy(offline = true))) }
+        compose.onNodeWithTag("artist-summary").assertDoesNotExist()
+        compose.onNodeWithTag("artist-play").assertIsNotEnabled()
+        compose.onNodeWithText("Artists are unavailable offline. Open Saved music for downloaded albums and songs.").assertIsDisplayed()
+    }
     @Test fun collectionSongRowsSendScopedDuplicateOccurrenceAndUseEachSongsArtwork() {
         val repeated = listOf(song.copy(coverArtId = "one"), song.copy(id = "second", coverArtId = "two"), song.copy(coverArtId = "one"))
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST, selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = repeated,
@@ -854,7 +907,7 @@ class AudioScreensTest {
         compose.onNodeWithTag("album-card-test-album").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(listOf("test-album"), actions.openedAlbums) }
         compose.onNodeWithTag("bottom-navigation").assertDoesNotExist()
-        compose.onNodeWithText("Search playlists, albums, and songs").assertIsDisplayed().performClick()
+        compose.onNodeWithText("Search playlists, albums, artists, and songs").assertIsDisplayed().performClick()
         compose.runOnIdle { assertEquals(Screen.SEARCH, actions.screens.last()) }
     }
 
@@ -1007,6 +1060,10 @@ class AudioScreensTest {
     private data class ConnectCall(val name: String, val url: String, val username: String, val password: String)
 
     private class RecordingActions : AudioUiActions {
+        val playedArtists = mutableListOf<Pair<String, Boolean>>()
+        val openedArtists = mutableListOf<String>()
+        override fun playArtist(id: String, shuffle: Boolean) { playedArtists += id to shuffle }
+        override fun openArtist(id: String) { openedArtists += id }
         val collectionSongs = mutableListOf<CollectionSongSelection>()
         val queueSongs = mutableListOf<Triple<String, String, Int>>()
         override fun playCollectionSong(selection: CollectionSongSelection) { collectionSongs += selection }

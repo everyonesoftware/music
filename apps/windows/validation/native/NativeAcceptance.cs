@@ -52,6 +52,8 @@ internal static partial class NativeAcceptance
                 "/rest/ping.view" => "",
                 "/rest/getAlbumList2.view" => ",\"albumList2\":{\"album\":[{\"id\":\"native-album\",\"name\":\"Fixture album\",\"artist\":\"Fixture artist\",\"songCount\":2,\"year\":2026}]}",
                 "/rest/getPlaylists.view" => ",\"playlists\":{\"playlist\":[{\"id\":\"native-playlist\",\"name\":\"Fixture playlist\",\"songCount\":2}]}",
+                "/rest/getArtists.view" => ",\"artists\":{\"index\":[{\"name\":\"F\",\"artist\":[{\"id\":\"native-artist\",\"name\":\"Fixture artist\",\"albumCount\":1}]}]}",
+                "/rest/getArtist.view" => ",\"artist\":{\"id\":\"native-artist\",\"name\":\"Fixture artist\",\"albumCount\":1,\"album\":[{\"id\":\"native-album\",\"name\":\"Fixture album\",\"songCount\":2}]}",
                 "/rest/search3.view" => ",\"searchResult3\":{\"song\":" + tracks + "}",
                 "/rest/getAlbum.view" => ",\"album\":{\"id\":\"native-album\",\"name\":\"Fixture album\",\"song\":" + tracks + "}",
                 "/rest/getPlaylist.view" => ",\"playlist\":{\"entry\":" + tracks + "}",
@@ -184,10 +186,10 @@ public sealed partial class MainWindow
             category = "native-controls";
             await NavigateAsync("library");
             root.UpdateLayout();
-            NativeRequire(checks, "populatedLibraryTree", NativeTree(C<StackPanel>("BrowsePanel")).OfType<ListViewBase>().Count(v => v.Items.Count > 0) == 2);
+            NativeRequire(checks, "populatedLibraryTree", NativeTree(C<StackPanel>("BrowsePanel")).OfType<ListViewBase>().Count(v => v.Items.Count > 0) == 3);
             await NativeAcceptance.WaitAsync(() => NativeHasRealizedFixtureText(C<StackPanel>("BrowsePanel")));
             NativeRequire(checks, "realizedLibraryTree", NativeHasRealizedFixtureText(C<StackPanel>("BrowsePanel")));
-            foreach (var entry in new[] { ("AlbumsNav", "albums", "list"), ("PlaylistsNav", "playlists", "list"), ("SongsNav", "songs", "grid") })
+            foreach (var entry in new[] { ("AlbumsNav", "albums", "list"), ("PlaylistsNav", "playlists", "list"), ("ArtistsNav", "artists", "grid"), ("SongsNav", "songs", "grid") })
             {
                 NativeInvoke(entry.Item1);
                 await NativeAcceptance.WaitAsync(() => page == entry.Item2 && !browsePending);
@@ -202,6 +204,18 @@ public sealed partial class MainWindow
             C<TextBox>("SearchBox").Text = "Native fixture";
             await NativeAcceptance.WaitAsync(() => !browsePending && query == "Native fixture");
             NativeRequire(checks, "searchControl", songs.Count == 2);
+            await OpenCollectionAsync(artists[0]);
+            NativeRequire(checks, "artistDetail", page == "detail" && detailIdentity.Kind == "artist" && detailSongs.Count == 2 && artistAlbums.Count == 1);
+            root.UpdateLayout();
+            await NativeAcceptance.WaitAsync(() => NativeHasRealizedFixtureText(C<GridView>("ArtistAlbumList")));
+            var allSongs = NativeTree(C<StackPanel>("DetailHeader")).OfType<Button>().Single(b => AutomationProperties.GetName(b) == "All songs");
+            ((IInvokeProvider)new ButtonAutomationPeer(allSongs).GetPattern(PatternInterface.Invoke)).Invoke();
+            root.UpdateLayout();
+            await NativeAcceptance.WaitAsync(() => NativeHasRealizedFixtureText(C<ListView>("DetailList")));
+            NativeRequire(checks, "artistSongsRealized", artistView == "songs" && C<ListView>("DetailList").Items.Count == 2);
+            await OpenCollectionAsync(artistAlbums[0]);
+            await GoBackAsync();
+            NativeRequire(checks, "artistAlbumBack", detailIdentity.Kind == "artist" && artistView == "songs");
             await OpenCollectionAsync(albums[0]);
             NativeRequire(checks, "albumDetail", detailSongs.Count == 2 && page == "detail");
             await OpenCollectionAsync(playlists[0]);

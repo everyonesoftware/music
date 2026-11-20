@@ -18,7 +18,23 @@ Music replaces Audio as the native app's display name only. The application ID, 
 - A cold launch restores the full player **paused**. Reopening while the service is already playing reconnects without stopping it. Progress is checkpointed approximately every second and on transport/lifecycle events; an abrupt kill can lose an uncommitted checkpoint, not generate a new shuffle.
 - Shuffle-on reshuffles the visible queue around the current song. Shuffle-off retains the existing visible order; this alpha does not reconstruct the playlist's original unshuffled order.
 - The title-side rating trigger opens five large choices. `setRating` is followed by `getSong`; only the server-confirmed value becomes local state. Failures retain the last confirmed value. Clear sends zero. Responses are bound to the captured account/song, not whichever song is visible when a request completes.
-- Settings supports adding/switching connections, changing accessible-library selections and opening Navidrome administration in the browser. Library preferences are local browsing preferences, not permissions, server folder management, playlist filters or changes to an existing queue. Album/all-song browsing, local account removal UI and playlist editing are not implemented.
+- Settings supports adding/switching connections, changing accessible-library selections and opening Navidrome administration in the browser. Library preferences are local browsing preferences, not permissions, server folder management, playlist filters or changes to an existing queue. Local account removal UI and playlist editing are not implemented.
+
+## Phone Artists
+
+Library includes Artists after Playlists and Albums, an all-artists list with its own query, and artist matches in global Search. The ID3-tag index comes from `getArtists`; opening an artist reads `getArtist` and then every listed `getAlbum` in server order. Only a completely successful aggregate publishes album/song counts or enables playback. Failed or truncated albums fail the whole artist load; repeated song occurrences are retained. Refresh/retry is account-scoped, and account switches cancel/reset artist requests, selection and queries.
+
+Artist details use native circular artwork (or a native person placeholder), a centered name/count summary, and centered icon-only **Play → Shuffle** controls. Play starts a fresh ordered queue; each Shuffle immediately starts a fresh shuffled whole-artist queue. Albums and All songs share the fully loaded snapshot. Selecting a song starts the complete ordered artist queue at that occurrence, including earlier tracks for Previous. Album Back returns to the artist; artist Back returns to the original Library, Search or all-artists page. There is no artist download action or saved-playlist creation. Offline artist browsing/playback is explicitly unavailable; existing downloaded album/song playback remains under Saved music.
+
+The source type `artist` uses the existing persisted listening session and PlaybackService/Media3 controller. Controller availability, captured account/detail ownership and previous queue identity are checked before replacement. Android Auto's root remains **Playlists / Albums / Queue**; artist expansion and voice artist resolution are not included.
+
+Focused native verification, after installing both APKs on an explicitly owned emulator:
+
+```sh
+adb -s <owned-serial> shell am instrument -w -r -e class 'com.everyonesoftware.audio.ArtistFlowTest,com.everyonesoftware.audio.ui.ArtistViewModelTest,com.everyonesoftware.audio.ui.AudioScreensTest#artistHeaderCentersNeutralImmediatePlayThenShuffleAtCompactAndPhoneWidths,com.everyonesoftware.audio.ui.AudioScreensTest#artistCountsAndActionsWaitForFullLoadAndErrorRetryIsExplicit' com.everyonesoftware.audio.test/androidx.test.runner.AndroidJUnitRunner
+```
+
+Require `OK (6 tests)`, six successful test-completion statuses, and no failure/crash/assumption-skip statuses. `ArtistFlowTest` exercises the actual activity, account-scoped HTTP/audio fixtures, duplicate-containing complete artist queues, repeated ordered/shuffled Play, album/origin Back, native service timelines and persisted queue readback. View-model fixtures cover gated later-album failure/retry, controller unavailability, offline rejection, empty catalog reentry and a delayed old-account response. UI fixtures check compact 320dp and normal 412dp centered geometry, neutral immediate actions, unknown counts and unavailable states. These fixtures do not establish physical-device audio, a personal Navidrome deployment or Android Auto artist browsing.
 
 ## Collection song selection and Played queue
 

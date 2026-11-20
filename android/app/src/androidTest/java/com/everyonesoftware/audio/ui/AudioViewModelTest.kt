@@ -303,6 +303,7 @@ class AudioViewModelTest {
                     requests.add(path)
                     return when {
                         path.endsWith("getAlbumList2.view") -> ok(""", "albumList2":{"album":[{"id":"new","name":"New album"}]}""")
+                        path.endsWith("getArtists.view") -> ok(""", "artists":{}""")
                         path.endsWith("getPlaylists.view") -> ok(""", "playlists":{"playlist":[{"id":"p","name":"Updated playlist"}]}""")
                         path.endsWith("getPlaylist.view") -> ok(""", "playlist":{"entry":[{"id":"updated","title":"Updated"}]}""")
                         else -> MockResponse().setResponseCode(404)
@@ -313,14 +314,14 @@ class AudioViewModelTest {
             val storage = graph.songCache.state.value
             for (screen in listOf(Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.PLAYLISTS)) {
                 onMain { model.showScreen(screen) }
-                until { !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+                until { !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing && !model.state.value.artistsRefreshing }
                 requests.clear()
                 onMain { model.refreshCurrentPage() }
-                until { requests.isNotEmpty() && !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing }
+                until { requests.isNotEmpty() && !model.state.value.albumsRefreshing && !model.state.value.playlistsRefreshing && !model.state.value.artistsRefreshing }
                 val expected = when (screen) {
                     Screen.ALL_PLAYLISTS -> setOf("/rest/getPlaylists.view", "/rest/getPlaylist.view")
                     Screen.ALL_ALBUMS -> setOf("/rest/getAlbumList2.view")
-                    else -> setOf("/rest/getPlaylists.view", "/rest/getPlaylist.view", "/rest/getAlbumList2.view")
+                    else -> setOf("/rest/getPlaylists.view", "/rest/getPlaylist.view", "/rest/getAlbumList2.view", "/rest/getArtists.view")
                 }
                 assertEquals(expected, requests.toSet())
                 assertEquals(expected.size, requests.size)
@@ -1086,6 +1087,7 @@ class AudioViewModelTest {
         val server = MockWebServer()
         server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
             override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                request.path!!.contains("getArtists.view") -> ok(""", "artists":{}""")
                 request.path!!.contains("getPlaylists.view") -> ok(""", "playlists":{"playlist":[{"id":"p","name":"Browse","songCount":1}]}""")
                 request.path!!.contains("getPlaylist.view") -> ok(""", "playlist":{"entry":[{"id":"remote","title":"Remote song"}]}""")
                 request.path!!.contains("getAlbumList2.view") -> ok(""", "albumList2":{}""")
@@ -1101,7 +1103,7 @@ class AudioViewModelTest {
             graph.store.saveSession(ListeningSession(id, "old", "Playing", listOf(Song("old", "Old song", "Fixture")), positionMs = 4321L))
             lateinit var model: AudioViewModel
             onMain { model = AudioViewModel(app, graph, false); owner.put("fixture", model) }
-            until { !model.state.value.booting && model.state.value.playlists.isNotEmpty() && !model.state.value.playlistsRefreshing }
+            until { !model.state.value.booting && model.state.value.playlists.isNotEmpty() && !model.state.value.playlistsRefreshing && !model.state.value.artistsRefreshing }
             block(model, graph, server)
         } finally {
             onMain { owner.clear() }
@@ -1116,6 +1118,7 @@ class AudioViewModelTest {
         val server = MockWebServer()
         server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
             override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse = when {
+                request.path!!.contains("getArtists.view") -> ok(""", "artists":{}""")
                 request.path!!.contains("getAlbumList2.view") -> ok(",\"albumList2\":{\"album\":[{\"id\":\"album-1\",\"name\":\"Fixture Album\",\"artist\":\"Fixture Artist\",\"coverArt\":\"cover-1\",\"songCount\":1,\"year\":2024}]}")
                 request.path!!.contains("getAlbum.view") -> ok(",\"album\":{\"id\":\"album-1\",\"name\":\"Fixture Album\",\"artist\":\"Fixture Artist\",\"coverArt\":\"cover-1\",\"songCount\":1,\"year\":2024,\"song\":[{\"id\":\"track-1\",\"title\":\"Fixture Track\",\"artist\":\"Fixture Artist\",\"duration\":190}]}")
                 else -> MockResponse().setResponseCode(404)
@@ -1144,8 +1147,10 @@ class AudioViewModelTest {
             onMain { model.showScreen(model.state.value.backDestination) }
             assertEquals(Screen.ALL_ALBUMS, model.state.value.screen)
             assertEquals("Fixture Artist", model.state.value.albumCollectionQuery)
-            assertEquals(3, server.requestCount)
-            val paths = List(3) { server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS)!!.requestUrl!!.encodedPath }.toSet()
+            until { !model.state.value.artistsRefreshing }
+            assertEquals(4, server.requestCount)
+            val paths = List(4) { server.takeRequest(2, java.util.concurrent.TimeUnit.SECONDS)!!.requestUrl!!.encodedPath }.toSet()
+            assertTrue(paths.contains("/rest/getArtists.view"))
             assertTrue(paths.contains("/rest/getPlaylists.view"))
             assertTrue(paths.contains("/rest/getAlbumList2.view"))
             assertTrue(paths.contains("/rest/getAlbum.view"))

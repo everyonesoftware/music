@@ -89,7 +89,7 @@ class OfflineCollectionFlowTest {
             graph.songCache.setSettings(originalSettings.copy(offline = true))
             val requestsBeforeOffline = server.requestCount
             scenario = ActivityScenario.launch(MainActivity::class.java)
-            compose.waitUntil(20_000) { compose.onAllNodesWithText("Search playlists, albums, and songs").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(20_000) { compose.onAllNodesWithText("Search playlists, albums, artists, and songs").fetchSemanticsNodes().isNotEmpty() }
             scenario.onActivity { ViewModelProvider(it)[AudioViewModel::class.java].showScreen(Screen.OFFLINE) }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("offline-playlist-driving").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("offline-playlist-driving").performClick()
@@ -97,7 +97,7 @@ class OfflineCollectionFlowTest {
             compose.onNodeWithText("3. Second fixture").performScrollTo().assertIsDisplayed()
             scenario.close()
             scenario = ActivityScenario.launch(MainActivity::class.java)
-            compose.waitUntil(20_000) { compose.onAllNodesWithText("Search playlists, albums, and songs").fetchSemanticsNodes().isNotEmpty() }
+            compose.waitUntil(20_000) { compose.onAllNodesWithText("Search playlists, albums, artists, and songs").fetchSemanticsNodes().isNotEmpty() }
             scenario.onActivity { ViewModelProvider(it)[AudioViewModel::class.java].showScreen(Screen.OFFLINE) }
             compose.waitUntil(10_000) { compose.onAllNodesWithTag("offline-playlist-driving").fetchSemanticsNodes().isNotEmpty() }
             compose.onNodeWithTag("offline-playlist-driving").performClick()

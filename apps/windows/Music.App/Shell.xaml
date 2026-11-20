@@ -147,6 +147,7 @@
         <Button x:Name="LibraryNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE8F1;"/><TextBlock Text="Library"/></StackPanel></Button>
         <Button x:Name="PlaylistsNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE8FD;"/><TextBlock Text="Playlists"/></StackPanel></Button>
         <Button x:Name="AlbumsNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE93C;"/><TextBlock Text="Albums"/></StackPanel></Button>
+        <Button x:Name="ArtistsNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE77B;"/><TextBlock Text="Artists"/></StackPanel></Button>
         <Button x:Name="SongsNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE8D6;"/><TextBlock Text="Songs"/></StackPanel></Button>
       </StackPanel>
       <Button Grid.Row="1" x:Name="SettingsNav" Style="{StaticResource NavigationButtonStyle}"><StackPanel Orientation="Horizontal" Spacing="14"><FontIcon Glyph="&#xE713;"/><TextBlock Text="Settings"/></StackPanel></Button>
@@ -219,6 +220,9 @@
                   ItemTemplate="{StaticResource DetailRowTemplate}" Padding="0"
                   ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto"
                   AutomationProperties.Name="Collection songs"/>
+        <GridView Grid.Row="1" x:Name="ArtistAlbumList" Visibility="Collapsed" SelectionMode="None" IsItemClickEnabled="True"
+                  ItemTemplate="{StaticResource DetailRowTemplate}" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                  AutomationProperties.Name="Artist albums"/>
       </Grid>
     </Grid>
     <Border Grid.Column="2" x:Name="QueuePane" Width="292" Visibility="Collapsed" BorderBrush="#39453d" BorderThickness="1,0,0,0" Background="#242c28" Padding="16">

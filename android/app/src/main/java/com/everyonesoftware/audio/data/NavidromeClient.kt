@@ -32,6 +32,29 @@ class NavidromeClient(
     private val json = Json { ignoreUnknownKeys = true }
 
     suspend fun ping() { api("ping") }
+    suspend fun artists(): List<Artist> {
+        val artists = api("getArtists").obj("artists").items("index").flatMap { index -> index.items("artist").map(::parseArtist) }
+        if (artists.map { it.id }.distinct().size != artists.size) throw invalidResponse()
+        return artists
+    }
+    private fun parseArtist(value: JsonObject) = Artist(value.required("id"), value.required("name"),
+        value.text("coverArt"), value.number("albumCount"))
+    /** getArtist returns the complete ID3 album list, not complete tracks. Publish atomically. */
+    suspend fun artist(id: String): ArtistContents {
+        val result = api("getArtist", "id" to id).obj("artist")
+        val artist = parseArtist(result)
+        if (artist.id != id) throw invalidResponse()
+        val summaries = result.items("album")
+        val albums = summaries.map(::parseAlbum)
+        if (albums.map { it.id }.distinct().size != albums.size) throw invalidResponse()
+        result.validateCount("albumCount", albums.size)
+        val contents = albums.mapIndexed { index, summary ->
+            val contents = album(summary.id)
+            summaries[index].validateCount("songCount", contents.songs.size)
+            contents
+        }
+        return ArtistContents(artist.copy(albumCount = contents.size), contents)
+    }
     suspend fun libraries(): List<MusicLibrary> = api("getMusicFolders").obj("musicFolders").items("musicFolder").map {
         MusicLibrary(it.required("id"), it.required("name"))
     }
@@ -66,7 +89,13 @@ class NavidromeClient(
             Song(it.required("id"), it.required("title"), it.text("artist") ?: album.artist, album.name,
                 it.text("coverArt") ?: album.coverArtId, it.number("duration"), it.number("userRating"))
         }
+        result.validateCount("songCount", songs.size)
         return AlbumContents(album.copy(songCount = songs.size), songs)
+    }
+    private fun JsonObject.validateCount(key: String, actual: Int) {
+        val value = this[key] ?: return
+        val declared = (value as? JsonPrimitive)?.intOrNull ?: throw invalidResponse()
+        if (declared != actual) throw invalidResponse()
     }
     private fun parseAlbum(value: JsonObject): Album = Album(
         value.required("id"), value.required("name"), value.text("artist") ?: "Unknown artist",
@@ -234,7 +263,7 @@ class NavidromeClient(
         else -> throw invalidResponse()
     }
     companion object {
-        private val READ_APIS = setOf("ping", "getMusicFolders", "getPlaylists", "search3", "getAlbumList2", "getAlbum", "getPlaylist", "getSong")
+        private val READ_APIS = setOf("ping", "getMusicFolders", "getPlaylists", "search3", "getAlbumList2", "getAlbum", "getPlaylist", "getSong", "getArtists", "getArtist")
         private fun transportFailure(error: IOException) = NavidromeException(
             "Cannot reach the music server. Check your connection and retry.",
             retryableTransport = error !is javax.net.ssl.SSLHandshakeException && error !is javax.net.ssl.SSLPeerUnverifiedException)
