@@ -9,6 +9,51 @@ import kotlin.random.Random
 class SessionRulesTest {
     private val songs = (1..8).map { Song("song-$it", "Track $it", "Test artist") }
 
+    @Test fun `up next shuffle preserves prefix current position identity and duplicate occurrences on every tap`() {
+        val saved = ListeningSession("server-a", "playlist-a", "Test", songs + songs.first(),
+            index = 2, positionMs = 42137, shuffle = true, repeatMode = 2,
+            occurrenceIds = (10..18).toList(), played = listOf(10, 11, 10))
+        val first = SessionRules.shuffleUpNext(saved)
+        assertEquals(saved.queue.take(3), first.queue.take(3))
+        assertEquals(saved.occurrences.take(3), first.occurrences.take(3))
+        assertEquals(saved.index, first.index)
+        assertEquals(saved.positionMs, first.positionMs)
+        assertEquals(saved.played, first.played)
+        assertEquals(saved.queueId, first.queueId)
+        assertEquals(saved.shuffle, first.shuffle)
+        assertEquals(saved.occurrences.sorted(), first.occurrences.sorted())
+        assertEquals(saved.queue.zip(saved.occurrences).toSet(), first.queue.zip(first.occurrences).toSet())
+        assertTrue((1..20).map { SessionRules.shuffleUpNext(first).occurrences }.toSet().size > 1)
+    }
+
+    @Test fun `up next shuffle is inert for missing current or fewer than two remaining`() {
+        for (index in listOf(-1, songs.lastIndex - 1, songs.lastIndex, songs.size)) {
+            val session = ListeningSession("a", "p", "P", songs, index = index)
+            assertSame(session, SessionRules.shuffleUpNext(session))
+        }
+    }
+
+    @Test fun `up next action ignores either legacy mode and never restores ordered queue`() {
+        for (legacy in listOf(false, true)) {
+            val saved = ListeningSession("a", "p", "P", songs, index = 1, shuffle = legacy)
+            val first = SessionRules.shuffleUpNext(saved, Random(7))
+            val next = SessionRules.shuffleUpNext(first, Random(9))
+            assertNotEquals(saved.queue, first.queue)
+            assertNotEquals(first.queue, next.queue)
+            assertEquals(saved.queue.take(2), next.queue.take(2))
+            assertEquals(legacy, next.shuffle)
+        }
+    }
+
+    @Test fun `every eligible tap changes pending occurrence order even when random chooses original order`() {
+        val saved = ListeningSession("a", "p", "P", listOf(songs[0], songs[0], songs[0]), index = 0)
+        for (seed in 0..20) {
+            val next = SessionRules.shuffleUpNext(saved, Random(seed))
+            assertNotEquals("Seed $seed must still act on the two pending duplicates", saved.occurrences, next.occurrences)
+            assertEquals(saved.occurrences.take(1), next.occurrences.take(1))
+        }
+    }
+
     @Test fun `explicit restart has a new queue identity even for a single song`() {
         val first = SessionRules.start("server-a", "playlist-a", "One song", songs.take(1))
         val restarted = SessionRules.start("server-a", "playlist-a", "One song", songs.take(1))

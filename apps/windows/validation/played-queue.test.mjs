@@ -5,15 +5,15 @@ const read = name => readFileSync(new URL(`../Music.App/${name}`, import.meta.ur
 const main = read('MainWindow.cs');
 const shell = read('Shell.xaml');
 
-test('direct detail selection validates occurrence and disables session shuffle before whole collection queue', () => {
+test('direct detail selection validates occurrence before starting a fresh whole collection queue', () => {
   const detail = main.slice(main.indexOf('private void InitializeDetailList()'), main.indexOf('private void ClearDetail()'));
   assert.match(detail, /var owner = item.Owner/);
   assert.match(main, /new DetailSong\(song, index\) \{ Owner = connectionLease \}/);
   assert.match(detail, /!connectionGate.IsCurrent\(owner\)/);
   assert.match(detail, /detailLoading \|\| detailError/);
   assert.match(detail, /ReferenceEquals\(detailSongs\[item.Index\], item.Song\)/);
-  assert.ok(detail.indexOf('IsChecked = false') < detail.indexOf('StartQueue(detailSongs, index)'));
-  assert.match(detail, /IsChecked = false/);
+  assert.match(detail, /StartQueue\(detailSongs, index\)/);
+  assert.doesNotMatch(detail, /ShuffleButton/);
   assert.doesNotMatch(detail, /Skip\(|Distinct/);
 });
 
@@ -31,7 +31,7 @@ test('actual native Playing evidence is source and generation fenced, not MediaO
   assert.doesNotMatch(opened, /MarkStarted/);
   assert.match(main, /playbackOrder!\.Finish\(\)/);
   assert.match(main, /playbackOrder\?\.Ended == true\) SelectTrack\(queueIndex, true\)/);
-  assert.match(main, /ShuffleButton.*Click.*ScheduleCache\(\); RenderQueue\(\)/);
+  assert.match(main, /order.ShufflePending\(\)/);
   assert.match(read('MainWindow.Offline.cs'), /playbackOrder\?\.Ended == true.*localPlayback/);
   const previous = main.slice(main.indexOf('private void Previous()'), main.indexOf('private void Step('));
   assert.match(previous, /playbackOrder\?\.Ended != true && player.PlaybackSession.Position.TotalSeconds > 3/);

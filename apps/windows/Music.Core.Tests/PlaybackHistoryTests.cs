@@ -180,19 +180,19 @@ public sealed class PlaybackHistoryTests
     }
 
     [Fact]
-    public void Configuration_changes_keep_actual_back_and_forward_but_replace_guesses()
+    public void Repeat_changes_keep_actual_back_forward_and_materialized_remaining_order()
     {
         var order = new PlaybackOrder(9, 2, true, false, new Random(4));
         order.MarkStarted(); order.Select(7);
         order.MarkStarted(); order.Select(4);
-        order.Upcoming(5);
+        var remaining = order.RemainingOrder.ToArray();
         Assert.Equal(7, order.MovePrevious());
         Assert.Equal(2, order.MovePrevious());
         order.Configure(false, true);
-        Assert.Equal(new[] { 7, 4, 5, 6 }, order.Upcoming(4));
+        Assert.Equal(new[] { 7, 4 }.Concat(remaining).Take(4), order.Upcoming(4));
         order.MarkStarted(); Assert.Equal(7, order.MoveNext());
         order.Configure(false, false);
-        Assert.Equal(new[] { 4, 5, 6 }, order.Upcoming(3));
+        Assert.Equal(new[] { 4 }.Concat(remaining).Take(3), order.Upcoming(3));
         order.MarkStarted(); Assert.Equal(4, order.MoveNext());
         Assert.Equal(7, order.MovePrevious());
     }
@@ -226,6 +226,6 @@ public sealed class PlaybackHistoryTests
         order.Upcoming(100);
         for (int i = 0; i < 500; i++) order.MovePrevious();
         var field = typeof(PlaybackOrder).GetField("upcoming", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
-        Assert.True(Assert.IsType<List<int>>(field.GetValue(order)).Count <= 100);
+        Assert.True(Assert.IsType<List<int>>(field.GetValue(order)).Count <= 103); // One finite cycle plus bounded repeat replay.
     }
 }

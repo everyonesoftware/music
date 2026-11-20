@@ -640,7 +640,7 @@ private fun Player(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Hint(timeLabel((seeking?.toLong() ?: state.positionMs).coerceAtLeast(0))); Hint(timeLabel(duration)) }
             }
             Row(Modifier.fillMaxWidth().heightIn(min = 76.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-                AudioIcon(Icons.Default.Shuffle, "Shuffle", Modifier.semantics { stateDescription = if (session.shuffle) "On" else "Off" }, active = session.shuffle, onClick = actions::toggleShuffle)
+                Spacer(Modifier.size(48.dp))
                 AudioIcon(Icons.Default.SkipPrevious, "Previous track", onClick = actions::previous)
                 FilledIconButton(actions::togglePlay, Modifier.size(width = 76.dp, height = 72.dp).testTag("player-toggle"), shape = RoundedCornerShape(24.dp)) {
                     Icon(if (state.playing) Icons.Default.Pause else Icons.Default.PlayArrow, if (state.playing) "Pause" else "Resume playback", Modifier.size(34.dp))
@@ -799,7 +799,16 @@ private fun Queue(state: AudioUiState, actions: AudioUiActions, artworkUrl: (Str
                 }
                 item("current-label") { Text("Now playing", Modifier.padding(top = 16.dp, bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
                 item("current") { QueueSong(session, session.index, true, actions, artworkUrl, "current") }
-                item("up-next") { Text("Up next", Modifier.padding(top = 20.dp, bottom = 8.dp), style = MaterialTheme.typography.titleSmall) }
+                item("up-next") {
+                    Row(Modifier.fillMaxWidth().padding(top = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Up next", Modifier.weight(1f), style = MaterialTheme.typography.titleSmall)
+                        IconButton(actions::shuffleUpNext, Modifier.size(48.dp).testTag("queue-shuffle-up-next"),
+                            enabled = !state.loading && state.connection?.id == session.connectionId &&
+                                session.index in session.queue.indices && session.queue.size - session.index - 1 >= 2) {
+                            Icon(Icons.Default.Shuffle, "Shuffle Up next")
+                        }
+                    }
+                }
                 items((session.queue.size - session.index - 1).coerceAtLeast(0), key = { "next-$it" }) { offset ->
                     QueueSong(session, session.index + 1 + offset, false, actions, artworkUrl, "next-$offset")
                 }

@@ -1,4 +1,5 @@
 import './playing-callback.test.mjs';
+import './up-next-shuffle.test.mjs';
 import './player-controls.test.mjs';
 import './played-queue.test.mjs';
 import './updates-card.test.mjs';
@@ -249,7 +250,7 @@ test('slider template brushes stay sage across pointer states, including disable
 test('player uses one icon vocabulary, balanced columns, and independent output label', () => {
   assert.match(shell, /RowDefinition Height="112"/);
   assert.match(shell, /x:Name="PlayerComposition"[\s\S]*?Width="\*"\/><ColumnDefinition Width="1.2\*"\/><ColumnDefinition Width="\*"/);
-  for (const [name, glyph] of [['ShuffleButton', 'E8B1'], ['RepeatButton', 'E8EE']]) {
+  for (const [name, glyph] of [['RepeatButton', 'E8EE']]) {
     assert.match(shell, new RegExp(`x:Name="${name}"[^>]*Content="&#x${glyph};"[^>]*Style="\\{StaticResource TransportToggleStyle\\}"`));
   }
   for (const name of ['PreviousButton', 'NextButton']) {

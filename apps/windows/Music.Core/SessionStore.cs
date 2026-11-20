@@ -80,6 +80,11 @@ public sealed class SessionStore : IDisposable
             throw new ArgumentException("Invalid session playback position.", nameof(PlaybackSnapshot.PositionSeconds));
         if (snapshot.Queue.Count == 0 ? snapshot.Index != -1 : snapshot.Index < 0 || snapshot.Index >= snapshot.Queue.Count)
             throw new ArgumentException("Invalid session queue index.", nameof(PlaybackSnapshot.Index));
+        if (snapshot.RemainingOrder is not null &&
+            (snapshot.RemainingOrder.Count > snapshot.Queue.Count + (snapshot.Repeat ? 100 : 0) ||
+             (!snapshot.Repeat && snapshot.RemainingOrder.Distinct().Count() != snapshot.RemainingOrder.Count) ||
+             snapshot.RemainingOrder.Any(i => i < 0 || i >= snapshot.Queue.Count)))
+            throw new ArgumentException("Invalid remaining queue order.", nameof(PlaybackSnapshot.Queue));
         foreach (var song in snapshot.Queue)
         {
             if (song is null || string.IsNullOrWhiteSpace(song.Id) || Uri.TryCreate(song.Id, UriKind.Absolute, out _))

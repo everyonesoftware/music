@@ -57,9 +57,7 @@ public sealed partial class MainWindow
         {
             var prepared = collectionTransport.Prepare(capturedSongs, available(), shuffled);
             if (prepared is null) return;
-            // This fresh queue already embodies its selected order. Do not randomize it again
-            // through the independent session shuffle control on Next/prefetch.
-            C<ToggleButton>("ShuffleButton").IsChecked = false;
+            // The fresh queue already embodies its selected occurrence order.
             StartQueue(prepared, 0);
         }
         play.Click += (_, _) => start(false);

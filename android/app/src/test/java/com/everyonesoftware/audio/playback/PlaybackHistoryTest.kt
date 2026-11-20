@@ -27,15 +27,15 @@ class PlaybackHistoryTest {
         val saved = session().copy(index = 2, played = listOf(0, 1))
         val history = PlaybackHistory()
         history.observe(saved, 2, true)
-        val shuffled = SessionRules.toggleShuffle(saved)
+        val shuffled = SessionRules.shuffleUpNext(saved)
         assertEquals(saved.queueId, shuffled.queueId)
-        assertEquals(2, shuffled.occurrences.first())
-        assertEquals(saved.played, history.observe(shuffled, 0, true))
+        assertEquals(2, shuffled.occurrences[2])
+        assertEquals(saved.played, history.observe(shuffled, 2, true))
         val next = shuffled.queue.lastIndex
         val visits = history.observe(shuffled, next, false)
         assertEquals(listOf(0, 1, 2), visits)
         assertEquals(saved.queue[0], shuffled.queue[shuffled.copy(played = visits).playedIndices[0]])
-        assertFalse(SessionRules.toggleShuffle(shuffled).shuffle)
+        assertEquals(saved.shuffle, SessionRules.shuffleUpNext(shuffled).shuffle)
     }
 
     @Test fun restoreSanitizesHistoryAndLegacyJsonDoesNotInventIt() {

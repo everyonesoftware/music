@@ -251,6 +251,68 @@ class AndroidAutoTest {
         assertTrue(children(children(CarMediaIds.QUEUE)[0].mediaId).isEmpty())
     }
 
+    @Test fun upNextShuffleRetainsActiveMediaDuplicatesHistoryAndPausedRestore() {
+        val store = androidx.lifecycle.ViewModelStore()
+        val model = onMain { com.everyonesoftware.audio.ui.AudioViewModel(app, graph).also { store.put("up-next", it) } }
+        val transitions = java.util.concurrent.CopyOnWriteArrayList<Int>()
+        val listener = object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) { transitions.add(playbackState) }
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) { transitions.add(-100 - reason) }
+        }
+        try {
+            until { !model.state.value.booting }
+            val saved = SessionRules.start(credentials.connection.id, "up-next", "Up next fixture",
+                fixtureSongs + fixtureSongs + fixtureSongs, shuffle = true).copy(index = 2, positionMs = 10000, played = listOf(0, 1, 0))
+            runBlocking { graph.setSession(saved) }
+            until { onMain { browser.mediaItemCount == 9 && browser.currentMediaItemIndex == 2 } }
+            onMain { browser.play() }
+            until { onMain { browser.isPlaying } }
+            onMain { browser.addListener(listener) }
+            val orders = mutableSetOf<List<Int>>()
+            repeat(8) {
+                val position = onMain { browser.currentPosition }
+                onMain { model.shuffleUpNext() }
+                until { !model.state.value.loading }
+                Thread.sleep(150)
+                val next = graph.session.value!!
+                orders.add(next.occurrences)
+                assertEquals(saved.queueId, next.queueId)
+                assertEquals(saved.queue.take(3), next.queue.take(3))
+                assertEquals(saved.occurrences.take(3), next.occurrences.take(3))
+                assertEquals(saved.queue.zip(saved.occurrences).toSet(), next.queue.zip(next.occurrences).toSet())
+                assertEquals(saved.played, next.played)
+                assertEquals(2, onMain { browser.currentMediaItemIndex })
+                assertTrue(onMain { browser.isPlaying && browser.currentPosition >= position && !browser.shuffleModeEnabled })
+            }
+            assertTrue("Repeated actions must reshuffle, never toggle a mode", orders.size > 1)
+            assertTrue("Suffix reorder must not reload/transition active media: $transitions", transitions.isEmpty())
+            val upcoming = graph.session.value!!
+            until { onMain { List(browser.mediaItemCount) { browser.getMediaItemAt(it).mediaId } } == upcoming.occurrences.map {
+                CarMediaIds.queued(upcoming.connectionId, upcoming.queueId, it) } }
+            onMain { browser.seekToNextMediaItem() }
+            until { graph.session.value?.index == 3 && graph.session.value?.played == saved.played + saved.occurrences[2] }
+            onMain { browser.pause() }
+            // The remote controller can briefly extrapolate an older position after
+            // pause. Capture the service-owned checkpoint only after its durable write.
+            until { !graph.playback.value.playing && graph.session.value?.positionMs == graph.playback.value.positionMs &&
+                runBlocking { graph.store.session(saved.connectionId) } == graph.session.value }
+            val paused = graph.playback.value.positionMs
+            onMain { model.shuffleUpNext() }
+            until { !model.state.value.loading }
+            until { runBlocking { graph.store.session(saved.connectionId) } == graph.session.value }
+            val restored = runBlocking { graph.store.session(saved.connectionId)!! }
+            assertEquals(paused, restored.positionMs)
+            assertEquals(paused, graph.playback.value.positionMs)
+            assertEquals(3, restored.index)
+            assertEquals(saved.played + saved.occurrences[2], restored.played)
+            assertFalse(onMain { browser.playWhenReady })
+            val cold = com.everyonesoftware.audio.AudioGraph(app)
+            runBlocking { cold.activate(saved.connectionId) }
+            assertEquals(restored, cold.session.value)
+            assertFalse(cold.playback.value.playing)
+        } finally { onMain { browser.removeListener(listener); store.clear() } }
+    }
+
     @Test fun phoneSelectedDuplicateUsesRealServiceForPlaylistAndAlbumAndNativeHistory() {
         val store = androidx.lifecycle.ViewModelStore()
         val model = onMain { com.everyonesoftware.audio.ui.AudioViewModel(app, graph).also { store.put("phone", it) } }
@@ -271,13 +333,15 @@ class AndroidAutoTest {
                 assertEquals(kind, selected.sourceType)
                 assertFalse(selected.shuffle)
                 assertTrue(selected.played.isEmpty())
-                onMain { model.toggleShuffle() }
-                until { graph.session.value?.shuffle == true && onMain { browser.currentMediaItemIndex == 0 && browser.isPlaying } }
+                onMain { model.shuffleUpNext() }
+                until { !model.state.value.loading }
+                assertEquals("No pending suffix at the last duplicate", selected.occurrences, graph.session.value!!.occurrences)
                 assertEquals(selected.queueId, graph.session.value!!.queueId)
-                assertEquals(2, graph.session.value!!.occurrences[0])
-                assertTrue(graph.session.value!!.played.isEmpty())
-                onMain { model.toggleShuffle() }
-                until { graph.session.value?.shuffle == false && !model.state.value.loading }
+                assertEquals(selected.played, graph.session.value!!.played)
+                assertEquals(2, onMain { browser.currentMediaItemIndex })
+                assertTrue(onMain { browser.isPlaying })
+                onMain { model.shuffleUpNext() }
+                until { !model.state.value.loading }
                 onMain { browser.seekTo(1, 0) }
                 until { graph.session.value?.played == listOf(2) }
                 assertEquals(selected.queueId, graph.session.value!!.queueId)

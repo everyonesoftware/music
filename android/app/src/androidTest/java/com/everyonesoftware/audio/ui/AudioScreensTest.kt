@@ -76,6 +76,38 @@ class AudioScreensTest {
         }
     }
 
+    @Test fun upNextShuffleIsAnImmediateAccessibleActionOnlyInQueue() {
+        val saved = ListeningSession(connection.id, "p", "Playlist", List(5) { song.copy(id = "s$it") }, index = 1)
+        val state = mutableStateOf(playerState().copy(screen = Screen.QUEUE, session = saved))
+        compose.setContent { AudioTheme { AudioApp(state.value, actions, artworkUrl = { null }) } }
+        compose.onNodeWithTag("queue-shuffle-up-next").assertIsDisplayed()
+            .assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.StateDescription))
+            .assert(SemanticsMatcher.keyNotDefined(SemanticsProperties.Selected)).performClick().performClick()
+        compose.onNodeWithContentDescription("Shuffle Up next").assertIsDisplayed()
+        compose.onNodeWithText("Shuffle").assertDoesNotExist()
+        val label = compose.onNodeWithText("Up next").fetchSemanticsNode().boundsInRoot
+        val action = compose.onNodeWithTag("queue-shuffle-up-next").fetchSemanticsNode().boundsInRoot
+        assertTrue("Shuffle trails the Up next label", action.left > label.left && kotlin.math.abs(action.center.y - label.center.y) < 2f)
+        captureOutputEvidence("up-next-queue", compose.onRoot())
+        compose.runOnIdle { assertEquals(2, actions.upNextShuffles) }
+        for (index in listOf(3, 4)) {
+            compose.runOnIdle { state.value = state.value.copy(session = saved.copy(index = index)) }
+            compose.onNodeWithTag("queue-shuffle-up-next").assertIsNotEnabled()
+        }
+        compose.runOnIdle { state.value = state.value.copy(session = saved, loading = true) }
+        compose.onNodeWithTag("queue-shuffle-up-next").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(loading = false, connection = null) }
+        compose.onNodeWithTag("queue-shuffle-up-next").assertIsNotEnabled()
+        compose.runOnIdle { state.value = state.value.copy(screen = Screen.PLAYER, connection = connection) }
+        compose.onNodeWithContentDescription("Shuffle").assertDoesNotExist()
+        compose.onNodeWithContentDescription("Repeat").assertIsDisplayed()
+        val play = compose.onNodeWithTag("player-toggle").fetchSemanticsNode().boundsInRoot
+        val root = compose.onRoot().fetchSemanticsNode().boundsInRoot
+        assertTrue("Play remains centered", kotlin.math.abs(play.center.x - root.center.x) < 2f)
+        captureOutputEvidence("up-next-player", compose.onRoot())
+    }
+
     @Test fun queueHasCollapsedActualPlayedSeparateCurrentAndUpcomingWithoutNumbers() {
         val tracks = listOf(song.copy(title = "Earlier but skipped"), song.copy(id = "second", title = "Started visit", coverArtId = "second-cover"), song.copy(title = "Selected duplicate", coverArtId = "first-cover"), song.copy(id = "last", title = "Future", coverArtId = "last-cover"))
         val saved = ListeningSession(connection.id, "p", "Playlist", tracks, index = 2, queueId = "queue", played = listOf(1))
@@ -899,7 +931,7 @@ class AudioScreensTest {
         val transport = compose.onNodeWithTag("player-toggle").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         val queue = compose.onNodeWithTag("player-queue").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
         assertTrue("Queue must be below the transport buttons", queue.top >= transport.bottom)
-        compose.onNodeWithContentDescription("Shuffle").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Shuffle").assertDoesNotExist()
         compose.onNodeWithContentDescription("Repeat").assertIsDisplayed()
         compose.onNodeWithTag("player-queue").performClick()
         compose.runOnIdle {
@@ -1023,7 +1055,8 @@ class AudioScreensTest {
         override fun next() { nextCalls++ }
         override fun previous() = Unit
         override fun seekTo(positionMs: Long) = Unit
-        override fun toggleShuffle() = Unit
+        var upNextShuffles = 0
+        override fun shuffleUpNext() { upNextShuffles++ }
         override fun toggleRepeat() = Unit
         override fun rateSong(rating: Int) { ratings += rating }
         override fun clearError() = Unit

@@ -89,9 +89,7 @@ public sealed partial class MainWindow : Window
         C<Button>("PlayButton").Click += (_, _) => TogglePlayback();
         C<Button>("PreviousButton").Click += (_, _) => Previous();
         C<Button>("NextButton").Click += (_, _) => Step(1);
-        C<ToggleButton>("ShuffleButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); RenderQueue(); };
         C<ToggleButton>("RepeatButton").Click += (_, _) => { SavePlayback(); ScheduleCache(); RenderQueue(); };
-        C<Slider>("VolumeSlider").ValueChanged += (_, e) => player.Volume = e.NewValue / 100;
         C<Slider>("SeekSlider").ValueChanged += (_, e) =>
         {
             if (!updatingSeek && queueIndex >= 0)
@@ -143,6 +141,7 @@ public sealed partial class MainWindow : Window
         Closed += (_, _) => Shutdown();
         C<TextBlock>("VersionText").Text = $"Current Version: {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
         SetNavigation();
+        RenderQueue();
         UpdateTransport();
     }
 
@@ -257,6 +256,7 @@ public sealed partial class MainWindow : Window
             // activation once commit begins, while the dispatcher remains responsive.
             accountChangePending = true; ownsAccountChange = true; cacheMaintenance++;
             SetConnecting(true);
+            RenderQueue();
             profiles.Commit(profile, password);
             committed = true;
             if (previous is not null && previous.Id != profile.Id)
@@ -290,7 +290,7 @@ public sealed partial class MainWindow : Window
             candidate?.Dispose();
             if (ownsAccountChange) { accountChangePending = false; cacheMaintenance--; }
             if (!closed && (ownsAccountChange || connectGate.IsCurrent(lease))) SetConnecting(false);
-            if (ownsAccountChange) ScheduleCache();
+            if (ownsAccountChange) { ScheduleCache(); if (!closed) RenderQueue(); }
         }
     }
 
@@ -668,7 +668,6 @@ public sealed partial class MainWindow : Window
                 detailLoading || detailError || page != "detail" ||
                 item.Index < 0 || item.Index >= detailSongs.Count || !ReferenceEquals(detailSongs[item.Index], item.Song)) return;
             int index = item.Index;
-            C<ToggleButton>("ShuffleButton").IsChecked = false;
             StartQueue(detailSongs, index);
         };
     }
@@ -902,7 +901,7 @@ public sealed partial class MainWindow : Window
         }
         SelectTrack(playbackOrder!.MovePrevious(), true);
     }
-    private sealed record QueueEntry(List<Song> Queue, int Index = -1, string? Heading = null, long VisitId = 0, bool Current = false);
+    private sealed record QueueEntry(List<Song> Queue, int Index = -1, string? Heading = null, long VisitId = 0, bool Current = false, int PendingOffset = -1);
     private void InitializeQueueList(ListView list)
     {
         var itemStyle = new Style(typeof(ListViewItem));
@@ -916,6 +915,7 @@ public sealed partial class MainWindow : Window
             AutomationProperties.SetName(args.ItemContainer, "");
             if (args.InRecycleQueue || closed || args.Item is not QueueEntry entry || !ReferenceEquals(entry.Queue, queue)) return;
             if (entry.Heading == "Played") host.Children.Add(CreatePlayedExpander());
+            else if (entry.Heading == "Up next") host.Children.Add(CreateUpNextHeading());
             else if (entry.Heading is not null)
             {
                 var heading = Text(entry.Heading, 12, true); heading.Margin = new Thickness(8, 16, 8, 8);
@@ -935,6 +935,9 @@ public sealed partial class MainWindow : Window
             if (closed || accountChangePending || args.ClickedItem is not QueueEntry entry ||
                 entry.Index < 0 || !ReferenceEquals(entry.Queue, queue)) return;
             if (entry.VisitId != 0 && playbackOrder?.SelectPlayed(entry.VisitId) != true) return;
+            if (entry.PendingOffset >= 0 && (playbackOrder is null ||
+                entry.PendingOffset >= playbackOrder.RemainingOrder.Count || playbackOrder.RemainingOrder[entry.PendingOffset] != entry.Index ||
+                !playbackOrder.SelectPending(entry.PendingOffset))) return;
             SelectTrack(entry.Index, true);
         };
     }
@@ -955,9 +958,45 @@ public sealed partial class MainWindow : Window
         ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
         return row;
     }
+    private Grid CreateUpNextHeading()
+    {
+        var capturedQueue = queue;
+        var order = playbackOrder;
+        var owner = connectionLease;
+        var heading = new Grid { MinHeight = 54, Margin = new Thickness(8, 8, 0, 0) };
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        heading.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var title = Text("Up next", 14); title.VerticalAlignment = VerticalAlignment.Center;
+        AutomationProperties.SetHeadingLevel(title, Microsoft.UI.Xaml.Automation.Peers.AutomationHeadingLevel.Level3);
+        heading.Children.Add(title);
+        var shuffle = new Button { Content = new SymbolIcon(Symbol.Shuffle), Width = 48, Height = 48,
+            MinWidth = 48, Padding = new Thickness(0), Background = new SolidColorBrush(Colors.Transparent),
+            BorderThickness = new Thickness(0), HorizontalAlignment = HorizontalAlignment.Right,
+            IsEnabled = !closed && !accountChangePending && order?.CanShufflePending == true };
+        AutomationProperties.SetName(shuffle, "Shuffle Up next");
+        ToolTipService.SetToolTip(shuffle, "Shuffle Up next");
+        shuffle.Click += (_, _) =>
+        {
+            if (closed || accountChangePending || !connectionGate.IsCurrent(owner) ||
+                !ReferenceEquals(capturedQueue, queue) || !ReferenceEquals(order, playbackOrder) ||
+                order is null || !order.ShufflePending()) return;
+            SavePlayback(); ScheduleCache(allowCurrentHandoff: false); RenderQueue();
+        };
+        Grid.SetColumn(shuffle, 1); heading.Children.Add(shuffle);
+        return heading;
+    }
     private Expander CreatePlayedExpander()
     {
-        var expander = new Expander { Header = $"Played · {playbackOrder?.Played.Count ?? 0} songs", IsExpanded = playedExpanded,
+        var header = new Grid();
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        header.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        header.Children.Add(Text("Played", 14));
+        int count = playbackOrder?.Played.Count ?? 0;
+        var countLabel = Text($"{count} {(count == 1 ? "song" : "songs")}", 12, true);
+        countLabel.HorizontalAlignment = HorizontalAlignment.Right;
+        Grid.SetColumn(countLabel, 1); header.Children.Add(countLabel);
+        var expander = new Expander { Header = header, IsExpanded = playedExpanded,
+            Style = (Style)root.Resources["PlayedDisclosureStyle"],
             HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch };
         AutomationProperties.SetName(expander, "Played songs");
         expander.Expanding += (_, _) => playedExpanded = true;
@@ -978,8 +1017,8 @@ public sealed partial class MainWindow : Window
     {
         var list = C<ListView>("QueueList");
         EnsurePlaybackOrder();
-        string state = $"{queueIndex}:{playbackOrder?.Ended}:{C<ToggleButton>("ShuffleButton").IsChecked}:{C<ToggleButton>("RepeatButton").IsChecked}:" +
-            string.Join(',', playbackOrder?.Played.Select(x => x.Id) ?? []);
+        string state = $"{accountChangePending}:{queueIndex}:{playbackOrder?.Ended}:{C<ToggleButton>("RepeatButton").IsChecked}:" +
+            string.Join(',', playbackOrder?.Played.Select(x => x.Id) ?? []) + ":" + string.Join(',', playbackOrder?.RemainingOrder ?? []);
         if (ReferenceEquals(renderedQueue, queue) && renderedQueueCount == queue.Count && renderedQueueState == state) return;
         var entries = new List<QueueEntry>();
         if (queueIndex >= 0 && playbackOrder is not null)
@@ -988,9 +1027,10 @@ public sealed partial class MainWindow : Window
             entries.Add(new(queue, Heading: playbackOrder.Ended ? "Playback finished" : "Now playing"));
             if (!playbackOrder.Ended) entries.Add(new(queue, queueIndex, Current: true));
             entries.Add(new(queue, Heading: "Up next"));
-            foreach (int index in playbackOrder.Upcoming(Math.Max(1, queue.Count))) entries.Add(new(queue, index));
+            entries.AddRange(playbackOrder.RemainingOrder.Select((index, offset) => new QueueEntry(queue, index, PendingOffset: offset)));
             entries.Add(new(queue, Heading: "End of queue"));
         }
+        else entries.Add(new(queue, Heading: "Up next"));
         list.ItemsSource = entries;
         renderedQueue = queue; renderedQueueCount = queue.Count; renderedQueueState = state;
         renderedSelection = entries.FindIndex(x => x.Current);
@@ -1040,7 +1080,9 @@ public sealed partial class MainWindow : Window
         if (sessions is null) return false;
         try
         {
-            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds, C<ToggleButton>("ShuffleButton").IsChecked == true, C<ToggleButton>("RepeatButton").IsChecked == true);
+            EnsurePlaybackOrder();
+            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds, false, C<ToggleButton>("RepeatButton").IsChecked == true)
+            { RemainingOrder = playbackOrder?.RemainingOrder };
             sessions.SavePlayback(snapshot.WithoutTransientArtwork());
             if (sessionSaveWarning is not null)
             {
@@ -1068,7 +1110,8 @@ public sealed partial class MainWindow : Window
             if (saved is null || saved.Queue.Count == 0 || saved.Index < 0 || saved.Index >= saved.Queue.Count) return;
             queue = saved.Queue.ToList();
             playbackOrder = null;
-            C<ToggleButton>("ShuffleButton").IsChecked = saved.Shuffle; C<ToggleButton>("RepeatButton").IsChecked = saved.Repeat;
+            playbackOrder = PlaybackOrder.Restore(saved);
+            C<ToggleButton>("RepeatButton").IsChecked = saved.Repeat;
             SelectTrack(saved.Index, false, double.IsFinite(saved.PositionSeconds) ? saved.PositionSeconds : 0);
         }
         catch { ShowError("The saved queue could not be restored. Your server connection is still available."); }

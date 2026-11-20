@@ -12,6 +12,10 @@ import com.everyonesoftware.audio.updates.UpdateClient
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -124,6 +128,78 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         store.saveSession(safe)
         currentSession.value = safe
     }
+    /** Resolve against the latest locked session and service position, never a captured UI copy. */
+    internal suspend fun shuffleUpNext(expectedCredentials: Credentials, expected: ListeningSession,
+        isPlaying: () -> Boolean = { false }, checkpoint: () -> Triple<Int, Long, Int>?,
+    ): Boolean = lock.withLock {
+        val current = currentSession.value ?: return@withLock false
+        if (currentCredentials.value != expectedCredentials || current.connectionId != expected.connectionId ||
+            current.queueId != expected.queueId || current.occurrences != expected.occurrences ||
+            current.queue.map { it.id } != expected.queue.map { it.id }) return@withLock false
+        var attemptedWrite = false
+        var lastLive = Triple(current.index, current.positionMs, current.repeatMode)
+        fun sample(): Triple<Int, Long, Int>? = checkpoint()?.takeIf { it.first in current.queue.indices }
+            ?.also { lastLive = it }
+        suspend fun repair() = withContext(NonCancellable) {
+            // Keep the graph mutex until the untouched order AND latest live progress are
+            // durable. Room may commit even when its cancelled continuation never resumes.
+            var live = sample() ?: lastLive
+            while (true) {
+                val restored = SessionRules.progress(current, live.first, live.second, live.third)
+                store.saveSession(restored)
+                val after = sample()
+                if (after != null && (after.first != live.first || after.third != live.third ||
+                        (!isPlaying() && after.second != live.second))) {
+                    live = after
+                    continue
+                }
+                currentSession.value = restored
+                break
+            }
+        }
+        try {
+            while (true) {
+                val live = sample()
+                if (live == null) {
+                    if (attemptedWrite) repair()
+                    return@withLock false
+                }
+                val latest = SessionRules.progress(current, live.first, live.second, live.third)
+                val shuffled = SessionRules.shuffleUpNext(latest)
+                if (shuffled == latest) {
+                    if (attemptedWrite || latest != current) {
+                        attemptedWrite = true
+                        repair()
+                    }
+                    return@withLock false
+                }
+                // Mark before suspension: a failed/cancelled save may already have committed.
+                attemptedWrite = true
+                store.saveSession(shuffled)
+                currentCoroutineContext().ensureActive()
+                // Retry from the untouched original order if Next/seek moved during storage.
+                val after = sample()
+                if (after == null) {
+                    repair()
+                    return@withLock false
+                }
+                if (after.first != live.first || after.third != live.third || (!isPlaying() && after.second != live.second)) continue
+                currentSession.value = shuffled.copy(positionMs = after.second, repeatMode = after.third)
+                return@withLock true
+            }
+            @Suppress("UNREACHABLE_CODE") false
+        } catch (failure: Throwable) {
+            if (attemptedWrite) {
+                try { repair() }
+                catch (cleanupFailure: Throwable) {
+                    // Do not claim a successful rollback or hide the original failure.
+                    failure.addSuppressed(cleanupFailure)
+                }
+            }
+            throw failure
+        }
+    }
+
     suspend fun updateProgress(index: Int, positionMs: Long, repeatMode: Int, expectedConnectionId: String? = null, expectedQueueId: String? = null, expectedQueueIds: List<String>? = null, expectedOccurrences: List<Int>? = null) = lock.withLock {
         val current = currentSession.value ?: return@withLock
         if (expectedConnectionId != null && current.connectionId != expectedConnectionId) return@withLock

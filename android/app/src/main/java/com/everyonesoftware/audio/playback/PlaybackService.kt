@@ -57,6 +57,7 @@ import java.util.concurrent.TimeUnit
 /** The service, never an activity or ViewModel, owns the player and its audio focus. */
 @UnstableApi
 class PlaybackService : MediaLibraryService() {
+    companion object { const val SHUFFLE_UP_NEXT = "com.everyonesoftware.audio.SHUFFLE_UP_NEXT" }
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     // Final progress writes may finish after the service's observers and player have stopped.
     private val persistenceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -169,6 +170,25 @@ class PlaybackService : MediaLibraryService() {
             }
 
             override fun onCustomCommand(session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle): ListenableFuture<SessionResult> {
+                if (customCommand.customAction == SHUFFLE_UP_NEXT) {
+                    val expected = graph.session.value
+                    val owner = binding
+                    if (expected == null || owner == null || owner.key != expected.key() ||
+                        args.getString("connection") != expected.connectionId || args.getString("queue") != expected.queueId ||
+                        args.getIntArray("occurrences")?.toList() != expected.occurrences)
+                        return Futures.immediateFuture(SessionResult(SessionError.ERROR_BAD_VALUE))
+                    return future {
+                        val changed = graph.shuffleUpNext(owner.credentials, expected, isPlaying = { player.isPlaying }) {
+                            if (binding != owner || graph.credentials.value != owner.credentials ||
+                                player.mediaItemCount != expected.queue.size || player.currentMediaItem?.mediaId !=
+                                expected.occurrences.getOrNull(player.currentMediaItemIndex)?.let {
+                                    CarMediaIds.queued(expected.connectionId, expected.queueId, it) }) null
+                            else Triple(player.currentMediaItemIndex, player.currentPosition.coerceAtLeast(0), player.repeatMode)
+                        }
+                        if (changed) reconcileQueue()
+                        SessionResult(SessionResult.RESULT_SUCCESS)
+                    }
+                }
                 if (customCommand.customAction !in setOf(CarLibrary.PLAY_COLLECTION, CarLibrary.SHUFFLE_COLLECTION, CarLibrary.SHUFFLE_PLAYLIST))
                     return Futures.immediateFuture(SessionResult(SessionError.ERROR_NOT_SUPPORTED))
                 val generation = ++selectionGeneration
@@ -201,6 +221,7 @@ class PlaybackService : MediaLibraryService() {
                     .build()
                 return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                     .setAvailableSessionCommands(MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
+                        .add(SessionCommand(SHUFFLE_UP_NEXT, Bundle.EMPTY))
                         .add(SessionCommand(CarLibrary.SHUFFLE_PLAYLIST, Bundle.EMPTY))
                         .add(SessionCommand(CarLibrary.PLAY_COLLECTION, Bundle.EMPTY))
                         .add(SessionCommand(CarLibrary.SHUFFLE_COLLECTION, Bundle.EMPTY)).build())
@@ -326,6 +347,29 @@ class PlaybackService : MediaLibraryService() {
         val next = QueueBinding(saved.key(), credentials)
         if (next == binding) return // Progress/rating emissions must never replace or seek the queue.
         val previous = binding
+        if (previous != null && previous.credentials == credentials && previous.key.queueId == next.key.queueId &&
+            previous.key.connectionId == next.key.connectionId && previous.key.playlistId == next.key.playlistId &&
+            previous.key.ids.zip(previous.key.occurrences).toSet() == next.key.ids.zip(next.key.occurrences).toSet() &&
+            player.mediaItemCount == saved.queue.size && player.currentMediaItemIndex == saved.index &&
+            previous.key.occurrences.take(saved.index + 1) == saved.occurrences.take(saved.index + 1)) {
+            // Move existing sources strictly after the active occurrence. setMediaItems/prepare
+            // would stop audio, reset buffered progress and create false history transitions.
+            replacingQueue = true
+            try {
+                val order = previous.key.occurrences.toMutableList()
+                for (index in (saved.index + 1)..saved.queue.lastIndex) {
+                    val from = order.indexOf(saved.occurrences[index])
+                    if (from != index) { player.moveMediaItem(from, index); order.add(index, order.removeAt(from)) }
+                }
+                binding = next
+            } finally { replacingQueue = false }
+            publishSnapshot()
+            refreshArtwork()
+            librarySession?.notifyChildrenChanged(CarMediaIds.QUEUE, 3, null)
+            librarySession?.notifyChildrenChanged(CarMediaIds.upcoming(saved.connectionId, saved.queueId),
+                saved.queue.size - saved.index - 1, null)
+            return
+        }
         val keepPlaying = player.playWhenReady && (previous == null || previous.credentials == credentials)
         replacingQueue = true
         try {
@@ -458,7 +502,11 @@ class PlaybackService : MediaLibraryService() {
             .addInterceptor { chain ->
                 val unsigned = chain.request()
                 try {
-                    if (graph.credentials.value != owner.credentials || graph.session.value?.key() != owner.key) {
+                    val active = graph.session.value
+                    if (graph.credentials.value != owner.credentials || active == null ||
+                        active.connectionId != owner.key.connectionId || active.queueId != owner.key.queueId ||
+                        active.playlistId != owner.key.playlistId || active.queue.map { it.id }.zip(active.occurrences).toSet() !=
+                        owner.key.ids.zip(owner.key.occurrences).toSet()) {
                         throw IOException("The active music account or queue changed.")
                     }
                     val signed = unsigned.newBuilder()

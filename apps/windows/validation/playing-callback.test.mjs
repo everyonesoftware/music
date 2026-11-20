@@ -13,7 +13,8 @@ test('real native Playing callback retains evidence across blocked dispatch and 
   const dir = mkdtempSync(join(tmpdir(), 'music-playing-'));
   try {
     const order = fileURLToPath(new URL('../Music.Core/PlaybackOrder.cs', import.meta.url));
-    writeFileSync(join(dir, 'Checks.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Compile Include="${order}"/></ItemGroup></Project>`);
+    const models = fileURLToPath(new URL('../Music.Core/Models.cs', import.meta.url));
+    writeFileSync(join(dir, 'Checks.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup><ItemGroup><Compile Include="${order}"/><Compile Include="${models}"/></ItemGroup></Project>`);
     writeFileSync(join(dir, 'Program.cs'), `
 using Music.Core;
 await Harness.Run();
@@ -40,6 +41,10 @@ ${callback}
         var h = new Harness(); var old = h.Bind();
         await Task.Run(() => h.player.PlaybackSession.Playing());
         Require(h.uiUpdates == 0, "native callback mutated UI");
+        var source = h.player.Source;
+        Require(h.playbackOrder!.ShufflePending(), "shuffle needs two pending occurrences");
+        int next = h.playbackOrder.Upcoming(1)[0];
+        Require(ReferenceEquals(source, h.player.Source), "shuffle changed native source");
         h.playbackOrder!.MoveNext(); h.Bind(); // Step(1) while dispatcher is held.
         h.DispatcherQueue.Drain();
         Require(h.playbackOrder.Played.Select(v => v.Index).SequenceEqual(new[] { 0 }), "Playing evidence was lost before departure");
@@ -50,7 +55,7 @@ ${callback}
         h.player.PlaybackSession.PlaybackState = MediaPlaybackState.Paused;
         h.Bind(); // same-visit handoff preserves start
         h.playbackOrder.Finish(); h.DispatcherQueue.Drain();
-        Require(h.playbackOrder.Played.Select(v => v.Index).SequenceEqual(new[] { 0, 2 }), "handoff/end lost actual start");
+        Require(h.playbackOrder.Played.Select(v => v.Index).SequenceEqual(new[] { 0, next == 1 ? 2 : 1 }), "handoff/end lost actual start");
         old = h.Bind(); h.playbackOrder = new(3, 0, false, false); h.Bind();
         await Task.Run(() => old(h.player.PlaybackSession, null));
         h.playbackOrder.MoveNext(); h.DispatcherQueue.Drain();

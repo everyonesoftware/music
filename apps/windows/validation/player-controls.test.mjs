@@ -24,7 +24,7 @@ test('footer transport uses filled vector triangles and retains them across play
   assert.doesNotMatch(main, /C<Button>\("PlayButton"\)\.Content =/);
 });
 
-test('seek and volume share an Android-style rounded bar without replacing native slider behavior', () => {
+test('seek retains an Android-style rounded bar without replacing native slider behavior', () => {
   assert.match(shell, /<ControlTemplate x:Key="PlayerSliderThumbTemplate" TargetType="Thumb">/);
   const template = shell.match(/<ControlTemplate x:Key="PlayerSliderThumbTemplate"[\s\S]*?<\/ControlTemplate>/)?.[0] ?? '';
   assert.match(template, /Background="Transparent"/);
@@ -33,7 +33,8 @@ test('seek and volume share an Android-style rounded bar without replacing nativ
   const path = new URL('MainWindow.PlayerControls.cs', app);
   const controls = existsSync(path) ? readFileSync(path, 'utf8') : '';
   assert.match(main, /InitializePlayerControls\(\)/);
-  for (const name of ['SeekSlider', 'VolumeSlider']) assert.ok(controls.includes(`"${name}"`));
+  assert.ok(controls.includes('"SeekSlider"'));
+  assert.doesNotMatch(controls, /VolumeSlider/);
   assert.match(controls, /slider.Loaded \+=/);
   assert.match(controls, /slider.ApplyTemplate\(\)/);
   assert.match(controls, /Name: "HorizontalThumb"/);

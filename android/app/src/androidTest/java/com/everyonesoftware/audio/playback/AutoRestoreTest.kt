@@ -61,8 +61,17 @@ class AutoRestoreTest {
             instrumentation.runOnMainSync { items = browser.getChildren("audio:queue", 0, 10, null) }
             val result = items.get(15, TimeUnit.SECONDS)
             assertEquals(0, result.resultCode)
-            assertEquals(listOf("Second", "First", "First"), result.value!!.map { it.mediaMetadata.title })
-            assertEquals(3, result.value!!.map { it.mediaId }.toSet().size)
+            val sections = result.value!!
+            assertEquals(listOf("Played", "First", "Up next"), sections.map { it.mediaMetadata.title })
+            assertEquals(3, sections.map { it.mediaId }.toSet().size)
+            assertEquals(CarMediaIds.queued(id, expected.queueId, expected.occurrences[expected.index]), sections[1].mediaId)
+            instrumentation.runOnMainSync { items = browser.getChildren(sections[0].mediaId, 0, 10, null) }
+            assertTrue("Paused restoration must not invent played visits", items.get(15, TimeUnit.SECONDS).value!!.isEmpty())
+            instrumentation.runOnMainSync { items = browser.getChildren(sections[2].mediaId, 0, 10, null) }
+            val pending = items.get(15, TimeUnit.SECONDS).value!!
+            assertEquals(listOf("First"), pending.map { it.mediaMetadata.title })
+            assertEquals(listOf(CarMediaIds.queued(id, expected.queueId, expected.occurrences[2])), pending.map { it.mediaId })
+            assertNotEquals(sections[1].mediaId, pending.single().mediaId)
             assertEquals(expected, runBlocking { graph.store.session(id) })
         } finally {
             instrumentation.runOnMainSync { browser.release(); app.stopService(Intent(app, PlaybackService::class.java)) }

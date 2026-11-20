@@ -25,10 +25,12 @@ object SessionRules {
     fun progress(session: ListeningSession, index: Int, positionMs: Long, repeatMode: Int): ListeningSession =
         restore(session.copy(index = index, positionMs = positionMs, repeatMode = repeatMode))
 
-    fun toggleShuffle(session: ListeningSession): ListeningSession {
-        if (session.shuffle) return session.copy(shuffle = false)
-        val order = listOf(session.index) + session.queue.indices.filter { it != session.index }.shuffled()
-        return session.copy(queue = order.map { session.queue[it] }, occurrenceIds = order.map { session.occurrences[it] },
-            index = 0, shuffle = true)
+    /** One-shot action: the legacy persisted shuffle flag is not a mode. */
+    fun shuffleUpNext(session: ListeningSession, random: Random = Random.Default): ListeningSession {
+        if (session.index !in session.queue.indices || session.queue.size - session.index - 1 < 2) return session
+        val suffix = ((session.index + 1)..session.queue.lastIndex).toList()
+        val pending = suffix.shuffled(random).let { if (it == suffix) it.drop(1) + it.first() else it }
+        val order = (0..session.index).toList() + pending
+        return session.copy(queue = order.map { session.queue[it] }, occurrenceIds = order.map { session.occurrences[it] })
     }
 }

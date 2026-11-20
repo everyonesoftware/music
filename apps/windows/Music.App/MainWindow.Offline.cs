@@ -388,10 +388,9 @@ public sealed partial class MainWindow
     private void EnsurePlaybackOrder()
     {
         if (queueIndex < 0) return;
-        bool shuffle = C<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>("ShuffleButton").IsChecked == true;
         bool repeat = C<Microsoft.UI.Xaml.Controls.Primitives.ToggleButton>("RepeatButton").IsChecked == true;
-        playbackOrder ??= new PlaybackOrder(queue.Count, queueIndex, shuffle, repeat);
-        playbackOrder.Configure(shuffle, repeat);
+        playbackOrder ??= new PlaybackOrder(queue.Count, queueIndex, false, repeat);
+        playbackOrder.Configure(false, repeat);
         if (playbackOrder.Current != queueIndex) playbackOrder.Select(queueIndex);
     }
     private void HandoffCompletedSong(string songId, long version)
@@ -421,6 +420,8 @@ public sealed partial class MainWindow
     }
     private IEnumerable<string> ProtectedTracks() => new[] { activeSongId, previousSongId }.OfType<string>();
     private void ScheduleCache()
+        => ScheduleCache(allowCurrentHandoff: true);
+    private void ScheduleCache(bool allowCurrentHandoff)
     {
         if (cacheMaintenance != 0) return;
         cacheCancellation.Cancel(); cacheCancellation = new();
@@ -473,7 +474,9 @@ public sealed partial class MainWindow
                         if (closed || storage != cache || token.IsCancellationRequested) return;
                         pendingDownloads.RemoveAll(x => x.Id == song.Id);
                         QueueCacheRefresh(song.Id);
-                        HandoffCompletedSong(song.Id, scheduledPlaybackVersion);
+                        // A queue-only shuffle may reprioritize prefetch, never replace
+                        // the active source as a side effect of that click.
+                        if (allowCurrentHandoff) HandoffCompletedSong(song.Id, scheduledPlaybackVersion);
                     });
                 }
                 catch (OperationCanceledException) { break; }

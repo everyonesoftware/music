@@ -741,12 +741,31 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun seekTo(positionMs: Long) = playerCommand { it.seekTo(positionMs.coerceAtLeast(0)) }
     override fun toggleRepeat() = playerCommand { it.repeatMode = (it.repeatMode + 1) % 3 }
 
-    override fun toggleShuffle() {
+    override fun shuffleUpNext() {
         if (current.value.loading) return
+        val expected = graph.session.value ?: return
+        val credentials = graph.credentials.value ?: return
+        if (expected.connectionId != credentials.connection.id || expected.index !in expected.queue.indices ||
+            expected.queue.size - expected.index - 1 < 2) return
         work {
-            val session = graph.session.value ?: return@work
-            val next = SessionRules.toggleShuffle(session)
-            graph.setSession(next)
+            val remote = controller()
+            if (!remote.isConnected || graph.credentials.value != credentials || graph.session.value?.queueId != expected.queueId ||
+                graph.session.value?.occurrences != expected.occurrences) return@work
+            val future = remote.sendCustomCommand(androidx.media3.session.SessionCommand(PlaybackService.SHUFFLE_UP_NEXT, android.os.Bundle.EMPTY),
+                android.os.Bundle().apply {
+                    putString("connection", expected.connectionId)
+                    putString("queue", expected.queueId)
+                    putIntArray("occurrences", expected.occurrences.toIntArray())
+                })
+            val result = suspendCancellableCoroutine { continuation ->
+                future.addListener({
+                    if (continuation.isActive) {
+                        try { continuation.resume(future.get()) }
+                        catch (error: Exception) { continuation.resumeWithException(error) }
+                    }
+                }, ContextCompat.getMainExecutor(getApplication()))
+            }
+            check(result.resultCode == androidx.media3.session.SessionResult.RESULT_SUCCESS) { "The listening queue changed. Retry Shuffle Up next." }
         }
     }
 

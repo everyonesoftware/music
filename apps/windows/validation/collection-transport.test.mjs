@@ -41,9 +41,9 @@ test('detail callbacks fence account, collection, loading/error/offline and stal
   const start = controls.slice(controls.indexOf('void start('));
   assert.match(start, /collectionTransport.Prepare\(capturedSongs, available\(\), shuffled\)/);
   assert.match(start, /if \(prepared is null\) return/);
-  assert.match(start, /C<ToggleButton>\("ShuffleButton"\).IsChecked = false/);
+  assert.doesNotMatch(start, /ShuffleButton|IsChecked/);
   assert.match(start, /StartQueue\(prepared, 0\)/);
-  assert.ok(start.indexOf('if (prepared is null) return') < start.indexOf('IsChecked = false'));
+  assert.ok(start.indexOf('if (prepared is null) return') < start.indexOf('StartQueue(prepared, 0)'));
 });
 test('Play uses an explicitly dark filled triangle rather than an outlined font symbol', () => {
   const controls = ui();

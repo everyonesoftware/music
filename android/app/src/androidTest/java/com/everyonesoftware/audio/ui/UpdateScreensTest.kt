@@ -279,7 +279,7 @@ class UpdateScreensTest {
         override fun next() = Unit
         override fun previous() = Unit
         override fun seekTo(positionMs: Long) = Unit
-        override fun toggleShuffle() = Unit
+        override fun shuffleUpNext() = Unit
         override fun toggleRepeat() = Unit
         override fun rateSong(rating: Int) = Unit
         override fun clearError() = Unit

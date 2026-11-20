@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Text;
 using System.Text.Json;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Automation.Peers;
 using Microsoft.UI.Xaml.Automation.Provider;
 using Microsoft.UI.Xaml.Controls;
@@ -172,17 +173,18 @@ public sealed partial class MainWindow
             {
                 category = "session-restore";
                 var saved = sessions.LoadPlayback(profile!.Id);
-                NativeRequire(checks, "persistedSession", saved is { Index: 2, Shuffle: true, Repeat: true } && Math.Abs(saved.PositionSeconds - NativeAcceptance.Position) < .1);
+                NativeRequire(checks, "persistedSession", saved is { Index: 2, Shuffle: false, Repeat: true } && Math.Abs(saved.PositionSeconds - NativeAcceptance.Position) < .1);
                 RestorePlayback(); // Actual app restoration; never reconstruct expected queue on this path.
                 NativeRequire(checks, "duplicateQueue", queue.Select(s => s.Id).SequenceEqual(new[] { "native-song-a", "native-song-b", "native-song-a" }) && queueIndex == 2);
                 NativeRequire(checks, "pausedRestoration", player.PlaybackSession.PlaybackState != MediaPlaybackState.Playing && !player.AutoPlay);
                 NativeRequire(checks, "positionRestoration", Math.Abs((restoredPosition > 0 ? restoredPosition : player.PlaybackSession.Position.TotalSeconds) - NativeAcceptance.Position) < .5);
-                NativeRequire(checks, "transportRestoration", C<ToggleButton>("ShuffleButton").IsChecked == true && C<ToggleButton>("RepeatButton").IsChecked == true && C<ListView>("QueueList").SelectedItem is QueueEntry { Index: 2, Current: true } && playbackOrder?.Played.Count == 0);
+                NativeRequire(checks, "transportRestoration", C<ToggleButton>("RepeatButton").IsChecked == true && C<ListView>("QueueList").SelectedItem is QueueEntry { Index: 2, Current: true } && playbackOrder?.Played.Count == 0);
+                NativeRequire(checks, "remainingOrderRestoration", playbackOrder!.RemainingOrder.SequenceEqual(new[] { 1, 0 }));
             }
             category = "native-controls";
             await NavigateAsync("library");
             root.UpdateLayout();
-            NativeRequire(checks, "populatedLibraryTree", NativeTree(C<StackPanel>("BrowsePanel")).OfType<ListViewBase>().Count(v => v.Items.Count > 0) == 3);
+            NativeRequire(checks, "populatedLibraryTree", NativeTree(C<StackPanel>("BrowsePanel")).OfType<ListViewBase>().Count(v => v.Items.Count > 0) == 2);
             await NativeAcceptance.WaitAsync(() => NativeHasRealizedFixtureText(C<StackPanel>("BrowsePanel")));
             NativeRequire(checks, "realizedLibraryTree", NativeHasRealizedFixtureText(C<StackPanel>("BrowsePanel")));
             foreach (var entry in new[] { ("AlbumsNav", "albums", "list"), ("PlaylistsNav", "playlists", "list"), ("SongsNav", "songs", "grid") })
@@ -207,8 +209,9 @@ public sealed partial class MainWindow
             if (stage == "seed")
             {
                 queue = new List<Song> { detailSongs[0], detailSongs[1], detailSongs[0] };
+                playbackOrder = PlaybackOrder.Restore(new PlaybackSnapshot(profile!.Id, queue, 2, NativeAcceptance.Position, false, true)
+                    { RemainingOrder = new[] { 0, 1 } });
                 SelectTrack(2, false, NativeAcceptance.Position);
-                C<ToggleButton>("ShuffleButton").IsChecked = true;
                 C<ToggleButton>("RepeatButton").IsChecked = true;
             }
             NativeInvoke("QueueButton");
@@ -218,6 +221,31 @@ public sealed partial class MainWindow
             NativeRequire(checks, "populatedQueueTree", C<ListView>("QueueList").Items.OfType<QueueEntry>().Any(x => x.Heading == "Played") &&
                 C<ListView>("QueueList").Items.OfType<QueueEntry>().Any(x => x.Current && x.Index == 2) &&
                 NativeTree(C<ListView>("QueueList")).OfType<TextBlock>().Any(t => t.Text == "Native fixture A"));
+            var queueList = C<ListView>("QueueList");
+            var pendingRows = queueList.Items.OfType<QueueEntry>().Where(x => x.PendingOffset >= 0).ToArray();
+            NativeRequire(checks, "pendingOccurrenceRows", pendingRows.Select(x => x.PendingOffset).SequenceEqual(Enumerable.Range(0, pendingRows.Length)) &&
+                pendingRows.Select(x => x.Index).SequenceEqual(playbackOrder!.RemainingOrder));
+            await NativeAcceptance.WaitAsync(() => NativeTree(queueList).OfType<Button>().Any(b => AutomationProperties.GetName(b) == "Shuffle Up next" && b.ActualWidth > 0));
+            var shuffle = NativeTree(queueList).OfType<Button>().Single(b => AutomationProperties.GetName(b) == "Shuffle Up next");
+            NativeRequire(checks, "shuffleAccessibleAction", shuffle.IsEnabled && shuffle.ActualWidth >= 48 && shuffle.ActualHeight >= 48 &&
+                new ButtonAutomationPeer(shuffle).GetPattern(PatternInterface.Toggle) is null);
+            var sourceBefore = player.Source;
+            long versionBefore = playbackVersion;
+            var pendingBefore = playbackOrder!.RemainingOrder.ToArray();
+            var playedBefore = playbackOrder.Played.ToArray();
+            ((IInvokeProvider)new ButtonAutomationPeer(shuffle).GetPattern(PatternInterface.Invoke)).Invoke();
+            await NativeAcceptance.WaitAsync(() => !pendingBefore.SequenceEqual(playbackOrder.RemainingOrder));
+            NativeRequire(checks, "shuffleChangesOnlyPending", playbackOrder.RemainingOrder.Order().SequenceEqual(pendingBefore.Order()) &&
+                queueIndex == 2 && playbackOrder.Played.SequenceEqual(playedBefore) && !playIntended && C<ToggleButton>("RepeatButton").IsChecked == true);
+            NativeRequire(checks, "shufflePreservesSource", ReferenceEquals(sourceBefore, player.Source) && versionBefore == playbackVersion);
+            root.UpdateLayout();
+            await NativeAcceptance.WaitAsync(() => NativeTree(queueList).OfType<Expander>().Any());
+            var playedDisclosure = NativeTree(queueList).OfType<Expander>().Single();
+            var expand = (IExpandCollapseProvider)new ExpanderAutomationPeer(playedDisclosure).GetPattern(PatternInterface.ExpandCollapse);
+            expand.Expand();
+            await NativeAcceptance.WaitAsync(() => playedDisclosure.IsExpanded);
+            NativeRequire(checks, "playedDisclosureExpansion", playedExpanded && expand.ExpandCollapseState == Microsoft.UI.Xaml.Automation.ExpandCollapseState.Expanded);
+            expand.Collapse();
             NativeRequire(checks, "fixtureRequests", handler.Seen.Count == 6);
             category = "native-media";
             mediaStatus = await NativeMediaAsync(directory, stage);
@@ -228,7 +256,8 @@ public sealed partial class MainWindow
             category = "session-save";
             NativeRequire(checks, "sessionSaved", TrySavePlayback());
             var reread = sessions.LoadPlayback(profile!.Id);
-            NativeRequire(checks, "duplicateQueue", reread is { Index: 2, Shuffle: true, Repeat: true } && reread.Queue.Select(s => s.Id).SequenceEqual(new[] { "native-song-a", "native-song-b", "native-song-a" }) && Math.Abs(reread.PositionSeconds - NativeAcceptance.Position) < .1);
+            NativeRequire(checks, "duplicateQueue", reread is { Index: 2, Shuffle: false, Repeat: true } && reread.Queue.Select(s => s.Id).SequenceEqual(new[] { "native-song-a", "native-song-b", "native-song-a" }) && Math.Abs(reread.PositionSeconds - NativeAcceptance.Position) < .1);
+            NativeRequire(checks, "remainingOrderSaved", reread!.RemainingOrder!.SequenceEqual(playbackOrder.RemainingOrder));
             category = "native-media";
             if (mediaStatus == "failed") throw new InvalidOperationException();
             status = "passed";

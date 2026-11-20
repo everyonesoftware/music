@@ -160,7 +160,7 @@ interface AudioUiActions {
     fun next()
     fun previous()
     fun seekTo(positionMs: Long)
-    fun toggleShuffle()
+    fun shuffleUpNext()
     fun toggleRepeat()
     fun rateSong(rating: Int)
     fun clearError()

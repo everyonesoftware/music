@@ -32,7 +32,7 @@ Build commands, architecture, and explicit limitations are in [`apps/windows/REA
 
 ## Native Android alpha
 
-The Kotlin/Compose application lives in `android/`. It connects directly to Navidrome, discovers accessible libraries, loads playlists, starts a shuffled queue in the full player, streams through a Media3 background service, and saves connection-scoped queue order, position, repeat and shuffle settings. Returning users reopen the full player; cold restore is paused, while an already-running service keeps playing. Five-star song ratings are read back from the server before becoming confirmed UI state.
+The Kotlin/Compose application lives in `android/`. It connects directly to Navidrome, discovers accessible libraries, loads playlists, supports ordered Play and Shuffle Play, streams through a Media3 background service, and saves connection-scoped queue order, position and repeat settings. Shuffle in the Queue view is a one-time action on Up next, not a playback toggle. Cold restore is paused, while an already-running service keeps playing. Five-star song ratings are read back from the server before becoming confirmed UI state.
 
 Music is the native app's new display name. It retains the application ID (`com.everyonesoftware.audio`), signing key/configuration, and local data identifiers to support updates to existing installs. Preserved browser mockups keep their historical names.
 
@@ -53,6 +53,12 @@ The integration is tested through real Media3 and legacy platform browsers on an
 `.github/workflows/ci.yml` starts one workflow per main push with five jobs: **validate → browser-prototypes + android + windows → release**. Each native platform builds only when its code/dependencies changed since its last verified publication (or on explicit manual force). Browser-prototype checks also run selectively, in parallel with the native builds, without publishing a web output. The final release job waits for selected browser checks to pass and serializes publication, attachment recovery and download refresh. Signed Android APKs and unsigned Windows installers/full update feeds go into the normal Music release, not a separate Windows preview. Unchanged platforms retain their original versions and outputs. Full Git history determines the `0.1.<commit-count>` version, Android version code and exact source identity.
 
 One-time persistent signing secrets are required before publication. See [`android/RELEASING.md`](android/RELEASING.md) for the four secret names, key backup, upgrade implications, reruns and verification. Configure those secrets and push the project to `main` to activate publishing; local tests are separate from hosted release verification.
+
+## Queue shuffle
+
+On Windows and Android, **Shuffle Up next** is an icon-only action beside the Queue view's Up next heading. It randomizes the remaining songs without changing the current song or listening history; subsequent clicks reshuffle rather than undoing the order. The transport no longer includes a Shuffle toggle. See [queue behavior and acceptance](docs/QUEUE-SHUFFLE.md).
+
+The approved interactive study is `mockups/queue-shuffle/index.html`, including Android Now Playing without Shuffle. Run `node tests/queue-shuffle.mjs` to check the study independently; it also runs in `npm test`.
 
 ## Preserved design studies
 

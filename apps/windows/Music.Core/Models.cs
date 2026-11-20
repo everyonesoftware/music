@@ -5,6 +5,9 @@ public sealed record Song(string Id, string Title, string Artist, string Album, 
 public sealed record Album(string Id, string Name, string Artist, string? CoverArtId, int SongCount, int Year);
 public sealed record PlaybackSnapshot(string ConnectionId, IReadOnlyList<Song> Queue, int Index, double PositionSeconds, bool Shuffle, bool Repeat)
 {
+    /// <summary>Null denotes a legacy ordered suffix. Shuffle is retained only for file compatibility.</summary>
+    [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    public IReadOnlyList<int>? RemainingOrder { get; init; }
     /// <summary>Omit optional URI-valued artwork from the saved copy, never the live queue.</summary>
     public PlaybackSnapshot WithoutTransientArtwork()
     {

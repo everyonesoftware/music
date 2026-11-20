@@ -57,6 +57,17 @@ test('compares actual Git trees against last publication, not the previous push,
   assert.equal(decideFromBaseline({ root: h.root, component: 'windows', baseline: h.git('rev-parse', 'HEAD'), force: true }).build, true);
 });
 
+test('queue-shuffle browser regression changes do not rebuild native platforms', async t => {
+  const { decideFromBaseline } = await import('../scripts/selective-builds.mjs');
+  const h = history(t);
+  const base = h.commit('README.md');
+  h.commit('tests/queue-shuffle.mjs', 'browser-only regression');
+  for (const component of ['android', 'windows']) {
+    assert.equal(decideFromBaseline({ root: h.root, component, baseline: base }).build, false);
+  }
+  assert.equal(decideFromBaseline({ root: h.root, component: 'web', baseline: base }).build, true);
+});
+
 function publication(component, count, sha) {
   const windows = component === 'windows';
   const version = `0.1.${count}`, tag = `${windows ? 'windows-' : ''}v${version}`;

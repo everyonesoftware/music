@@ -107,9 +107,9 @@ class CarLibraryTest {
         val source = Source().apply { session = SessionRules.start("c", "p", "Playlist", tracks, shuffle = false).copy(index = 2, played = listOf(0)) }
         val library = CarLibrary(source)
         val original = CarMediaIds.queued("c", source.session!!.queueId, 2)
-        source.session = SessionRules.toggleShuffle(source.session!!)
+        source.session = SessionRules.shuffleUpNext(source.session!!)
         val selected = library.resolve(original).session
-        assertEquals(0, selected.index)
+        assertEquals(2, selected.index)
         assertEquals(source.session!!.queueId, selected.queueId)
         assertEquals(2, selected.occurrences[selected.index])
         assertEquals(listOf(0), selected.played)

@@ -9,15 +9,12 @@ public sealed partial class MainWindow
 {
     private void InitializePlayerControls()
     {
-        foreach (var name in new[] { "SeekSlider", "VolumeSlider" })
+        var slider = C<Slider>("SeekSlider");
+        slider.Loaded += (_, _) =>
         {
-            var slider = C<Slider>(name);
-            slider.Loaded += (_, _) =>
-            {
-                slider.ApplyTemplate();
-                ApplyPlayerSliderThumb(slider);
-            };
-        }
+            slider.ApplyTemplate();
+            ApplyPlayerSliderThumb(slider);
+        };
     }
 
     private void ApplyPlayerSliderThumb(DependencyObject element)
