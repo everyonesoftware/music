@@ -1,4 +1,5 @@
 import './playing-callback.test.mjs';
+import './player-controls.test.mjs';
 import './played-queue.test.mjs';
 import './updates-card.test.mjs';
 import './update-changelog.test.mjs';

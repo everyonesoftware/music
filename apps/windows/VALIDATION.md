@@ -1,5 +1,25 @@
 # Windows implementation checkpoint — validation
 
+## Filled footer transport and Android-style slider markers
+
+Play, Previous and Next use filled vector triangles in their existing foreground
+colors. Play/Pause changes the visibility of retained vector paths rather than
+replacing them with outline font glyphs. Both playback position and volume use
+the same 4 × 28 rounded vertical marker, with a gap around the track and a larger
+24 × 32 native Thumb hit target. The SDK Slider template still owns dragging,
+track clicks, keyboard operation, focus and normal/hover/pressed/disabled colors.
+
+`validation/player-controls.test.mjs` is imported by the existing visual contracts
+and checks this source wiring. Compilation and source checks do not establish
+native rendering or input acceptance.
+
+- [ ] On Windows, inspect filled Play/Previous/Next and the Play/Pause transition
+  while playing, paused and disabled, at restored/maximized sizes and high DPI.
+- [ ] Verify both marker bars at minimum, middle and maximum, including hover,
+  pressed and disabled states; there should be no circular dot or gray thumb box.
+- [ ] Drag each marker, click its track and use Tab/arrows/Home/End. Confirm
+  seeking, volume, focus visibility and accessible names remain functional.
+
 ## On-demand Windows update changelog
 
 Settings Updates now includes a collapsed native **What’s new** disclosure for

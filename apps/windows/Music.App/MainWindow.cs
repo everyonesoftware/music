@@ -85,6 +85,7 @@ public sealed partial class MainWindow : Window
         var layoutMenu = (MenuFlyout)C<Button>("LayoutButton").Flyout;
         ((MenuFlyoutItem)layoutMenu.Items[0]).Click += (_, _) => SetMode("grid");
         ((MenuFlyoutItem)layoutMenu.Items[1]).Click += (_, _) => SetMode("list");
+        InitializePlayerControls();
         C<Button>("PlayButton").Click += (_, _) => TogglePlayback();
         C<Button>("PreviousButton").Click += (_, _) => Previous();
         C<Button>("NextButton").Click += (_, _) => Step(1);
@@ -999,7 +1000,8 @@ public sealed partial class MainWindow : Window
     {
         if (closed) return;
         bool playing = player.PlaybackSession.PlaybackState == MediaPlaybackState.Playing;
-        C<Button>("PlayButton").Content = playing ? "\uE769" : "\uE768";
+        C<PathIcon>("PlayerPlayIcon").Visibility = playing ? Visibility.Collapsed : Visibility.Visible;
+        C<PathIcon>("PlayerPauseIcon").Visibility = playing ? Visibility.Visible : Visibility.Collapsed;
         AutomationProperties.SetName(C<Button>("PlayButton"), playing ? "Pause" : "Play");
         bool enabled = queueIndex >= 0;
         foreach (var name in new[] { "PlayButton", "PreviousButton", "NextButton" }) C<Button>(name).IsEnabled = enabled;

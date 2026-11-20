@@ -21,6 +21,13 @@
     <SolidColorBrush x:Key="SliderTrackFillPointerOver" Color="#526052"/>
     <SolidColorBrush x:Key="SliderTrackFillPressed" Color="#526052"/>
     <SolidColorBrush x:Key="SliderTrackFillDisabled" Color="#526052"/>
+    <!-- Android-style marker; the native Slider still owns track, input and states. -->
+    <ControlTemplate x:Key="PlayerSliderThumbTemplate" TargetType="Thumb">
+      <Grid Background="Transparent">
+        <Border Width="12" Height="32" Background="#242c28" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        <Border Width="4" Height="28" CornerRadius="2" Background="{TemplateBinding Background}" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+      </Grid>
+    </ControlTemplate>
     <SolidColorBrush x:Key="ToggleButtonBackgroundChecked" Color="#354239"/>
     <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPointerOver" Color="#41513f"/>
     <SolidColorBrush x:Key="ToggleButtonBackgroundCheckedPressed" Color="#354239"/>
@@ -184,9 +191,18 @@
       <StackPanel Grid.Column="1" Spacing="4" MaxWidth="620" HorizontalAlignment="Stretch" VerticalAlignment="Center">
         <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="10">
           <ToggleButton x:Name="ShuffleButton" Content="&#xE8B1;" Style="{StaticResource TransportToggleStyle}" VerticalAlignment="Center" AutomationProperties.Name="Shuffle"/>
-          <Button x:Name="PreviousButton" Content="&#xE892;" Style="{StaticResource TransportButtonStyle}" VerticalAlignment="Center" AutomationProperties.Name="Previous track"/>
-          <Button x:Name="PlayButton" Content="&#xE768;" Style="{StaticResource TransportButtonStyle}" Background="{StaticResource Sage}" Foreground="#24341f" Width="44" Height="44" CornerRadius="22" AutomationProperties.Name="Play"/>
-          <Button x:Name="NextButton" Content="&#xE893;" Style="{StaticResource TransportButtonStyle}" VerticalAlignment="Center" AutomationProperties.Name="Next track"/>
+          <Button x:Name="PreviousButton" Style="{StaticResource TransportButtonStyle}" VerticalAlignment="Center" AutomationProperties.Name="Previous track">
+            <PathIcon Width="16" Height="16" Data="M 0,0 L 2,0 L 2,16 L 0,16 Z M 4,8 L 16,0 L 16,16 Z"/>
+          </Button>
+          <Button x:Name="PlayButton" Style="{StaticResource TransportButtonStyle}" Background="{StaticResource Sage}" Foreground="#24341f" Width="44" Height="44" CornerRadius="22" AutomationProperties.Name="Play">
+            <Grid Width="16" Height="18">
+              <PathIcon x:Name="PlayerPlayIcon" Width="16" Height="18" Data="M 2,0 L 16,9 L 2,18 Z"/>
+              <PathIcon x:Name="PlayerPauseIcon" Visibility="Collapsed" Width="16" Height="18" Data="M 1,0 L 6,0 L 6,18 L 1,18 Z M 10,0 L 15,0 L 15,18 L 10,18 Z"/>
+            </Grid>
+          </Button>
+          <Button x:Name="NextButton" Style="{StaticResource TransportButtonStyle}" VerticalAlignment="Center" AutomationProperties.Name="Next track">
+            <PathIcon Width="16" Height="16" Data="M 0,0 L 12,8 L 0,16 Z M 14,0 L 16,0 L 16,16 L 14,16 Z"/>
+          </Button>
           <ToggleButton x:Name="RepeatButton" Content="&#xE8EE;" Style="{StaticResource TransportToggleStyle}" VerticalAlignment="Center" AutomationProperties.Name="Repeat queue"/>
         </StackPanel>
         <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/></Grid.ColumnDefinitions><TextBlock x:Name="ElapsedText" Text="0:00" Foreground="{StaticResource Muted}" VerticalAlignment="Center" FontSize="11"/><Slider Grid.Column="1" x:Name="SeekSlider" Minimum="0" Maximum="1" IsEnabled="False" AutomationProperties.Name="Playback position"/><TextBlock Grid.Column="2" x:Name="DurationText" Text="0:00" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right" FontSize="11"/></Grid>
