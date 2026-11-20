@@ -143,6 +143,11 @@ public sealed class NavidromeClient : IDisposable
     {
         if (rating is < 0 or > 5) throw new ArgumentOutOfRangeException(nameof(rating), "Rating must be between 0 and 5.");
         await Api("setRating", cancellationToken, ("id", id), ("rating", rating.ToString(CultureInfo.InvariantCulture))).ConfigureAwait(false);
+        return await GetSongRatingAsync(id, cancellationToken).ConfigureAwait(false);
+    }
+
+    public async Task<int> GetSongRatingAsync(string id, CancellationToken cancellationToken = default)
+    {
         var song = Object(await Api("getSong", cancellationToken, ("id", id)).ConfigureAwait(false), "song");
         var actual = Number(song, "userRating");
         if (Required(song, "id") != id || actual is < 0 or > 5) throw InvalidResponse();

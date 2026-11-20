@@ -8,6 +8,8 @@ import './updates-card.test.mjs';
 import './update-changelog.test.mjs';
 import './collection-transport.test.mjs';
 import './navigation-contracts.test.mjs';
+import './song-rating-wiring.test.mjs';
+import './song-rating-view.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -153,11 +155,11 @@ test('collection detail keeps count above shared left transport without a Librar
 
 test('track list shares responsive columns with its headings and stretches item containers', () => {
   const songs = method('AddSongs');
-  assert.match(songs, /var header = SongGrid\(\)/);
+  assert.match(songs, /var header = SongGrid\(showRatings\)/);
   for (const label of ['#', 'Title / artist', 'Album', 'Time']) assert.ok(songs.includes(`"${label}"`));
   const row = method('SongRow');
   assert.match(songs, /view.Items.Add\(SongRow\(/);
-  assert.match(row, /var grid = SongGrid\(\)/);
+  assert.match(row, /var grid = SongGrid\(showRatings\)/);
   assert.match(songs, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
   assert.match(songs, /view.ItemContainerStyle = itemStyle/);
   assert.match(songs, /PaddingProperty, new Thickness\(0\)/);

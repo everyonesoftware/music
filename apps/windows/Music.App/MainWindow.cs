@@ -59,6 +59,7 @@ public sealed partial class MainWindow : Window
         using var reader = new StreamReader(stream);
         root = (Grid)XamlReader.Load(reader.ReadToEnd());
         Content = root;
+        InitializeRatings();
         Title = "Music";
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Music.ico"));
         C<Image>("AppIcon").Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
@@ -258,6 +259,7 @@ public sealed partial class MainWindow : Window
             // Credentials cannot be rolled back by a late cancellation: complete
             // activation once commit begins, while the dispatcher remains responsive.
             accountChangePending = true; ownsAccountChange = true; cacheMaintenance++;
+            RefreshRatingViews();
             SetConnecting(true);
             RenderQueue();
             profiles.Commit(profile, password);
@@ -293,7 +295,7 @@ public sealed partial class MainWindow : Window
             candidate?.Dispose();
             if (ownsAccountChange) { accountChangePending = false; cacheMaintenance--; }
             if (!closed && (ownsAccountChange || connectGate.IsCurrent(lease))) SetConnecting(false);
-            if (ownsAccountChange) { ScheduleCache(); if (!closed) RenderQueue(); }
+            if (ownsAccountChange) { ScheduleCache(); if (!closed) { RenderQueue(); RefreshRatingViews(); } }
         }
     }
 
@@ -316,6 +318,7 @@ public sealed partial class MainWindow : Window
         StopPlayback();
         client?.Dispose();
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
+        ResetRatings(target);
         artists = []; artistsLoaded = false;
         client.Offline = offlineSettings.Offline;
         cacheInitialization = ActivateCache(profile);
@@ -478,7 +481,7 @@ public sealed partial class MainWindow : Window
         if (BrowsePolicy.ShowSection(page, "songs", songs.Count, query))
         {
             var section = NewSection("Songs", "songs");
-            AddSongs(section, library ? songs.Take(8).ToList() : songs, library ? "list" : mode, artLease.Token);
+            AddSongs(section, library ? songs.Take(8).ToList() : songs, library ? "list" : mode, artLease.Token, showRatings: page == "songs");
             if (!library && moreSongs) AddLoadMore(section);
             panel.Children.Add(section);
         }
@@ -569,7 +572,7 @@ public sealed partial class MainWindow : Window
         return outer;
     }
 
-    private void AddSongs(StackPanel section, IReadOnlyList<Song> tracks, string layout, CancellationToken token, IReadOnlyList<Song>? playbackTracks = null)
+    private void AddSongs(StackPanel section, IReadOnlyList<Song> tracks, string layout, CancellationToken token, IReadOnlyList<Song>? playbackTracks = null, bool showRatings = false)
     {
         var owner = connectionLease;
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
@@ -584,13 +587,13 @@ public sealed partial class MainWindow : Window
             itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
             itemStyle.Setters.Add(new Setter(FrameworkElement.MinHeightProperty, 0d));
             view.ItemContainerStyle = itemStyle;
-            var header = SongGrid(); header.MinHeight = 32;
-            string[] headings = { "#", "Title / artist", "Album", "Time" };
+            var header = SongGrid(showRatings); header.MinHeight = 32;
+            string[] headings = showRatings ? ["#", "Title / artist", "Album", "Rating", "Time"] : ["#", "Title / artist", "Album", "Time"];
             for (int column = 0; column < headings.Length; column++)
             {
                 var heading = Text(headings[column], 12, true);
                 if (column == 1) heading.Margin = new Thickness(52, 0, 0, 0);
-                if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
+                if (column == headings.Length - 1) heading.HorizontalAlignment = HorizontalAlignment.Right;
                 Grid.SetColumn(heading, column); header.Children.Add(heading);
             }
             section.Children.Add(header);
@@ -600,18 +603,18 @@ public sealed partial class MainWindow : Window
         var playQueue = playbackTracks ?? tracks.ToList();
         for (int index = 0; index < tracks.Count; index++)
         {
-            view.Items.Add(SongRow(tracks[index], index, layout, token, owner));
+            view.Items.Add(SongRow(tracks[index], index, layout, token, owner, showRatings));
         }
         view.ItemClick += (_, e) => { if (!closed && connectionGate.IsCurrent(owner) && e.ClickedItem is FrameworkElement { Tag: int index }) StartQueue(playQueue, index); };
         section.Children.Add(view);
     }
-    private FrameworkElement SongRow(Song song, int index, string layout, CancellationToken token, RequestGate.Lease owner)
+    private FrameworkElement SongRow(Song song, int index, string layout, CancellationToken token, RequestGate.Lease owner, bool showRatings = false)
     {
         FrameworkElement row;
         if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token, song);
         else
         {
-            var grid = SongGrid(); grid.Tag = index;
+            var grid = SongGrid(showRatings); grid.Tag = index;
             grid.Children.Add(Text((index + 1).ToString(), 12, true));
             var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
             copy.Children.Add(SongTitle(song, 14)); copy.Children.Add(Text(song.Artist, 12, true));
@@ -619,14 +622,18 @@ public sealed partial class MainWindow : Window
             var cell = SongCell(song, copy, token, owner);
             Grid.SetColumn(cell, 1); grid.Children.Add(cell);
             var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
-            var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, 3); grid.Children.Add(duration);
+            if (showRatings)
+            {
+                var rating = CreateInlineRating(song, owner); Grid.SetColumn(rating, 3); grid.Children.Add(rating);
+            }
+            var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, showRatings ? 4 : 3); grid.Children.Add(duration);
             AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
         }
         AddDownloadMenu(row, song, owner);
         return row;
     }
 
-    private static Grid SongGrid()
+    private static Grid SongGrid(bool showRatings)
     {
         var grid = new Grid
         {
@@ -637,6 +644,7 @@ public sealed partial class MainWindow : Window
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.8, GridUnitType.Star) });
+        if (showRatings) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(145) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
         return grid;
     }
@@ -690,7 +698,7 @@ public sealed partial class MainWindow : Window
             host.Children.Clear();
             AutomationProperties.SetName(args.ItemContainer, "");
             if (args.InRecycleQueue || closed || page != "detail" || args.Item is not DetailSong item) return;
-            var row = SongRow(item.Song, item.Index, "list", CancellationToken.None, connectionLease);
+            var row = SongRow(item.Song, item.Index, "list", CancellationToken.None, connectionLease, showRatings: detailIdentity.Kind == "playlist");
             AutomationProperties.SetName(args.ItemContainer, AutomationProperties.GetName(row));
             host.Children.Add(row);
             args.Handled = true;
@@ -774,13 +782,14 @@ public sealed partial class MainWindow : Window
         actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}", 13, true));
         panel.Children.Add(actions);
         panel.Children.Add(detailIdentity.Kind == "artist" ? CreateArtistTransport() : CreateCollectionTransport());
-        var header = SongGrid(); header.MinHeight = 32;
-        string[] headings = { "#", "Title / artist", "Album", "Time" };
+        bool showRatings = detailIdentity.Kind == "playlist";
+        var header = SongGrid(showRatings); header.MinHeight = 32;
+        string[] headings = showRatings ? ["#", "Title / artist", "Album", "Rating", "Time"] : ["#", "Title / artist", "Album", "Time"];
         for (int column = 0; column < headings.Length; column++)
         {
             var heading = Text(headings[column], 12, true);
             if (column == 1) heading.Margin = new Thickness(52, 0, 0, 0);
-            if (column == 3) heading.HorizontalAlignment = HorizontalAlignment.Right;
+            if (column == headings.Length - 1) heading.HorizontalAlignment = HorizontalAlignment.Right;
             Grid.SetColumn(heading, column); header.Children.Add(heading);
         }
         panel.Children.Add(header);
@@ -839,6 +848,7 @@ public sealed partial class MainWindow : Window
             playIntended = play; playbackInterrupted = false;
             C<TextBlock>("TrackTitle").Text = song.Title;
             C<TextBlock>("TrackArtist").Text = song.Artist;
+            UpdatePlayerRating();
             RenderQueue(); SavePlayback();
             var local = await storageWork.RunAsync(() => storage?.Find(song.Id));
             if (closed || version != playbackVersion || storage != cache) return;
@@ -1005,7 +1015,12 @@ public sealed partial class MainWindow : Window
         row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
         row.ColumnSpacing = 8;
         row.Children.Add(SongCell(song, copy, CancellationToken.None, connectionLease, 10));
-        var duration = Text(Clock(song.DurationSeconds), 11, true); Grid.SetColumn(duration, 1); row.Children.Add(duration);
+        var duration = Text(Clock(song.DurationSeconds), 11, true);
+        duration.HorizontalAlignment = HorizontalAlignment.Right;
+        var tail = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
+        tail.Children.Add(duration);
+        tail.Children.Add(CreateQueueRating(song, connectionLease));
+        Grid.SetColumn(tail, 1); row.Children.Add(tail);
         if (entry.Current) row.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57));
         AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + SongAvailability(song) + ", " + song.Artist);
         ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
@@ -1134,7 +1149,7 @@ public sealed partial class MainWindow : Window
         try
         {
             EnsurePlaybackOrder();
-            var snapshot = new PlaybackSnapshot(connection.Id, queue.ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds, false, C<ToggleButton>("RepeatButton").IsChecked == true)
+            var snapshot = new PlaybackSnapshot(connection.Id, queue.Select(ApplyConfirmedRating).ToArray(), queueIndex, restoredPosition > 0 ? restoredPosition : playbackInterrupted ? interruptedPosition : player.PlaybackSession.Position.TotalSeconds, false, C<ToggleButton>("RepeatButton").IsChecked == true)
             { RemainingOrder = playbackOrder?.RemainingOrder };
             sessions.SavePlayback(snapshot.WithoutTransientArtwork());
             if (sessionSaveWarning is not null)
@@ -1182,6 +1197,7 @@ public sealed partial class MainWindow : Window
         storage?.SetProtectedSongs([]);
         queue.Clear(); queueIndex = -1; restoredPosition = 0;
         C<TextBlock>("TrackTitle").Text = "Nothing playing"; C<TextBlock>("TrackArtist").Text = ""; C<Image>("CurrentArt").Source = null;
+        UpdatePlayerRating();
         RenderQueue(); UpdateTransport();
     }
 

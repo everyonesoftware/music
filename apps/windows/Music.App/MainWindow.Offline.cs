@@ -140,6 +140,7 @@ public sealed partial class MainWindow
         SaveOfflineSettings();
         browseGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel(); connectGate.Cancel(); testGate.Cancel();
         if (client is not null) client.Offline = value;
+        RefreshRatingViews();
         C<Button>("ConnectButton").IsEnabled = !value;
         C<Button>("TestConnectionButton").IsEnabled = !value && client is not null;
         cacheCancellation.Cancel();
@@ -303,6 +304,7 @@ public sealed partial class MainWindow
         if (closed || connection != profile || accountChangePending) return;
         accountChangePending = true;
         connectGate.Cancel(); browseGate.Cancel(); testGate.Cancel(); artworkGate.Cancel(); playingArtGate.Cancel(); connectionGate.Cancel();
+        RefreshRatingViews();
         cacheMaintenance++;
         try
         {
@@ -315,6 +317,7 @@ public sealed partial class MainWindow
             await storageWork.RunAsync(() => storage?.Dispose());
             if (closed || connection != profile) return;
             cache = null; client?.Dispose(); client = null; connection = null;
+            ResetRatings(null);
             navigationHistory.Clear(); detailCollection = null;
             pendingDownloads.Clear(); albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";

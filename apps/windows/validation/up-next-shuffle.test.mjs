@@ -132,6 +132,7 @@ class Harness {
     string? renderedState; bool realizedEnabled; int saves;
     T C<T>(string name) where T : new() => new T();
     void SetConnecting(bool value) { }
+    void RefreshRatingViews() { }
     void ScheduleCache(bool allowCurrentHandoff = true) { }
     void SavePlayback() { saves++; }
     void RenderQueue() {

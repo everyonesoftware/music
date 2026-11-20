@@ -74,7 +74,7 @@ ${method(navigation, '    private async Task GoBackAsync()', '\n}')}
     record Card(string Name, string Subtitle, string? Art, object Value);
     void AddCollection(StackPanel section, List<Card> cards, string layout, CancellationToken token)
         => section.Children.AddRange(cards.Select(card => (object)card.Name));
-    void AddSongs(StackPanel section, List<Song> tracks, string layout, CancellationToken token)
+    void AddSongs(StackPanel section, List<Song> tracks, string layout, CancellationToken token, bool showRatings = false)
         => section.Children.AddRange(tracks.Select(song => (object)song.Id));
     string Text(string text, int size, bool muted) => text;
 ${method(navigation, '    private NavigationView CaptureNavigation()', '    private void InitializeNavigation()')}
