@@ -220,31 +220,19 @@ class UpdateScreensTest {
         compose.onNodeWithTag("updates-install").assertDoesNotExist()
     }
 
-    @Test fun loadingAndUnavailableHaveUnknownCountsAndRetryDoesNotBlockDownload() {
-        val current = mutableStateOf(state(updates = available().copy(changelogStage = ChangelogStage.IDLE, changelog = null)))
+    @Test fun unavailableHistoryHasUnknownCountAndDisclosureNeverStartsWork() {
+        val current = mutableStateOf(state(updates = available().copy(changelogStage = ChangelogStage.UNAVAILABLE, changelog = null)))
         compose.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
         compose.onNodeWithText("0 changes").assertDoesNotExist()
-        compose.runOnIdle { assertEquals(0, actions.changelogRetries) }
+        compose.onNodeWithText("Unavailable").assertExists()
         compose.onNodeWithTag("updates-changelog").performClick()
-        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
-        compose.onNodeWithTag("updates-changelog-load").assertExists()
+        compose.onNodeWithText("Changelog unavailable. You can still download this update.").assertExists()
         compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
-        compose.onNodeWithText("Loading changes…").assertDoesNotExist()
-        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.LOADING)) }
+        compose.onNodeWithTag("updates-changelog-retry").assertDoesNotExist()
         compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
-        compose.onNodeWithTag("updates-changelog-loading").assertExists()
-        compose.onNodeWithText("Loading changes…").assertExists()
-        compose.onNodeWithText("3 changes").assertDoesNotExist()
-        compose.onNodeWithTag("updates-changelog").performScrollTo().performClick()
         compose.onNodeWithTag("updates-changelog").performClick()
-        compose.runOnIdle { assertEquals(1, actions.changelogRetries); current.value = current.value.copy(playing = true) }
-        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
-        compose.onNodeWithTag("updates-download").performScrollTo().assertIsEnabled()
-        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.UNAVAILABLE)) }
-        compose.onNodeWithText("0 changes").assertDoesNotExist()
-        compose.onNodeWithText("Improvements").assertDoesNotExist()
-        compose.onNodeWithTag("updates-changelog-retry").performScrollTo().performClick()
-        compose.runOnIdle { assertEquals(2, actions.changelogRetries); assertEquals(0, actions.downloads) }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.runOnIdle { assertEquals(0, actions.changelogRetries) }
         compose.onNodeWithTag("updates-download").performScrollTo().performClick()
         compose.runOnIdle { assertEquals(1, actions.downloads); current.value = current.value.copy(updates = available()) }
         compose.onNodeWithText("Faster library browsing").assertExists()
@@ -268,35 +256,24 @@ class UpdateScreensTest {
         compose.onNodeWithText("Fixes").assertDoesNotExist()
     }
 
-    @Test fun restoredExpandedDisclosureWithoutTransientHistoryOffersExplicitLoad() {
+    @Test fun restoredExpandedDisclosureWithMissingHistoryNeverShowsLoadingOrStartsWork() {
         val current = mutableStateOf(state(updates = available()))
         val restoration = StateRestorationTester(compose)
         restoration.setContent { AudioTheme { AudioApp(current.value, actions) { null } } }
         compose.onNodeWithTag("updates-changelog").performClick()
         compose.onNodeWithText("Faster library browsing").assertExists()
-        // The manager restores the release, but not its transient changelog.
         compose.runOnIdle { current.value = current.value.copy(updates = available().copy(changelogStage = ChangelogStage.IDLE, changelog = null)) }
         restoration.emulateSavedInstanceStateRestore()
         compose.onNodeWithTag("updates-changelog").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
         compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
+        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
         compose.onNodeWithText("Loading changes…").assertDoesNotExist()
-        compose.onNodeWithText("Loading…").assertDoesNotExist()
         compose.onNodeWithText("Faster library browsing").assertDoesNotExist()
+        compose.onNodeWithText("Changelog unavailable. You can still download this update.").assertExists()
         compose.runOnIdle { assertEquals(0, actions.changelogRetries) }
-        compose.onNodeWithTag("updates-changelog-load").performScrollTo().assertIsDisplayed().assertIsEnabled()
-            .assertHeightIsAtLeast(48.dp).performClick()
-        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
-        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
-        compose.runOnIdle { current.value = current.value.copy(updates = current.value.updates.copy(changelogStage = ChangelogStage.LOADING)) }
-        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
-        compose.onNodeWithTag("updates-changelog-loading").assertExists()
-        compose.onNodeWithText("Loading changes…").assertExists()
         compose.runOnIdle { current.value = current.value.copy(updates = available()) }
-        compose.onNodeWithTag("updates-changelog-loading").assertDoesNotExist()
-        compose.onNodeWithTag("updates-changelog-load").assertDoesNotExist()
         compose.onNodeWithText("Faster library browsing").assertExists()
         compose.onNodeWithText("3 changes").assertExists()
-        compose.runOnIdle { assertEquals(1, actions.changelogRetries) }
     }
 
     @Test fun disclosuresSurviveRestorationAndDownloadStagesButResetForEachReleaseIdentityPart() {

@@ -6,6 +6,37 @@ namespace Music.Core.Tests;
 public sealed class WindowsUpdateTests
 {
     [Fact]
+    public async Task Check_publishes_notes_immediately_and_preserves_snapshot_through_install()
+    {
+        var changes = new WindowsChangelog(new string('a', 40), new string('b', 40), ["Faster browsing"], [], []);
+        var backend = new Backend { Changelog = changes };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        var seen = new List<WindowsUpdateStatus>();
+        controller.Changed += seen.Add;
+        await controller.CheckAsync();
+        Assert.Same(changes, controller.Status.Changelog);
+        await controller.DownloadAsync();
+        Assert.All(seen.Where(s => s.Version is not null), s => Assert.Same(changes, s.Changelog));
+        await controller.RestartAsync();
+        Assert.Same(changes, controller.Status.Changelog);
+        Assert.Equal(1, backend.Checks);
+    }
+
+    [Fact]
+    public async Task Recheck_with_unavailable_notes_clears_old_snapshot_but_allows_download()
+    {
+        var backend = new Backend { Changelog = new(new string('a', 40), new string('b', 40), [], [], []) };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        await controller.CheckAsync();
+        Assert.NotNull(controller.Status.Changelog);
+        backend.Changelog = null;
+        await controller.CheckAsync();
+        Assert.Null(controller.Status.Changelog);
+        Assert.Equal(WindowsUpdatePhase.Available, controller.Status.Phase);
+        await controller.DownloadAsync();
+        Assert.Equal(WindowsUpdatePhase.Ready, controller.Status.Phase);
+    }
+    [Fact]
     public async Task Check_is_user_initiated_and_offers_download_without_applying()
     {
         var backend = new Backend();
@@ -165,6 +196,7 @@ public sealed class WindowsUpdateTests
 
     private sealed class Backend : IWindowsUpdateBackend
     {
+        public WindowsChangelog? Changelog { get; set; }
         public bool Installed = true;
         public bool IsInstalled => Installed;
         public Version CurrentVersion => new(0, 1, 10);

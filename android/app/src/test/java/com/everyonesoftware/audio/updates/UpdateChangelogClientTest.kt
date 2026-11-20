@@ -1,265 +1,190 @@
 package com.everyonesoftware.audio.updates
 
-import kotlinx.coroutines.*
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-import okhttp3.mockwebserver.Dispatcher
+import kotlinx.coroutines.runBlocking
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
-import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.*
 import org.junit.Test
 
 class UpdateChangelogClientTest {
     private val from = "a".repeat(40)
+    private val middle = "d".repeat(40)
     private val to = "b".repeat(40)
     private val hash = "c".repeat(64)
-    private val api = "/repos/everyonesoftware/music/"
-    private fun quote(value: String) = Json.encodeToString(value)
     private fun base(count: Int) = "https://github.com/everyonesoftware/music/releases/download/v0.1.$count/"
-    private fun publication(count: Int, sha: String) = """{"tag_name":"v0.1.$count","target_commitish":"$sha","draft":false,"prerelease":false,"published_at":"2026-01-01T00:00:00Z","body":"## Current downloads | Android | APK |","assets":[{"name":"release.json","browser_download_url":"${base(count)}release.json","state":"uploaded"},{"name":"Music-0.1.$count.apk","browser_download_url":"${base(count)}Music-0.1.$count.apk","size":18,"state":"uploaded"}]}"""
-    private fun manifest(count: Int, sha: String) = """{"count":$count,"version":"0.1.$count","tag":"v0.1.$count","sha":"$sha","apk":"Music-0.1.$count.apk","bytes":18,"sha256":"$hash"}"""
-    private fun offered() = UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", 18, hash, base(42) + "Music-0.1.42.apk", sourceSha = to)
-    private fun commit(sha: String, subject: String) = """{"sha":"$sha","commit":{"message":${quote(subject)}}}"""
-    private fun comparison(commits: List<String>, total: Int = commits.size) = """{"status":"ahead","ahead_by":$total,"behind_by":0,"total_commits":$total,"base_commit":{"sha":"$from"},"merge_base_commit":{"sha":"$from"},"commits":[${commits.joinToString(",")}]}"""
-    private fun objectAt(sha: String, type: String = "commit") = """{"object":{"type":"$type","sha":"$sha"}}"""
-    private fun reference(count: Int, sha: String, type: String = "commit") = objectAt(sha, type).dropLast(1) + ",\"ref\":\"refs/tags/v0.1.$count\"}"
-    private fun comparePath(page: Int = 1) = api + "compare/$from...$to?per_page=100&page=$page"
-    private fun refPath(count: Int) = api + "git/ref/tags/v0.1.$count"
-    private fun manifestPath(count: Int) = "/everyonesoftware/music/releases/download/v0.1.$count/release.json"
-    private fun fixture(): MutableMap<String, String> = mutableMapOf(
-        api + "releases?per_page=100&page=1" to "[${publication(42, to)},${publication(30, "d".repeat(40))},${publication(10, from)}]",
-        manifestPath(10) to manifest(10, from), manifestPath(42) to manifest(42, to),
-        refPath(10) to reference(10, from), refPath(42) to reference(42, to),
-        comparePath() to comparison(listOf(commit(to, "[verified] fix(android): Restore playback\nOriginal commit body"))),
-    )
-    private fun server(routes: Map<String, String>) = MockWebServer().apply {
-        dispatcher = object : Dispatcher() {
-            override fun dispatch(request: RecordedRequest): MockResponse = routes[request.path]?.let { MockResponse().setBody(it) }
-                ?: MockResponse().setResponseCode(404)
-        }
-        start()
-    }
-    private fun client(server: MockWebServer) = UpdateClient(UpdateTestConfig(server.url("/")))
-    private suspend fun failure(block: suspend () -> Unit): UpdateException {
-        try { block() } catch (error: UpdateException) {
-            assertEquals("Update unavailable. Please try again.", error.message)
-            assertNull(error.cause)
-            return error
-        }
-        throw AssertionError("Expected unavailable changelog")
-    }
+    private fun publication(count: Int = 42) = """[{"tag_name":"v0.1.$count","draft":false,"prerelease":false,"published_at":"2026-01-01","body":"Current downloads | APK | stale notes","assets":[{"name":"release.json","browser_download_url":"${base(count)}release.json"},{"name":"Music-0.1.$count.apk","browser_download_url":"${base(count)}Music-0.1.$count.apk","size":18}]}]"""
+    private fun manifest(history: String, count: Int = 42) = """{"count":$count,"version":"0.1.$count","tag":"v0.1.$count","sha":"$to","apk":"Music-0.1.$count.apk","bytes":18,"sha256":"$hash","changelog":$history}"""
+    private fun history() = """{"schema":1,"platform":"android","head":{"version":"0.1.42","sha":"$to"},"releases":[{"version":"0.1.40","sha":"$from","commits":[]},{"version":"0.1.41","sha":"$middle","commits":[{"sha":"$middle","subject":"[verified] feat(shared): Shared transport","kind":"improvement","text":"Shared transport"}]},{"version":"0.1.42","sha":"$to","commits":[{"sha":"$to","subject":"fix(android): Restore playback","kind":"fix","text":"Restore playback"}]}]}"""
 
-    private fun detailPath(sha: String, page: Int = 1) = api + "commits/$sha?per_page=100&page=$page"
-    private fun files(sha: String, paths: List<String>) = """{"sha":"$sha","files":[${paths.joinToString(",") { """{"filename":${quote(it)}}""" }}]}"""
-    private fun sha(number: Int) = number.toString(16).padStart(40, '0')
+    private fun offered(history: String?) = UpdateRelease(42, "0.1.42", "Music-0.1.42.apk", 18, hash,
+        base(42) + "Music-0.1.42.apk", sourceSha = to,
+        changelog = history?.let { kotlinx.serialization.json.Json.parseToJsonElement(it) as? kotlinx.serialization.json.JsonObject })
 
-    @Test fun validatesBothPublishedManifestsAndOfferedIdentity() = runBlocking<Unit> {
-        val mutations: List<(MutableMap<String, String>) -> Unit> = listOf(
-            { it[manifestPath(10)] = manifest(10, from).replace("\"count\":10", "\"count\":\"10\"") },
-            { it[manifestPath(42)] = manifest(42, to).replace(hash, "bad") },
-            { it[manifestPath(10)] = manifest(10, from).replace("\"bytes\":18", "\"bytes\":19") },
-            { it[manifestPath(42)] = manifest(42, from) },
-            { it[manifestPath(10)] = manifest(10, from).replace("Music-0.1.10.apk", "../Music-0.1.10.apk") },
-            { it[manifestPath(10)] = manifest(10, from).replace("0.1.10", "0.1.010") },
-            { it[refPath(10)] = objectAt(to) },
-            { it[api + "releases?per_page=100&page=1"] = "[${publication(42, to)},${publication(10, from)},${publication(10, from)}]" },
-            { it[api + "releases?per_page=100&page=1"] = "[${publication(42, to)}]" },
-            { it[api + "releases?per_page=100&page=1"] = "[${publication(10, from)},${publication(42, from)}]" },
-            { it[api + "releases?per_page=100&page=1"] = "[${publication(10, from)},${publication(42, to).replace("uploaded", "new")}]" },
-        )
-        for (mutate in mutations) {
-            val routes = fixture().also(mutate)
-            server(routes).use { failure { client(it).changelog(10, offered()) } }
-        }
-        for (bad in listOf(offered().copy(sourceSha = from), offered().copy(bytes = 19), offered().copy(sha256 = "d".repeat(64)))) {
-            server(fixture()).use { failure { client(it).changelog(10, bad) } }
-        }
-    }
-
-    @Test fun rejectsMissingOrMalformedExpectedSourceBeforeNetwork() = runBlocking<Unit> {
-        server(fixture()).use { server ->
-            for (source in listOf("", "bad", "../tags/main", "A".repeat(40), to + "?secret")) {
-                failure { client(server).changelog(10, offered().copy(sourceSha = source)) }
-            }
-            for (installed in listOf(0L, 42L, 43L, Long.MAX_VALUE)) failure { client(server).changelog(installed, offered()) }
-            assertEquals(0, server.requestCount)
-        }
-    }
-
-    @Test fun scansCompleteReleaseInventoryIncludingInstalledOnLaterPage() = runBlocking<Unit> {
-        val routes = fixture()
-        val windows = publication(70, to).replace(".apk", ".zip")
-        routes[api + "releases?per_page=100&page=1"] = "[${publication(42, to)},${List(99) { windows }.joinToString(",")}]"
-        routes[api + "releases?per_page=100&page=2"] = "[${publication(10, from)}]"
-        server(routes).use { assertEquals(from, client(it).changelog(10, offered()).fromSha) }
-        routes.remove(api + "releases?per_page=100&page=2")
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-    }
-
-    @Test fun peelsAnnotatedTagsButRejectsCyclesInvalidTypesAndMismatches() = runBlocking<Unit> {
-        val tagSha = "e".repeat(40)
-        val routes = fixture()
-        routes[refPath(42)] = reference(42, tagSha, "tag")
-        routes[api + "git/tags/$tagSha"] = """{"sha":"$tagSha","object":{"type":"commit","sha":"$to"}}"""
-        server(routes).use { assertEquals(to, client(it).changelog(10, offered()).toSha) }
-        for (bad in listOf(objectAt(tagSha, "tag"), objectAt(to, "tree"), objectAt(from), objectAt("../../evil", "tag"))) {
-            routes[api + "git/tags/$tagSha"] = bad.dropLast(1) + ",\"sha\":\"$tagSha\"}"
-            server(routes).use { failure { client(it).changelog(10, offered()) } }
-        }
-    }
-
-    @Test fun collectsEveryComparePageKeepingChronologicalOriginalDetails() = runBlocking<Unit> {
-        val routes = fixture()
-        routes[comparePath()] = comparison((1..100).map { commit(sha(it), "feat(shared): Change $it") }, 101)
-        routes[comparePath(2)] = comparison(listOf(commit(to, "fix: Last change")), 101)
-        server(routes).use { server ->
-            val result = client(server).changelog(10, offered())
-            assertEquals(101, result.count)
-            assertEquals(100, result.improvements.size)
-            assertEquals("feat(shared): Change 1", result.commits.first().subject)
-            assertEquals(to, result.commits.last().sha)
-        }
-    }
-
-    @Test fun rejectsDivergenceTruncatedDuplicateCountAndHeadMismatch() = runBlocking<Unit> {
-        val good = comparison(listOf(commit(to, "fix: Last change")))
+    @Test fun malformedHistoryIsUnavailableRatherThanAZeroChangeClaim() {
+        val good = history()
         val invalid = listOf(
-            good.replace("\"ahead\"", "\"diverged\""), good.replace("\"behind_by\":0", "\"behind_by\":1"),
-            good.replace("\"ahead_by\":1", "\"ahead_by\":2"),
-            good.replace("\"total_commits\":1", "\"total_commits\":1001"),
-            good.replace("\"base_commit\":{\"sha\":\"$from\"}", "\"base_commit\":{\"sha\":\"$to\"}"),
-            comparison(listOf(commit(to, "fix: duplicate"), commit(to, "fix: duplicate"))),
-            comparison(listOf(commit(from, "fix: base"))), comparison(listOf(commit(sha(1), "fix: wrong head"))),
-            comparison(emptyList(), 1), comparison(listOf(commit(to, "\nno subject"))),
+            good.replace("\"schema\":1", "\"schema\":2"),
+            good.replace("\"schema\":1", "\"schema\":\"1\""),
+            good.replace("\"platform\":\"android\"", "\"platform\":\"windows\""),
+            good.replace("\"platform\":\"android\"", "\"platform\":1"),
+            good.replaceFirst("\"version\":\"0.1.42\"", "\"version\":\"0.1.43\""),
+            good.replaceFirst(to, from),
+            good.replace("0.1.41", "0.1.40"),
+            good.replace("0.1.41", "0.1.09"),
+            good.replace("0.1.41", "0.1.43"),
+            good.replace("0.1.41", "0.1.2100000001"),
+            good.replace("\"commits\":[]", "\"commits\":[{\"sha\":\"$from\",\"subject\":\"baseline\",\"kind\":null,\"text\":null}]"),
+            good.replace(middle, from),
+            good.replace("\"sha\":\"$to\",\"subject\"", "\"sha\":\"$middle\",\"subject\""),
+            good.replace("\"sha\":\"$middle\",\"subject\"", "\"sha\":\"${"e".repeat(40)}\",\"subject\""),
+            good.replace(middle, "D".repeat(40)),
+            good.replace("\"kind\":\"fix\"", "\"kind\":\"feature\""),
+            good.replace("\"kind\":\"fix\"", "\"kind\":null"),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":null"),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":\"  \""),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":\"First\\nsecond\""),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":\"First\\rsecond\""),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":\"First\\u0000second\""),
+            good.replace("fix(android): Restore playback", "fix: first\\nsecond"),
+            good.replace("\"kind\":\"fix\",", ""),
+            good.replace("\"text\":\"Restore playback\"", "\"text\":false"),
         )
-        for (body in invalid) {
-            val routes = fixture().also { it[comparePath()] = body }
-            server(routes).use { failure { client(it).changelog(10, offered()) } }
-        }
-        val routes = fixture().also { it[comparePath()] = comparison((1..100).map { n -> commit(sha(n), "Change $n") }, 101) }
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-        routes[comparePath(2)] = comparison(listOf(commit(to, "Change")), 102)
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
+        invalid.forEachIndexed { index, raw -> assertNull("Invalid fixture $index", offered(raw).localChangelog(40)) }
+        assertNull(offered(null).localChangelog(40))
+        assertNull(offered(good).localChangelog(11))
+        assertNull(offered(good).localChangelog(0))
+        assertNull(offered(good).localChangelog(42))
+        assertNull(offered(good).copy(sourceSha = from).localChangelog(40))
     }
 
-    @Test fun omitsDocsCiWindowsOnlyButRetainsSharedUnknownAndOriginalCommitDetails() = runBlocking<Unit> {
-        val subjects = listOf("docs: Update guide", "ci: Build Windows", "fix(windows): Shell", "[verified] feat(shared): Shared transport", "feat(unknown): Unknown improvement", "fix(windows): Shared fix", "docs: Shared docs tooling", "feat: Unscoped")
-        val ids = subjects.indices.map { if (it == subjects.lastIndex) to else sha(it + 1) }
-        val routes = fixture()
-        routes[comparePath()] = comparison(subjects.indices.map { commit(ids[it], subjects[it]) })
-        routes[detailPath(ids[0])] = files(ids[0], listOf("docs/guide.md"))
-        routes[detailPath(ids[1])] = files(ids[1], listOf(".github/workflows/release.yml"))
-        routes[detailPath(ids[2])] = files(ids[2], listOf("apps/windows/Music.App/Shell.cs"))
-        routes[detailPath(ids[5])] = files(ids[5], listOf("apps/windows/Shell.cs", "shared/update.json"))
-        routes[detailPath(ids[6])] = files(ids[6], listOf("scripts/documentation.mjs"))
-        server(routes).use { server ->
-            val result = client(server).changelog(10, offered())
-            assertEquals(listOf("Shared transport", "Unknown improvement", "Shared docs tooling", "Unscoped"), result.improvements)
-            assertEquals(listOf("Shared fix"), result.fixes)
-            assertEquals(subjects, result.commits.map { it.subject })
-            assertEquals(5, result.count)
+    @Test fun emptyOriginalFirstLineIsRetainedButNeverFabricatesASummary() {
+        val raw = history().replace("fix(android): Restore playback", "")
+            .replace("\"kind\":\"fix\",\"text\":\"Restore playback\"", "\"kind\":null,\"text\":null")
+        val changes = requireNotNull(offered(raw).localChangelog(41))
+        assertEquals(listOf(UpdateChangeCommit(to, "")), changes.commits)
+        assertEquals(0, changes.count)
+    }
+
+    @Test fun producerOriginalCarriageReturnAndLongSubjectsArePreservedVerbatim() {
+        for (subject in listOf("Original\rsubject", "x".repeat(5000), "\u0000")) {
+            val raw = history().replace("\"fix(android): Restore playback\"", kotlinx.serialization.json.Json.encodeToString(kotlinx.serialization.serializer<String>(), subject))
+                .replace("\"kind\":\"fix\",\"text\":\"Restore playback\"", "\"kind\":null,\"text\":null")
+            val changes = requireNotNull(offered(raw).localChangelog(41))
+            assertEquals(subject, changes.commits.single().subject)
+            assertEquals(0, changes.count)
         }
     }
 
-    @Test fun filePagingAndCrossPlatformRenamesCannotHideSharedChanges() = runBlocking<Unit> {
-        val routes = fixture()
-        routes[comparePath()] = comparison(listOf(commit(to, "fix(windows): Shared removal")))
-        routes[detailPath(to)] = files(to, (1..100).map { "apps/windows/file$it.cs" })
-        routes[detailPath(to, 2)] = """{"sha":"$to","files":[{"filename":"apps/windows/moved.cs","previous_filename":"shared/source.kt"}]}"""
-        server(routes).use { assertEquals(listOf("Shared removal"), client(it).changelog(10, offered()).fixes) }
-        routes.remove(detailPath(to, 2))
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-        routes[detailPath(to, 2)] = files(to, listOf("apps/windows/file1.cs"))
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-        routes[detailPath(to, 2)] = files(from, listOf("shared/file.kt"))
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-    }
-
-    @Test fun legitimateEmptyGroupsKeepCommitDetailsInsteadOfReleaseMarkdown() = runBlocking<Unit> {
-        val routes = fixture()
-        routes[comparePath()] = comparison(listOf(commit(to, "ci: Workflow")))
-        routes[detailPath(to)] = files(to, listOf(".github/workflows/check.yml"))
-        server(routes).use {
-            val result = client(it).changelog(10, offered())
-            assertEquals(0, result.count)
-            assertEquals(1, result.commits.size)
+    @Test fun normalizedProducerBulletsPreserveOriginalControlCharactersInDetails() {
+        for (control in listOf('\r', '\u0000')) {
+            val subject = "fix: Original${control}subject"
+            val raw = history().replace("\"fix(android): Restore playback\"", kotlinx.serialization.json.Json.encodeToString(kotlinx.serialization.serializer<String>(), subject))
+                .replace("\"text\":\"Restore playback\"", "\"text\":\"Original subject\"")
+            val changes = requireNotNull(offered(raw).localChangelog(41))
+            assertEquals(subject, changes.commits.single().subject)
+            assertEquals(listOf("Original subject"), changes.fixes)
         }
     }
 
-    @Test fun historyFailureDoesNotPreventIndependentDiscovery() = runBlocking<Unit> {
-        val routes = fixture().also { it.remove(comparePath()) }
-        server(routes).use {
-            val client = client(it)
-            failure { client.changelog(10, offered()) }
-            assertEquals(offered(), client.latest(10))
-        }
+    @Test fun longProducerSummaryIsAcceptedWithinOverallManifestLimit() {
+        val text = "A".repeat(5000)
+        val raw = history().replace("fix(android): Restore playback", "fix(android): $text")
+            .replace("\"text\":\"Restore playback\"", "\"text\":\"$text\"")
+        val changes = requireNotNull(offered(raw).localChangelog(41))
+        assertEquals(listOf(text), changes.fixes)
+        assertEquals("fix(android): $text", changes.commits.single().subject)
     }
 
-    @Test fun rejectsReferenceIdentityMismatchEvenWhenObjectMatchesSource() = runBlocking<Unit> {
-        val routes = fixture()
-        routes[refPath(42)] = """{"ref":"refs/tags/v0.1.999","object":{"type":"commit","sha":"$to"}}"""
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
+    @Test fun deletedNonfinalCommitCannotMasqueradeAsCompleteHistory() {
+        val extra = """{"sha":"${"e".repeat(40)}","subject":"Original nonfinal commit","kind":null,"text":null},"""
+        val endpoint = """{"sha":"$to","subject":"fix(android): Restore playback"""
+        val complete = history().replace("0.1.42", "0.1.43").replace(endpoint, extra + endpoint)
+        val offered = offered(complete).copy(count = 43, version = "0.1.43")
+        assertNotNull(offered.localChangelog(40))
+        assertNull(offered.copy(changelog = kotlinx.serialization.json.Json.parseToJsonElement(complete.replace(extra, "")) as kotlinx.serialization.json.JsonObject).localChangelog(40))
     }
 
-    @Test fun fileInventoryValidatesEveryPathEvenAfterFindingSharedEvidence() = runBlocking<Unit> {
-        val routes = fixture()
-        routes[comparePath()] = comparison(listOf(commit(to, "fix(windows): Mixed commit")))
-        routes[detailPath(to)] = files(to, listOf("shared/source.kt", "../invalid.cs"))
-        server(routes).use { failure { client(it).changelog(10, offered()) } }
-    }
-
-    @Test fun cancellationStopsCompareSocketAndPropagatesInsteadOfReportingUnavailable() = runBlocking<Unit> {
-        val routes = fixture()
-        val reached = CompletableDeferred<Unit>()
-        server(routes).use { server ->
-            server.dispatcher = object : Dispatcher() {
-                override fun dispatch(request: RecordedRequest): MockResponse {
-                    if (request.path == comparePath()) {
-                        reached.complete(Unit)
-                        return MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.NO_RESPONSE)
-                    }
-                    return routes[request.path]?.let { MockResponse().setBody(it) } ?: MockResponse().setResponseCode(404)
-                }
+    @Test fun boundedHistoryRejectsExcessiveReleaseArraysAndSerializedSize() {
+        fun manyReleases(size: Int): String {
+            val releases = (1..size).joinToString(",") { number ->
+                val sha = number.toString(16).padStart(40, '0')
+                val commits = if (number == 1) "" else """{"sha":"$sha","subject":"Original","kind":null,"text":null}"""
+                """{"version":"0.1.$number","sha":"$sha","commits":[$commits]}"""
             }
-            val job = launch(Dispatchers.IO) { client(server).changelog(10, offered()) }
-            withTimeout(3000) { reached.await() }
-            withTimeout(3000) { job.cancelAndJoin() }
-            assertTrue(job.isCancelled)
+            return """{"schema":1,"platform":"android","head":{"version":"0.1.$size","sha":"${size.toString(16).padStart(40, '0')}"},"releases":[$releases]}"""
         }
+        val large = offered(manyReleases(4097)).copy(count = 4097, version = "0.1.4097", sourceSha = 4097.toString(16).padStart(40, '0'))
+        assertNull(large.localChangelog(1))
+        val commits = (1..300).joinToString(",") { index ->
+            val sha = if (index == 300) to else index.toString(16).padStart(40, '0')
+            """{"sha":"$sha","subject":"${"x".repeat(4096)}","kind":null,"text":null}"""
+        }
+        val raw = """{"schema":1,"platform":"android","head":{"version":"0.1.42","sha":"$to"},"releases":[{"version":"0.1.40","sha":"$from","commits":[]},{"version":"0.1.42","sha":"$to","commits":[$commits]}]}"""
+        assertNull(offered(raw.replace("0.1.42", "0.1.340")).copy(count = 340, version = "0.1.340").localChangelog(40))
     }
 
-    @Test fun continuationAndUntrustedRedirectCannotTurnPartialHistoryIntoSuccess() = runBlocking<Unit> {
-        for (redirect in listOf(false, true)) {
-            val routes = fixture()
-            server(routes).use { server ->
-                server.dispatcher = object : Dispatcher() {
-                    override fun dispatch(request: RecordedRequest): MockResponse {
-                        if (request.path == comparePath()) return if (redirect)
-                            MockResponse().setResponseCode(302).setHeader("Location", "https://api.github.com/repos/attacker/music/commits/main")
-                        else MockResponse().setBody(routes.getValue(comparePath())).setHeader("Link", "<https://evil.invalid/secret>; rel=\"next\"")
-                        return routes[request.path]?.let { MockResponse().setBody(it) } ?: MockResponse().setResponseCode(404)
-                    }
-                }
-                failure { client(server).changelog(10, offered()) }
-                assertEquals(6, server.requestCount)
+    @Test fun optionalHistoryFailuresNeverInvalidateApkDiscovery() = runBlocking {
+        for (raw in listOf("null", "[]", "{}", history().replace("\"schema\":1", "\"schema\":9"))) {
+            MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody(publication()))
+                server.enqueue(MockResponse().setBody(manifest(raw)))
+                server.start()
+                val client = UpdateClient(UpdateTestConfig(server.url("/")))
+                val offered = requireNotNull(client.latest(40))
+                assertEquals(42, offered.count)
+                assertNull(offered.localChangelog(40))
+                assertEquals(2, server.requestCount)
             }
         }
     }
 
-    @Test fun usesInstalledAndOfferedSourcesAcrossSkippedPublicationsNotReleaseBody() = runBlocking<Unit> {
-        server(fixture()).use { server ->
-            val result = client(server).changelog(10, offered())
-            assertEquals(from, result.fromSha)
-            assertEquals(to, result.toSha)
-            assertEquals(listOf("Restore playback"), result.fixes)
-            assertTrue(result.improvements.isEmpty())
-            assertEquals(1, result.count)
-            assertEquals(listOf(UpdateChangeCommit(to, "[verified] fix(android): Restore playback")), result.commits)
-            repeat(server.requestCount) {
+    @Test fun nullSummaryKeepsOriginalDetailsAndInstalledSelectionExcludesEarlierSegments() {
+        val raw = history().replace("\"kind\":\"fix\",\"text\":\"Restore playback\"", "\"kind\":null,\"text\":null")
+        val changes = requireNotNull(offered(raw).localChangelog(41))
+        assertEquals(middle, changes.fromSha)
+        assertEquals(0, changes.count)
+        assertEquals(listOf(UpdateChangeCommit(to, "fix(android): Restore playback")), changes.commits)
+    }
+
+    @Test fun discoveryAcceptsHistoryLargerThanLegacy64KiBLimit() = runBlocking {
+        val commits = (1..500).joinToString(",") { index ->
+            val sha = if (index == 500) to else index.toString(16).padStart(40, '0')
+            """{"sha":"$sha","subject":"feat(shared): Preserve original subject $index","kind":"improvement","text":"Change $index"}"""
+        }
+        val raw = """{"schema":1,"platform":"android","head":{"version":"0.1.540","sha":"$to"},"releases":[{"version":"0.1.40","sha":"$from","commits":[]},{"version":"0.1.540","sha":"$to","commits":[$commits]}]}"""
+        assertTrue(manifest(raw, 540).toByteArray().size > 65536)
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(publication(540)))
+            server.enqueue(MockResponse().setBody(manifest(raw, 540)))
+            server.start()
+            val client = UpdateClient(UpdateTestConfig(server.url("/")))
+            assertEquals(500, client.changelog(40, requireNotNull(client.latest(40))).count)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun discoveryCachesCompleteSkippedReleaseRangeWithoutFurtherRequests() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(publication()))
+            server.enqueue(MockResponse().setBody(manifest(history())))
+            // A legacy reconstruction attempt must fail promptly, not hang this test.
+            server.enqueue(MockResponse().setResponseCode(404))
+            server.start()
+            val client = UpdateClient(UpdateTestConfig(server.url("/")))
+            val offered = requireNotNull(client.latest(40))
+            val changes = client.changelog(40, offered)
+            assertEquals(from, changes.fromSha)
+            assertEquals(to, changes.toSha)
+            assertEquals(listOf("Shared transport"), changes.improvements)
+            assertEquals(listOf("Restore playback"), changes.fixes)
+            assertEquals(listOf(middle, to), changes.commits.map { it.sha })
+            assertEquals(2, server.requestCount)
+            assertEquals(changes, client.changelog(40, offered))
+            assertEquals(2, server.requestCount)
+            assertEquals("", offered.notes)
+            repeat(2) {
                 val request = server.takeRequest()
                 assertNull(request.getHeader("Authorization")); assertNull(request.getHeader("Cookie"))
-                assertFalse(request.path!!.contains("v0.1.30/release.json"))
             }
         }
     }

@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolve, join, dirname } from 'node:path';
+import { enrichManifest } from './release-changelog.mjs';
 
 export const INSTALLER = 'MusicWindows-win-x64-Setup.exe';
 const shaPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
@@ -71,7 +72,7 @@ export function fullInventory(directory, source) {
     return { name, path, bytes: info.size, sha256 };
   });
 }
-export async function attachWindowsInstaller({ directory, repository, source, includeUpdateFeed = false, root = resolve(dirname(fileURLToPath(import.meta.url)), '..'), run = spawnSync, clock = () => performance.now(), sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 600_000, pollMs = 5_000 }) {
+export async function attachWindowsInstaller({ directory, repository, source, includeUpdateFeed = false, changelog = null, root = resolve(dirname(fileURLToPath(import.meta.url)), '..'), run = spawnSync, clock = () => performance.now(), sleep = ms => new Promise(r => setTimeout(r, ms)), timeoutMs = 600_000, pollMs = 5_000 }) {
   if (typeof repository !== 'string' || !/^[A-Za-z0-9_][A-Za-z0-9_.-]*\/[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(repository) || repository.split('/').some(p => p === '.' || p === '..')) throw new Error('Invalid GitHub repository.');
   if (!Number.isFinite(timeoutMs) || timeoutMs < 0 || timeoutMs > 600_000 || !Number.isFinite(pollMs) || pollMs <= 0) throw new Error('Invalid bounded wait.');
   if (includeUpdateFeed) {
@@ -82,6 +83,11 @@ export async function attachWindowsInstaller({ directory, repository, source, in
   const local = validateLocal(directory, source);
   const inventory = includeUpdateFeed ? fullInventory(directory, source) : [];
   const expectedFiles = new Map(inventory.map(item => [item.name, item]));
+  if (changelog !== null && !includeUpdateFeed) throw new Error('Changelog requires full validated update inventory.');
+  // Validate the additive payload against Git, but never pass an enriched
+  // manifest into the unchanged exact-equality Python validator.
+  const enriched = changelog === null ? null : Buffer.from(enrichManifest({ manifest: JSON.parse(readFileSync(join(directory, 'windows-release.json'), 'utf8')), changelog, root, platform: 'windows', run, compatibilityLimit: 65536 }));
+  if (enriched) expectedFiles.set('windows-release.json', { bytes: enriched.length, sha256: createHash('sha256').update(enriched).digest('hex') });
   expectedFiles.set(INSTALLER, local);
   expectedFiles.set(`${INSTALLER}.sha256`, { bytes: Buffer.byteLength(local.checksum), sha256: createHash('sha256').update(local.checksum).digest('hex') });
   const tag = `v${source.version}`;
@@ -154,7 +160,7 @@ export async function attachWindowsInstaller({ directory, repository, source, in
       for (const item of inventory.filter(item => item.name !== INSTALLER)) {
         const bytes = readFileSync(item.path);
         if (bytes.length !== item.bytes || createHash('sha256').update(bytes).digest('hex') !== item.sha256) throw new Error('Local inventory changed before upload.');
-        writeFileSync(join(temporary, item.name), bytes, { flag: 'wx' });
+        writeFileSync(join(temporary, item.name), item.name === 'windows-release.json' && enriched ? enriched : bytes, { flag: 'wx' });
       }
     }
     const verifyAsset = asset => {

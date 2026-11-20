@@ -18,7 +18,6 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
     private readonly Expander changelog;
     private readonly StackPanel notesContent;
     private readonly Button retryNotes;
-    private readonly WindowsChangelogClient notesClient;
     private readonly WindowsChangelogController notes;
     private bool disposed;
 
@@ -39,11 +38,7 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         notesStatus = (TextBlock)root.FindName("ChangelogStatus");
         notesContent = (StackPanel)root.FindName("ChangelogContent");
         retryNotes = (Button)root.FindName("RetryChangelogButton");
-        notesClient = new WindowsChangelogClient();
-        // The installed assembly is available even for a loose build; do not initialize Velopack at startup.
-        var installed = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version!;
-        notes = new WindowsChangelogController(Version.Parse(installed.ToString(3)), notesClient.LoadAsync);
-        changelog.Expanding += ChangelogExpanding;
+        notes = new WindowsChangelogController();
         retryNotes.Click += RetryNotesClicked;
         notes.Changed += NotesChanged;
         check.Click += CheckClicked;
@@ -56,13 +51,12 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
     private async void CheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
     private async void DownloadClicked(object sender, RoutedEventArgs e) => await controller.DownloadAsync();
     private async void RestartClicked(object sender, RoutedEventArgs e) => await controller.RestartAsync();
-    private async void ChangelogExpanding(Expander sender, ExpanderExpandingEventArgs args) => await notes.LoadAsync();
-    private async void RetryNotesClicked(object sender, RoutedEventArgs e) => await notes.LoadAsync();
+    private async void RetryNotesClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
 
-    private void NotesChanged() => dispatcher.TryEnqueue(() =>
+    private void NotesChanged()
     {
         if (!disposed) RenderNotes();
-    });
+    }
 
     private void RenderNotes()
     {
@@ -71,9 +65,8 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         notesStatus.Visibility = notes.Phase == WindowsChangelogPhase.Loaded ? Visibility.Collapsed : Visibility.Visible;
         notesStatus.Text = notes.Phase switch
         {
-            WindowsChangelogPhase.Loading => "Loading changes…",
             WindowsChangelogPhase.Unavailable => "Couldn’t load the changelog. You can still download or install this update.",
-            _ => "Expand to load changes."
+            _ => "Check for updates to load changes."
         };
         changelog.Header = "What’s new";
         if (notes.Changes is not { } changes) return;
@@ -123,7 +116,8 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         bool changedOffer = offeredVersion.Text != (state.Version is { } version ? $"Music {version}" : "");
         offeredVersion.Text = state.Version is { } offer ? $"Music {offer}" : "";
         offeredVersion.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
-        notes.SetOffer(state.Version);
+        notes.SetOffer(state.Version, state.Changelog);
+        retryNotes.IsEnabled = state.Phase == WindowsUpdatePhase.Available;
         changelog.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
         if (changedOffer) changelog.IsExpanded = false;
         // The product/version already lives in the offer header, not in a duplicate status row.
@@ -149,11 +143,9 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         check.Click -= CheckClicked;
         download.Click -= DownloadClicked;
         restart.Click -= RestartClicked;
-        changelog.Expanding -= ChangelogExpanding;
         retryNotes.Click -= RetryNotesClicked;
         notes.Changed -= NotesChanged;
         notes.Dispose();
-        notesClient.Dispose();
         controller.Changed -= OnChanged;
         controller.Dispose();
     }

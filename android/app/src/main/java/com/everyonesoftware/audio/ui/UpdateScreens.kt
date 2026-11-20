@@ -92,7 +92,7 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
                 }
             }
             if (release != null) {
-                UpdateOffer(update, actions::retryUpdateChangelog)
+                UpdateOffer(update)
             }
             if (update.error != null) {
                 Text(update.error, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
@@ -153,7 +153,7 @@ internal fun Updates(state: AudioUiState, actions: AudioUiActions) {
 /** The release body is download inventory, never changelog evidence. */
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-private fun UpdateOffer(update: UpdateUiState, retry: () -> Unit) {
+private fun UpdateOffer(update: UpdateUiState) {
     val release = update.release ?: return
     // Do not reset disclosures on progress, retry or changelog-stage transitions.
     var expanded by rememberSaveable(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
@@ -165,53 +165,33 @@ private fun UpdateOffer(update: UpdateUiState, retry: () -> Unit) {
             Text("Update available", Modifier.padding(end = 12.dp).testTag("updates-available-label"), style = MaterialTheme.typography.titleMedium)
             Text("Music ${release.version}", Modifier.testTag("updates-offered-version"), style = MaterialTheme.typography.titleMedium)
         }
-        val detail = changelog?.let { "${it.count} ${if (it.count == 1) "change" else "changes"}" }
-            ?: when (update.changelogStage) {
-                ChangelogStage.IDLE -> null
-                ChangelogStage.LOADING -> "Loading…"
-                else -> "Unavailable"
-            }
-        UpdateDisclosure("What’s new", "updates-changelog", expanded, detail = detail) {
-            expanded = !expanded
-            // Loading is user initiated, never a side effect of composition or update checks.
-            if (expanded && update.changelogStage == ChangelogStage.IDLE) retry()
-        }
+        val detail = changelog?.let { "${it.count} ${if (it.count == 1) "change" else "changes"}" } ?: "Unavailable"
+        UpdateDisclosure("What’s new", "updates-changelog", expanded, detail = detail) { expanded = !expanded }
         if (expanded) {
             Column(Modifier.fillMaxWidth().padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                when (update.changelogStage) {
-                    ChangelogStage.IDLE -> {
-                        TextButton(retry, Modifier.heightIn(min = 48.dp).testTag("updates-changelog-load")) { Text("Load changes") }
-                    }
-                    ChangelogStage.LOADING -> {
-                        LinearProgressIndicator(Modifier.fillMaxWidth().testTag("updates-changelog-loading"))
-                        UpdateHint("Loading changes…")
-                    }
-                    ChangelogStage.UNAVAILABLE -> ChangelogUnavailable(retry)
-                    ChangelogStage.AVAILABLE -> if (changelog != null) {
-                        UpdateChangeGroup("Improvements", changelog.improvements)
-                        UpdateChangeGroup("Fixes", changelog.fixes)
-                        UpdateDisclosure("Commit details", "updates-commit-details", commitsExpanded) { commitsExpanded = !commitsExpanded }
-                        if (commitsExpanded) {
-                            Text("${changelog.fromSha} → ${changelog.toSha}", Modifier.testTag("updates-source-range"),
-                                style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            changelog.commits.forEach { commit ->
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(commit.subject, style = MaterialTheme.typography.bodyMedium)
-                                    Text(commit.sha.take(7), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                if (changelog != null) {
+                    UpdateChangeGroup("Improvements", changelog.improvements)
+                    UpdateChangeGroup("Fixes", changelog.fixes)
+                    UpdateDisclosure("Commit details", "updates-commit-details", commitsExpanded) { commitsExpanded = !commitsExpanded }
+                    if (commitsExpanded) {
+                        Text("${changelog.fromSha} → ${changelog.toSha}", Modifier.testTag("updates-source-range"),
+                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        changelog.commits.forEach { commit ->
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(commit.subject, style = MaterialTheme.typography.bodyMedium)
+                                Text(commit.sha.take(7), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
-                    } else ChangelogUnavailable(retry)
-                }
+                    }
+                } else ChangelogUnavailable()
             }
         }
     }
 }
 
 @Composable
-private fun ChangelogUnavailable(retry: () -> Unit) {
-    UpdateHint("Couldn’t load the changelog. You can still download this update.")
-    TextButton(retry, Modifier.heightIn(min = 48.dp).testTag("updates-changelog-retry")) { Text("Retry changelog") }
+private fun ChangelogUnavailable() {
+    UpdateHint("Changelog unavailable. You can still download this update.")
 }
 
 @OptIn(ExperimentalLayoutApi::class)

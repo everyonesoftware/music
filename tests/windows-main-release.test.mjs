@@ -32,12 +32,13 @@ function fixture(t, changes = {}) {
     assert.ok(opts.timeout > 0 && opts.timeout <= 120000);
     if (cmd === 'git') {
       const query = args.slice(2).join(' ');
-      return ok(({ 'rev-parse --is-shallow-repository': 'false', 'rev-list --count HEAD': '43', 'rev-parse HEAD': sha, 'status --porcelain --untracked-files=all': changes.dirty ? ' M source' : '' })[query] ?? assert.fail(query));
+      return ok(({ 'rev-parse --is-shallow-repository': 'false', 'rev-list --count HEAD': '43', [`rev-list --count ${sha}`]: '43', 'rev-parse HEAD': sha, 'status --porcelain --untracked-files=all': changes.dirty ? ' M source' : '' })[query] ?? assert.fail(query));
     }
     if (cmd === 'python3' || cmd === 'python') {
       assert.equal(args[0], join(root, 'scripts/windows-release.py'));
       assert.equal(args[1], 'validate');
       assert.equal(args[args.indexOf('--root') + 1], root);
+      assert.deepEqual(readFileSync(join(args[args.indexOf('--directory') + 1], 'windows-release.json')), original.get('windows-release.json'), 'strict Python validator always sees original packaging bytes');
       if (changes.invalid) return { status: 1, stderr: 'Incomplete self-contained Windows payload' };
       return ok(manifest);
     }
@@ -74,7 +75,9 @@ function fixture(t, changes = {}) {
   const invoke = async (android = 'true', argv) => {
     assert.ok(existsSync(script), 'stable main publisher must exist');
     const { main } = await import(script.href);
-    return main(argv || ['--directory', directory, '--repository', 'owner/music', '--android-changed', android], { root, run, output: () => {} });
+    const arguments_ = argv || ['--directory', directory, '--repository', 'owner/music', '--android-changed', android, ...(changes.changelog ? ['--changelog', 'true'] : [])];
+    const changelog = { schema: 1, platform: 'windows', head: { version: manifest.version, sha }, releases: [{ version: manifest.version, sha, commits: [] }] };
+    return main(arguments_, { root, run, output: () => {}, generate: () => ({ changelog, publishedManifest: changes.publishedOriginal ? manifest : null }) });
   };
   return { directory, names, original, manifest, release, assets, content, calls, paths, invoke };
 }
@@ -226,6 +229,89 @@ for (const change of ['body', 'android', 'feed']) {
     await assert.rejects(f.invoke(), /changed|conflict/);
   });
 }
+
+// Minimal stored-ZIP writer for structural, explicitly non-runnable fixtures.
+function fixtureZip(entries) {
+  const chunks = [], directory = []; let offset = 0;
+  for (const [name, value] of Object.entries(entries)) {
+    const bytes = Buffer.from(value), filename = Buffer.from(name);
+    let crc = 0xffffffff;
+    for (const byte of bytes) { crc ^= byte; for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0); }
+    crc = (crc ^ 0xffffffff) >>> 0;
+    const header = Buffer.alloc(30); header.writeUInt32LE(0x04034b50); header.writeUInt16LE(20, 4); header.writeUInt32LE(crc, 14); header.writeUInt32LE(bytes.length, 18); header.writeUInt32LE(bytes.length, 22); header.writeUInt16LE(filename.length, 26);
+    const central = Buffer.alloc(46); central.writeUInt32LE(0x02014b50); central.writeUInt16LE(20, 4); central.writeUInt16LE(20, 6); central.writeUInt32LE(crc, 16); central.writeUInt32LE(bytes.length, 20); central.writeUInt32LE(bytes.length, 24); central.writeUInt16LE(filename.length, 28); central.writeUInt32LE(offset, 42);
+    chunks.push(header, filename, bytes); directory.push(central, filename); offset += header.length + filename.length + bytes.length;
+  }
+  const central = Buffer.concat(directory), end = Buffer.alloc(22); end.writeUInt32LE(0x06054b50); end.writeUInt16LE(Object.keys(entries).length, 8); end.writeUInt16LE(Object.keys(entries).length, 10); end.writeUInt32LE(central.length, 12); end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...chunks, central, end]);
+}
+
+test('real strict Python validates original ZIP/feed and Node publishes enriched bytes without changing that validator', async t => {
+  const temporary = mkdtempSync(join(tmpdir(), 'music-real-enriched-')); t.after(() => rmSync(temporary, { recursive: true, force: true }));
+  const checkout = join(temporary, 'source'), directory = join(temporary, 'package'); mkdirSync(join(checkout, 'scripts'), { recursive: true }); mkdirSync(directory);
+  copyFileSync(fileURLToPath(new URL('../scripts/windows-release.py', import.meta.url)), join(checkout, 'scripts/windows-release.py'));
+  const execute = (cmd, args, options = {}) => { const r = spawnSync(cmd, args, { encoding: 'utf8', ...options }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  execute('git', ['-C', checkout, 'init', '-q']); execute('git', ['-C', checkout, 'add', '.']); execute('git', ['-C', checkout, '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'fixture']);
+  const sourceSha = execute('git', ['-C', checkout, 'rev-parse', 'HEAD']);
+  const pe = Buffer.alloc(128); pe.write('MZ'); pe.writeUInt32LE(64, 60); pe.write('PE\0\0', 64); pe.writeUInt16LE(0x8664, 68);
+  writeFileSync(join(directory, installer), pe);
+  const entries = { 'MusicWindows.nuspec': '<package><metadata><id>MusicWindows</id><version>0.1.1</version><channel>win-x64</channel><mainExe>Music.exe</mainExe><os>win</os><rid>win-x64</rid></metadata></package>', 'lib/app/Music.exe': pe, 'lib/app/Music.runtimeconfig.json': JSON.stringify({ runtimeOptions: { includedFrameworks: [{ name: 'Microsoft.NETCore.App', version: '10.0.15' }] } }), 'lib/app/Music.deps.json': JSON.stringify({ runtimeTarget: { name: '.NETCoreApp,Version=v10.0/win-x64' }, libraries: { 'Music/0.1.1': {} } }) };
+  for (const name of ['Music.dll', 'coreclr.dll', 'hostfxr.dll', 'Microsoft.UI.Xaml.dll', 'Microsoft.WindowsAppRuntime.dll']) entries['lib/app/' + name] = 'EXPLICIT NON-RUNNABLE UNIT FIXTURE';
+  const name = 'MusicWindows-0.1.1-win-x64-full.nupkg', bytes = fixtureZip(entries), sha1 = createHash('sha1').update(bytes).digest('hex');
+  writeFileSync(join(directory, name), bytes);
+  writeFileSync(join(directory, 'releases.win-x64.json'), JSON.stringify({ Assets: [{ PackageId: 'MusicWindows', Version: '0.1.1', Type: 'Full', FileName: name, Size: bytes.length, SHA1: sha1, SHA256: hash(bytes) }] }));
+  writeFileSync(join(directory, 'assets.win-x64.json'), JSON.stringify([{ RelativeFileName: installer, Type: 'Installer' }, { RelativeFileName: name, Type: 'Full' }]));
+  writeFileSync(join(directory, 'RELEASES-win-x64'), `${sha1} ${name} ${bytes.length}\n`);
+  const python = process.platform === 'win32' ? 'python' : 'python3';
+  const args = [join(checkout, 'scripts/windows-release.py'), 'manifest', '--root', checkout, '--directory', directory];
+  execute(python, args);
+  const original = readFileSync(join(directory, 'windows-release.json'));
+  const source = { count: 1, version: '0.1.1', tag: 'windows-v0.1.1', sha: sourceSha };
+  const changelog = { schema: 1, platform: 'windows', head: { version: source.version, sha: sourceSha }, releases: [{ version: source.version, sha: sourceSha, commits: [] }] };
+  writeFileSync(join(directory, 'windows-release.json'), JSON.stringify({ ...JSON.parse(original), changelog }));
+  const rejectsEnriched = spawnSync(python, [args[0], 'validate', ...args.slice(2)], { encoding: 'utf8' });
+  assert.notEqual(rejectsEnriched.status, 0, 'prove legacy equality really rejects an additive field');
+  writeFileSync(join(directory, 'windows-release.json'), original);
+  const release = { id: 1, tag_name: 'v0.1.1', target_commitish: sourceSha, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' }, assets = [], content = new Map(); let validations = 0;
+  const run = (cmd, commandArgs, options) => {
+    if (cmd !== 'gh') { if (cmd === python) { validations++; assert.deepEqual(readFileSync(join(commandArgs.at(-1), 'windows-release.json')), original); } return spawnSync(cmd, commandArgs, options); }
+    if (commandArgs[0] === 'release') { for (const path of commandArgs.slice(3, commandArgs.indexOf('--repo'))) { const b = readFileSync(path), id = assets.length + 1; assets.push({ id, name: basename(path), size: b.length, state: 'uploaded' }); content.set(id, b); } return ok(''); }
+    if (commandArgs[1].endsWith('/releases/tags/v0.1.1')) return ok(release);
+    if (commandArgs[1].endsWith('/git/ref/tags/v0.1.1')) return ok({ object: { type: 'commit', sha: sourceSha } });
+    if (commandArgs[1].endsWith('/releases/1/assets')) return ok([assets]);
+    const id = Number(commandArgs[1].split('/').at(-1)); assert.ok(content.has(id)); writeFileSync(options.stdio[1], content.get(id)); return ok('');
+  };
+  const { attachWindowsInstaller } = await import('../scripts/attach-windows-installer.mjs');
+  await attachWindowsInstaller({ directory, repository: 'owner/music', source, root: checkout, run, includeUpdateFeed: true, changelog });
+  assert.equal(validations, 1);
+  assert.deepEqual(JSON.parse(content.get(assets.find(a => a.name === 'windows-release.json').id)), { ...JSON.parse(original), changelog });
+  assert.deepEqual(readFileSync(join(directory, 'windows-release.json')), original);
+});
+
+test('new publication enriches only staged manifest after strict original-byte Python validation and verifies enriched readback', async t => {
+  const f = fixture(t, { changelog: true });
+  await f.invoke();
+  const remote = JSON.parse(f.content.get(f.assets.find(a => a.name === 'windows-release.json').id));
+  assert.deepEqual(remote, { ...f.manifest, changelog: { schema: 1, platform: 'windows', head: { version: f.manifest.version, sha }, releases: [{ version: f.manifest.version, sha, commits: [] }] } });
+  for (const [name, bytes] of f.original) {
+    assert.deepEqual(readFileSync(join(f.directory, name)), bytes);
+    if (name !== 'windows-release.json') assert.deepEqual(f.content.get(f.assets.find(a => a.name === name).id), bytes);
+  }
+  assert.deepEqual((await f.invoke()).uploaded, []);
+});
+
+test('complete pre-changelog publication is never retroactively enriched', async t => {
+  const f = fixture(t, { changelog: true, publishedOriginal: true });
+  await f.invoke();
+  assert.deepEqual(f.content.get(f.assets.find(a => a.name === 'windows-release.json').id), f.original.get('windows-release.json'));
+});
+
+test('corrupt enriched manifest readback fails without clobbering published assets', async t => {
+  const f = fixture(t, { changelog: true, afterUpload: ({ assets, content }) => { const a = assets.find(a => a.name === 'windows-release.json'); content.set(a.id, Buffer.alloc(a.size)); } });
+  await assert.rejects(f.invoke(), /conflict/);
+  await assert.rejects(f.invoke(), /conflict/);
+  assert.equal(f.calls.filter(c => c.args[0] === 'release').length, 1);
+});
 
 for (const argv of [[], ['--directory', 'x', '--repository', '../repo', '--android-changed', 'true'], ['--directory', 'x', '--repository', 'o/r', '--android-changed', 'True'], ['--directory', 'x', '--repository', 'o/r', '--android-changed', 'false', '--android-changed', 'true'], ['--wat', 'x']]) {
   test(`rejects invalid CLI before local/network commands: ${JSON.stringify(argv)}`, async t => {

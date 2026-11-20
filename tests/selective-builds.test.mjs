@@ -57,6 +57,14 @@ test('compares actual Git trees against last publication, not the previous push,
   assert.equal(decideFromBaseline({ root: h.root, component: 'windows', baseline: h.git('rev-parse', 'HEAD'), force: true }).build, true);
 });
 
+test('release changelog control-plane producer and tests do not rebuild native binaries', async t => {
+  const { decideFromBaseline } = await import('../scripts/selective-builds.mjs');
+  const h = history(t), base = h.commit('README.md');
+  h.commit('scripts/release-changelog.mjs', 'producer-only change');
+  h.commit('tests/release-changelog.test.mjs', 'control-plane tests');
+  for (const component of ['android', 'windows', 'web']) assert.equal(decideFromBaseline({ root: h.root, component, baseline: base }).build, false);
+});
+
 test('queue-shuffle browser regression changes do not rebuild native platforms', async t => {
   const { decideFromBaseline } = await import('../scripts/selective-builds.mjs');
   const h = history(t);

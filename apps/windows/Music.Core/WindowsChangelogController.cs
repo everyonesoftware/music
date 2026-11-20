@@ -1,71 +1,31 @@
 namespace Music.Core;
 
-public enum WindowsChangelogPhase { Idle, Loading, Loaded, Unavailable }
+public enum WindowsChangelogPhase { Idle, Loaded, Unavailable }
 
-/// <summary>Independent from download/install: notes are on demand and owned by one exact offer.</summary>
+/// <summary>Presentation snapshot only; disclosure never starts network work.</summary>
 public sealed class WindowsChangelogController : IDisposable
 {
-    private readonly Version installed;
-    private readonly Func<Version, Version, CancellationToken, Task<WindowsChangelog>> load;
-    private CancellationTokenSource? request;
     private Version? offered;
-    private long generation;
     private bool disposed;
     public WindowsChangelogPhase Phase { get; private set; }
     public WindowsChangelog? Changes { get; private set; }
     public event Action? Changed;
 
-    public WindowsChangelogController(Version installed, Func<Version, Version, CancellationToken, Task<WindowsChangelog>> load)
+    public void SetOffer(Version? version, WindowsChangelog? changes)
     {
-        this.installed = installed;
-        this.load = load;
-    }
-
-    public void SetOffer(Version? version)
-    {
-        if (disposed || Equals(offered, version)) return;
-        generation++;
-        request?.Cancel();
+        if (disposed) return;
+        if (version is null) changes = null;
+        if (Equals(offered, version) && ReferenceEquals(Changes, changes)) return;
         offered = version;
-        Changes = null;
-        Phase = WindowsChangelogPhase.Idle;
-        Changed?.Invoke();
-    }
-
-    public async Task LoadAsync()
-    {
-        if (disposed || offered is not { } version || Phase is WindowsChangelogPhase.Loading or WindowsChangelogPhase.Loaded) return;
-        var revision = generation;
-        using var pending = new CancellationTokenSource();
-        request = pending;
-        Phase = WindowsChangelogPhase.Loading;
-        Changed?.Invoke();
-        try
-        {
-            var result = await load(installed, version, pending.Token);
-            if (disposed || revision != generation) return;
-            Changes = result;
-            Phase = WindowsChangelogPhase.Loaded;
-        }
-        catch
-        {
-            if (disposed || revision != generation) return;
-            Changes = null;
-            Phase = WindowsChangelogPhase.Unavailable;
-        }
-        finally
-        {
-            if (ReferenceEquals(request, pending)) request = null;
-        }
+        Changes = changes;
+        Phase = version is null ? WindowsChangelogPhase.Idle : changes is null ? WindowsChangelogPhase.Unavailable : WindowsChangelogPhase.Loaded;
         Changed?.Invoke();
     }
 
     public void Dispose()
     {
-        if (disposed) return;
         disposed = true;
-        generation++;
-        request?.Cancel();
+        offered = null;
         Changes = null;
         Phase = WindowsChangelogPhase.Idle;
     }

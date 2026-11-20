@@ -28,13 +28,15 @@ class UpdateCoordinator(
     private val now: () -> Long = System::currentTimeMillis,
     private val persist: (UpdateUiState, Long?) -> Unit = { _, _ -> },
     private val io: CoroutineDispatcher = Dispatchers.IO,
-    private val loadChangelog: suspend (Long, UpdateRelease) -> UpdateChangelog = { _, _ -> error("History unavailable") },
 ) {
     private val initialRelease = initialState.release?.takeIf { it.count > installedCode }
     private val unfinishedCheck = initialState.checkOutcome in listOf(UpdateCheckOutcome.CHECKING, UpdateCheckOutcome.FAILED) ||
         (initialState.checkOutcome == UpdateCheckOutcome.NEVER && initialLastAttemptAt != null &&
             (initialState.lastCheckedAt == null || initialLastAttemptAt > initialState.lastCheckedAt))
+    private val initialHistory = initialRelease?.localChangelog(installedCode)
     private val current = MutableStateFlow(initialState.copy(release = initialRelease,
+        changelog = initialHistory,
+        changelogStage = when { initialRelease == null -> ChangelogStage.IDLE; initialHistory == null -> ChangelogStage.UNAVAILABLE; else -> ChangelogStage.AVAILABLE },
         stage = when { unfinishedCheck -> UpdateStage.ERROR; initialRelease != null -> UpdateStage.AVAILABLE; else -> UpdateStage.IDLE },
         checkOutcome = if (unfinishedCheck) UpdateCheckOutcome.FAILED else initialState.checkOutcome,
         checkFailure = if (unfinishedCheck) initialState.checkFailure ?: UpdateFailureKind.TRANSIENT else null,
@@ -45,39 +47,8 @@ class UpdateCoordinator(
     private var lastAttemptAt = initialLastAttemptAt
     @Volatile private var generation = 0L
     private var installationOpen = false
-    private var changelogRequest: Job? = null
-    private var changelogGeneration = 0L
-
-    /** Independent request: missing history never invalidates a verified update or blocks download. */
-    fun retryChangelog(): Job? {
-        val release = current.value.release ?: return null
-        if (changelogRequest?.isActive == true && current.value.changelogStage == ChangelogStage.LOADING) return changelogRequest
-        return startChangelog(release)
-    }
-
-    private fun startChangelog(release: UpdateRelease?): Job? {
-        val ticket = ++changelogGeneration
-        changelogRequest?.cancel()
-        current.update { it.copy(changelog = null, changelogStage = if (release == null) ChangelogStage.IDLE else ChangelogStage.LOADING) }
-        if (release == null) return null
-        // Assign before starting: Main.immediate may complete the request inline.
-        val job = scope.launch(start = kotlinx.coroutines.CoroutineStart.LAZY) {
-            try {
-                val history = loadChangelog(installedCode, release)
-                if (ticket == changelogGeneration && current.value.release == release) {
-                    current.update { it.copy(changelog = history, changelogStage = ChangelogStage.AVAILABLE) }
-                }
-            } catch (cancelled: CancellationException) { throw cancelled }
-            catch (_: Exception) {
-                if (ticket == changelogGeneration && current.value.release == release) {
-                    current.update { it.copy(changelog = null, changelogStage = ChangelogStage.UNAVAILABLE) }
-                }
-            }
-        }
-        changelogRequest = job
-        job.start()
-        return job
-    }
+    /** Kept for existing action callers; disclosure never performs work or network requests. */
+    fun retryChangelog(): Job? = null
 
     fun check(automatic: Boolean = false): Job? {
         if (installationOpen || request?.isCompleted == false || current.value.stage in listOf(UpdateStage.DOWNLOADING, UpdateStage.VERIFYING)) return request
@@ -97,11 +68,13 @@ class UpdateCoordinator(
             try {
                 val found = latest(installedCode)?.takeIf { it.count > installedCode }
                 if (ticket == generation) {
-                    current.update { it.copy(release = found, lastCheckedAt = now(), error = null,
+                    val history = found?.localChangelog(installedCode)
+                    current.update { it.copy(release = found, changelog = history,
+                        changelogStage = when { found == null -> ChangelogStage.IDLE; history == null -> ChangelogStage.UNAVAILABLE; else -> ChangelogStage.AVAILABLE },
+                        lastCheckedAt = now(), error = null,
                         checkOutcome = UpdateCheckOutcome.SUCCESS, checkFailure = null, consecutiveCheckFailures = 0, checkRetryAt = null,
                         downloadedBytes = if (found == before.release && before.stage == UpdateStage.READY) before.downloadedBytes else 0,
                         stage = when { found == null -> UpdateStage.IDLE; found == before.release && before.stage == UpdateStage.READY -> UpdateStage.READY; else -> UpdateStage.AVAILABLE }) }
-                    if (found != before.release) startChangelog(null)
                     save()
                 }
             } catch (cancelled: CancellationException) { throw cancelled }

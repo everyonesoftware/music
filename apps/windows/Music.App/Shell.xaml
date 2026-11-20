@@ -186,8 +186,8 @@
                 <TextBlock x:Name="UpdateStatus" Text="Check for updates when you choose." Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                 <Expander x:Name="UpdateChangelog" Header="What’s new" IsExpanded="False" Visibility="Collapsed" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
                   <StackPanel Spacing="12">
-                    <TextBlock x:Name="ChangelogStatus" Text="Expand to load changes." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
-                    <Button x:Name="RetryChangelogButton" Content="Retry changelog" Visibility="Collapsed"/>
+                    <TextBlock x:Name="ChangelogStatus" Text="Check for updates to load changes." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                    <Button x:Name="RetryChangelogButton" Content="Check again" Visibility="Collapsed"/>
                     <StackPanel x:Name="ChangelogContent" Spacing="12"/>
                   </StackPanel>
                 </Expander>

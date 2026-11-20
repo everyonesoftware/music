@@ -12,7 +12,7 @@ The resulting GitHub release contains:
 
 - `Music-0.1.<count>.apk` — the signed, non-debuggable APK.
 - `Music-0.1.<count>.apk.sha256` — its SHA-256 checksum.
-- `release.json` — exact source commit, Git count, version, APK filename, size and checksum.
+- `release.json` — exact source commit, Git count, version, APK filename, size and checksum, plus additive precomputed `changelog` history for Android (see [the client contract and bounds](UPDATING.md#precomputed-changelog)).
 
 A 30-day workflow artifact retains those three files. GitHub release assets do not use that expiration policy. The release job drafts a new Android release, downloads/checks uploaded bytes, then publishes and verifies it. Only the current `main` tip is promoted to Latest. All publication/recovery/download-description writes share the queued `music-release-publication` lock. Changed Windows builds add their complete installer/update inventory to this same release; unchanged Windows outputs remain at their original version.
 

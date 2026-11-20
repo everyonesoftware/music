@@ -248,63 +248,60 @@ class UpdateFlowTest {
         assertUnauthenticated()
     }
 
-    @Test fun publishedHistoryLoadsThroughViewModelAndManagerWithoutChangingPlayback() = runBlocking {
+    @Test fun embeddedHistoryIsPreparedAndPersistedWithoutAnyExtraRequests() = runBlocking {
         val installed = BuildConfig.VERSION_CODE
         val from = "b".repeat(40)
         val to = "a".repeat(40)
-        val offeredPublication = publishedRelease().replace("\"tag_name\"", "\"target_commitish\":\"$to\",\"tag_name\"")
-        val installedPublication = offeredPublication.replace("0.1.$count", "0.1.$installed").replace(to, from)
+        val embedded = """{"schema":1,"platform":"android","head":{"version":"0.1.$count","sha":"$to"},"releases":[{"version":"0.1.$installed","sha":"$from","commits":[]},{"version":"0.1.$count","sha":"$to","commits":[{"sha":"$to","subject":"[verified] fix(android): Preserve playback position","kind":"fix","text":"Preserve playback position"}]}]}"""
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests.add(request)
                 return when (request.path) {
-                    "$API_PATH?per_page=100&page=1" -> json("[$offeredPublication,$installedPublication]")
-                    "$ASSET_PATH/v0.1.$count/release.json" -> json(manifest())
-                    "$ASSET_PATH/v0.1.$installed/release.json" -> json(manifest().replace("\"count\":$count", "\"count\":$installed").replace("0.1.$count", "0.1.$installed").replace(to, from))
-                    "/repos/everyonesoftware/music/git/ref/tags/v0.1.$installed" -> json("""{"ref":"refs/tags/v0.1.$installed","object":{"type":"commit","sha":"$from"}}""")
-                    "/repos/everyonesoftware/music/git/ref/tags/v0.1.$count" -> json("""{"ref":"refs/tags/v0.1.$count","object":{"type":"commit","sha":"$to"}}""")
-                    "/repos/everyonesoftware/music/compare/$from...$to?per_page=100&page=1" -> json("""{"status":"ahead","ahead_by":1,"behind_by":0,"total_commits":1,"base_commit":{"sha":"$from"},"merge_base_commit":{"sha":"$from"},"commits":[{"sha":"$to","commit":{"message":"[verified] fix(android): Preserve playback position"}}]}""")
+                    "$API_PATH?per_page=100&page=1" -> json("[${publishedRelease()}]")
+                    "$ASSET_PATH/v0.1.$count/release.json" -> json(manifest().dropLast(1) + ",\"changelog\":$embedded}")
                     else -> MockResponse().setResponseCode(404)
                 }
             }
         }
         checkViaModel()
-        assertEquals(ChangelogStage.IDLE, model.state.value.updates.changelogStage)
-        onMain { model.retryUpdateChangelog() }
-        until { model.state.value.updates.changelogStage in setOf(ChangelogStage.AVAILABLE, ChangelogStage.UNAVAILABLE) }
         assertEquals(ChangelogStage.AVAILABLE, model.state.value.updates.changelogStage)
         val history = requireNotNull(model.state.value.updates.changelog)
         assertEquals(from, history.fromSha)
         assertEquals(to, history.toSha)
         assertEquals(listOf("Preserve playback position"), history.fixes)
         assertEquals("[verified] fix(android): Preserve playback position", history.commits.single().subject)
-        assertEquals(UpdateStage.AVAILABLE, model.state.value.updates.stage)
+        onMain { model.retryUpdateChangelog() }
+        assertEquals(2, requests.size)
+        val restored = newManager()
+        assertEquals(model.state.value.updates.release, restored.state.value.release)
+        assertEquals(history, restored.state.value.changelog)
+        assertEquals(ChangelogStage.AVAILABLE, restored.state.value.changelogStage)
+        assertEquals(2, requests.size)
         assertPreserved()
-        requests.forEach { request ->
-            assertNull(request.getHeader("Authorization")); assertNull(request.getHeader("Cookie"))
-        }
+        assertUnauthenticated()
     }
 
-    @Test fun missingInstalledPublicationMakesOnlyHistoryUnavailableAndRetryPreservesUpdateAndPlayback() = runBlocking {
+    @Test fun missingHistoryStaysUnavailableAcrossRestoreWithoutNetworkFallback() = runBlocking {
         checkViaModel()
         val offered = requireNotNull(model.state.value.updates.release)
         assertEquals("a".repeat(40), offered.sourceSha)
         assertTrue(offered.notes.isEmpty())
-        assertEquals(ChangelogStage.IDLE, model.state.value.updates.changelogStage)
+        assertEquals(ChangelogStage.UNAVAILABLE, model.state.value.updates.changelogStage)
         onMain { model.retryUpdateChangelog() }
-        until { model.state.value.updates.changelogStage == ChangelogStage.UNAVAILABLE }
         assertEquals(UpdateStage.AVAILABLE, model.state.value.updates.stage)
         assertEquals(offered, model.state.value.updates.release)
         assertNull(model.state.value.updates.error)
         assertNull(model.state.value.updates.changelog)
-        val beforeRetry = requests.size
-        onMain { model.retryUpdateChangelog() }
-        until { requests.size > beforeRetry && model.state.value.updates.changelogStage == ChangelogStage.UNAVAILABLE }
-        assertEquals(offered, model.state.value.updates.release)
+        assertEquals(2, requests.size)
+        // Old installations saved release-body notes. They must never become history.
+        val preferences = app.getSharedPreferences("music_updates", Context.MODE_PRIVATE)
+        val saved = requireNotNull(preferences.getString("release", null))
+        assertTrue(preferences.edit().putString("release", saved.dropLast(1) + ",\"notes\":\"Stale Current downloads table\"}").commit())
         val restored = newManager()
         assertEquals(offered, restored.state.value.release)
         assertTrue(restored.state.value.release!!.notes.isEmpty())
-        assertEquals(ChangelogStage.IDLE, restored.state.value.changelogStage)
+        assertEquals(ChangelogStage.UNAVAILABLE, restored.state.value.changelogStage)
+        assertEquals(2, requests.size)
         assertPreserved()
         assertUnauthenticated()
     }

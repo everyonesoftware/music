@@ -6,7 +6,7 @@ Music replaces Audio as the native app's display name only. The application ID, 
 
 ## Current slice
 
-- Native GitHub-backed updates: daily foreground checks with a Settings opt-out, manual checking, Library/Now Playing download-dot icons, explicit download/cancel/retry, package/version/signer/integrity preflight and a user-confirmed Android installer flow. Checking/downloading never sends a playback command; installation requires paused playback and a saved-session checkpoint. See [UPDATING.md](UPDATING.md) for privacy, signing, permission and verification boundaries.
+- Native GitHub-backed updates: daily foreground checks, manual checking, Library/Now Playing download-dot icons, explicit download/cancel/retry, package/version/signer/integrity preflight and a user-confirmed Android installer flow. The offered manifest supplies precomputed, locally prepared What’s new groups and original Commit details; opening disclosures never requests history. Checking/downloading never sends a playback command; installation requires paused playback and a saved-session checkpoint. See [UPDATING.md](UPDATING.md) for privacy, signing, permission and verification boundaries.
 - Welcome → connect with an existing Navidrome username/password → accessible libraries → playlists → full player.
 - Direct Subsonic-compatible requests to the configured server, including base paths. No Music account/backend/proxy.
 - Playlist search and a direct Shuffle action. Refresh puts the most recently played playlist first. The car browser opens collection contents with Play and Shuffle play action items; this is not a longer recent-playlist history.

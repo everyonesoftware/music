@@ -14,5 +14,6 @@
     <ProjectReference Include="../Music.Core/Music.Core.csproj" />
     <PackageReference Include="Velopack" Version="1.2.161" />
     <Compile Include="../Music.App/WindowsUpdateBackend.cs" Link="WindowsUpdateBackend.cs" />
+    <Compile Include="../Music.App/WindowsChangelogClient.cs" Link="WindowsChangelogClient.cs" />
   </ItemGroup>
 </Project>

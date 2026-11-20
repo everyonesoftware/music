@@ -17,7 +17,7 @@ export function affectedComponents(paths) {
   const add = (...items) => items.forEach(item => selected.add(item));
   for (const path of paths) {
     if (path.startsWith('docs/') || /(?:^|\/)(?:README|RELEASING|UPDATING|VALIDATION|NOTES|AGENTS|CLAUDE)\.md$/.test(path)) continue;
-    if (['scripts/current-downloads.mjs', 'tests/current-downloads.test.mjs', '.github/workflows/current-downloads.yml'].includes(path)) continue;
+    if (['scripts/current-downloads.mjs', 'tests/current-downloads.test.mjs', '.github/workflows/current-downloads.yml', 'scripts/release-changelog.mjs', 'tests/release-changelog.test.mjs'].includes(path)) continue;
     if (['scripts/selective-builds.mjs', 'tests/selective-builds.test.mjs'].includes(path)) { add(...components); continue; }
     if (path.startsWith('android/')) {
       add('android');
@@ -88,12 +88,12 @@ export function publishedBaseline(component, { api }) {
     // An unpublished/incomplete platform cannot become the successful baseline.
     if (!names.every(name => assets.filter(asset => asset.name === name && asset.state === 'uploaded' && asset.size > 0).length === 1)) continue;
     const asset = assets.find(asset => asset.name === (windows ? 'windows-release.json' : 'release.json'));
-    if (!Number.isSafeInteger(asset.id) || asset.id <= 0 || asset.size > 65536) throw new Error('Invalid publication manifest asset.');
+    if (!Number.isSafeInteger(asset.id) || asset.id <= 0 || asset.size > 1024 * 1024) throw new Error('Invalid publication manifest asset.');
     const manifest = api(`releases/assets/${asset.id}`, { binaryJson: true });
     // Stable publication retains the packaging tag for existing Windows clients;
     // GitHub provenance must still resolve the actual release tag below.
     const manifestTags = windows && !legacyWindows(release) ? [tag, `windows-v${version}`] : [tag];
-    if (!manifest || JSON.stringify(manifest).length > 65536 || !shaPattern.test(manifest.sha) || manifest.sha !== release.target_commitish || manifest.count !== count || manifest.version !== version || !manifestTags.includes(manifest.tag)) throw new Error('Published source metadata mismatch.');
+    if (!manifest || Buffer.byteLength(JSON.stringify(manifest)) > 1024 * 1024 || !shaPattern.test(manifest.sha) || manifest.sha !== release.target_commitish || manifest.count !== count || manifest.version !== version || !manifestTags.includes(manifest.tag)) throw new Error('Published source metadata mismatch.');
     if (windows) {
       if (manifest.platform !== 'windows-x64' || manifest.signing !== 'unsigned-preview' || !Array.isArray(manifest.artifacts)) throw new Error('Invalid Windows publication manifest.');
       for (const name of names.slice(0, 5)) {

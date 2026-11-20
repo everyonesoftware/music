@@ -1,14 +1,10 @@
 package com.everyonesoftware.audio.updates
 
 import java.io.File
-import kotlinx.coroutines.CompletableDeferred
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
-import kotlinx.coroutines.withContext
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -17,80 +13,60 @@ import org.junit.rules.TemporaryFolder
 @OptIn(ExperimentalCoroutinesApi::class)
 class UpdateChangelogCoordinatorTest {
     @get:Rule val folder = TemporaryFolder()
-    private val release = UpdateRelease(200, "0.1.200", "Music-0.1.200.apk", 3, "a".repeat(64),
-        "https://github.com/everyonesoftware/music/releases/download/v0.1.200/Music-0.1.200.apk")
-    private val history = UpdateChangelog("a".repeat(40), "b".repeat(40), listOf("Improve playback"), emptyList(),
-        listOf(UpdateChangeCommit("b".repeat(40), "feat: Improve playback")))
+    private val from = "a".repeat(40)
+    private val to = "b".repeat(40)
+    private val embedded = Json.parseToJsonElement("""{"schema":1,"platform":"android","head":{"version":"0.1.101","sha":"$to"},"releases":[{"version":"0.1.100","sha":"$from","commits":[]},{"version":"0.1.101","sha":"$to","commits":[{"sha":"$to","subject":"feat: Improve playback","kind":"improvement","text":"Improve playback"}]}]}""").jsonObject
+    private val release = UpdateRelease(101, "0.1.101", "Music-0.1.101.apk", 3, "a".repeat(64),
+        "https://github.com/everyonesoftware/music/releases/download/v0.1.101/Music-0.1.101.apk", sourceSha = to, changelog = embedded)
 
-    @Test fun historyFailureNeverBlocksDownloadAndRetryIsIndependent() = runTest {
-        var calls = 0
+    @Test fun restorationRebuildsLocalRangeImmediatelyAndDiscardsStaleTransientHistory() = runTest {
+        for (target in listOf(release, release.copy(changelog = null))) {
+            val stale = UpdateChangelog(from, from, listOf("Old release-body notes"), emptyList(), emptyList())
+            val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { error("No check") },
+                download = { _, _, _ -> error("No download") }, verify = { _, _ -> },
+                initialState = UpdateUiState(release = target, changelog = stale, changelogStage = ChangelogStage.AVAILABLE))
+            assertEquals(UpdateStage.AVAILABLE, updater.state.value.stage)
+            assertEquals(if (target.changelog == null) ChangelogStage.UNAVAILABLE else ChangelogStage.AVAILABLE,
+                updater.state.value.changelogStage)
+            assertFalse(updater.state.value.changelog?.improvements?.contains("Old release-body notes") == true)
+            assertEquals(target.localChangelog(100), updater.state.value.changelog)
+        }
+    }
+
+    @Test fun replacementAndUnavailableHistoryNeverRetainOldNotesOrBlockDownloads() = runTest {
+        var offered = release
         var downloads = 0
-        val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { release },
-            download = { _, file, _ -> downloads++; file.writeText("apk") }, verify = { _, _ -> },
-            loadChangelog = { _, _ -> if (++calls == 1) error("private URL") else history })
-        updater.check(); runCurrent()
-        assertEquals(0, calls)
-        updater.retryChangelog(); runCurrent()
-        assertEquals(UpdateStage.AVAILABLE, updater.state.value.stage)
+        val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { offered },
+            download = { _, file, _ -> downloads++; file.writeText("apk") }, verify = { _, _ -> })
+        updater.check()!!.join()
+        assertNotNull(updater.state.value.changelog)
+        // Same version, different package/source identity: never reuse previous local history.
+        offered = release.copy(sha256 = "c".repeat(64), sourceSha = "d".repeat(40))
+        updater.check()!!.join()
+        assertEquals(offered, updater.state.value.release)
+        assertNull(updater.state.value.changelog)
         assertEquals(ChangelogStage.UNAVAILABLE, updater.state.value.changelogStage)
         assertNull(updater.state.value.error)
-        updater.retryChangelog(); runCurrent()
-        assertEquals(history, updater.state.value.changelog)
-        assertEquals(ChangelogStage.AVAILABLE, updater.state.value.changelogStage)
         updater.download()!!.join()
         assertEquals(1, downloads)
         assertEquals(UpdateStage.READY, updater.state.value.stage)
-        assertEquals(history, updater.state.value.changelog)
-    }
-
-    @Test fun obsoleteHistoryCannotDescribeReplacementEvenIfCancellationIsIgnored() = runTest {
-        val oldGate = CompletableDeferred<Unit>()
-        var offered = release
-        val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { offered },
-            download = { _, _: File, _ -> }, verify = { _, _ -> },
-            loadChangelog = { _, target ->
-                if (target == release) withContext(NonCancellable) { oldGate.await() }
-                history.copy(toSha = target.sha256.take(40))
-            })
-        updater.check(); runCurrent()
-        updater.retryChangelog(); runCurrent()
-        assertEquals(ChangelogStage.LOADING, updater.state.value.changelogStage)
-        offered = release.copy(count = 201, version = "0.1.201", sha256 = "c".repeat(64))
-        updater.check(); runCurrent()
-        assertEquals(ChangelogStage.IDLE, updater.state.value.changelogStage)
-        updater.retryChangelog(); runCurrent()
-        assertEquals("c".repeat(40), updater.state.value.changelog?.toSha)
-        oldGate.complete(Unit); runCurrent()
-        assertEquals(offered, updater.state.value.release)
-        assertEquals("c".repeat(40), updater.state.value.changelog?.toSha)
-    }
-
-    @Test fun synchronouslyCompletingHistoryCanBeRetriedWithoutAnUnassignedJob() = runTest {
-        var calls = 0
-        val immediate = CoroutineScope(backgroundScope.coroutineContext + UnconfinedTestDispatcher(testScheduler))
-        val updater = UpdateCoordinator(immediate, 100, folder.newFolder(), latest = { release },
-            download = { _, _, _ -> }, verify = { _, _ -> },
-            initialState = UpdateUiState(release = release), loadChangelog = { _, _ ->
-                if (++calls == 1) error("Transient history failure") else history
-            })
-        assertTrue(updater.retryChangelog()!!.isCompleted)
         assertEquals(ChangelogStage.UNAVAILABLE, updater.state.value.changelogStage)
-        assertTrue(updater.retryChangelog()!!.isCompleted)
-        assertEquals(2, calls)
-        assertEquals(history, updater.state.value.changelog)
-        assertEquals(ChangelogStage.AVAILABLE, updater.state.value.changelogStage)
+        // Once installed/no offer, history is cleared too.
+        offered = release.copy(count = 100)
+        updater.check()!!.join()
+        assertNull(updater.state.value.release)
+        assertNull(updater.state.value.changelog)
+        assertEquals(ChangelogStage.IDLE, updater.state.value.changelogStage)
     }
 
-    @Test fun restoredReleaseLoadsHistoryWithoutCheckingOrDownloading() = runTest {
-        var calls = 0
-        val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { error("No check") },
-            download = { _, _, _ -> error("No download") }, verify = { _, _ -> },
-            initialState = UpdateUiState(release = release), loadChangelog = { code, target ->
-                assertEquals(100L, code); assertEquals(release, target); calls++; history
-            })
-        updater.retryChangelog(); runCurrent()
-        assertEquals(1, calls)
-        assertEquals(history, updater.state.value.changelog)
+    @Test fun checkPreparesHistoryBeforeOfferingWithoutDisclosureWork() = runTest {
+        val updater = UpdateCoordinator(backgroundScope, 100, folder.newFolder(), latest = { release },
+            download = { _, _: File, _ -> }, verify = { _, _ -> })
+        updater.check()!!.join()
         assertEquals(UpdateStage.AVAILABLE, updater.state.value.stage)
+        assertEquals(ChangelogStage.AVAILABLE, updater.state.value.changelogStage)
+        assertEquals(listOf("Improve playback"), updater.state.value.changelog?.improvements)
+        assertNull(updater.retryChangelog())
+        assertEquals(ChangelogStage.AVAILABLE, updater.state.value.changelogStage)
     }
 }

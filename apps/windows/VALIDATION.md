@@ -20,35 +20,68 @@ native rendering or input acceptance.
 - [ ] Drag each marker, click its track and use Tab/arrows/Home/End. Confirm
   seeking, volume, focus visibility and accessible names remain functional.
 
-## On-demand Windows update changelog
+## Precomputed Windows update changelog
 
-Settings Updates now includes a collapsed native **What’s new** disclosure for
-the offered package, including while downloading and when ready to install.
-It groups actual source-range subjects under **Improvements** and **Fixes** and
-nests **Commit details** with original subjects/hashes and the source range.
-Empty groups are omitted. Notes loading/failure/retry is independent of download
-and explicit restart/install; no release-description body is used as history.
+Settings Updates keeps the collapsed native **What’s new** disclosure for the
+exact offered Velopack package, including while downloading and ready to install.
+**Check for updates** fetches the selected publication’s `windows-release.json`
+once alongside its Windows feed. No HTTP work starts on expanding/reopening notes
+or **Commit details**. The same response supplies the installed-to-offered range,
+including skipped Windows publications; no historical manifests, compare API,
+per-commit file requests, release bodies or other fallback are used.
 
-The notes controller caches one offer, cancels on replacement/close, and rejects
-late completions from previous offers. Its executable Core tests cover on-demand
-loading, same-offer retention, failure/retry, duplicate loads and stale completion.
-The XAML and Node contracts check the native disclosure/header/action wiring;
-these are not native rendering or keyboard acceptance.
+The manifest’s optional `changelog` is schema 1, platform `windows`, with a
+`head: {version, sha}` and numerically increasing `releases` of
+`{version, sha, commits: [{sha, subject, kind, text}]}`. Versions are canonical
+`0.1.N` (`1..65534`); identities retain full lowercase 40-character SHAs. The
+first publication is a baseline with no commits; subsequent segments contain
+exactly the difference between consecutive version counts and end at their
+publication SHA. Duplicate versions, commit/source
+identities, invalid types, incoherent null kind/text, multiline subjects,
+blank/multiline bullets, and head/source/package/platform/artifact mismatches are rejected.
+The manifest head must match the exact selected feed/package version, publication
+source and full-package SHA256/size. Manifest reads have a 1 MiB acceptance cap
+and production HTTP streams enforce that cap even without Content-Length, under
+a 30-second budget. The parser validates the whole history before exposing notes.
+
+An installed version missing from the exact release entries yields **unavailable**,
+not partial or zero-change notes. Missing/legacy/malformed manifests and optional
+asset failures do not invalidate a valid downloadable update. **Check again**
+rechecks discovery, rather than initiating a separate disclosure request; it is
+disabled during downloads and once Ready. Existing injected feed-only fixtures
+are deliberately supported with unavailable notes.
+
+`kind: improvement|fix` uses the producer’s cleaned `text` verbatim for grouped
+bullets. Null kind/text retains the original commit only in **Commit details**.
+All original subjects and SHAs are preserved, including excluded docs/CI/other-
+platform subjects. Only rendering abbreviates hashes to seven characters. Empty
+groups are omitted. Snapshots survive same-offer progress/Ready renders; rechecking
+clears prior notes and replacement snapshots cannot reuse stale notes, even at
+the same version. The native updater remains lazy at startup, disables downgrades
+and delta reconstruction, and retains explicit Download → Restart/install with
+session preservation required before restart.
 
 Run the Core and Update test projects plus
 `node --test apps/windows/validation/visual-contracts.test.mjs`. The latter imports
-`update-changelog.test.mjs`, so the existing Windows CI gates exercise the wiring.
+`update-changelog.test.mjs`. Executable tests cover skipped segments, originals vs
+summaries, invalid manifests, missing baselines, source binding, bounded HTTP,
+no disclosure network, and the real pinned Velopack `UpdateManager` check using
+an explicit fixture downloader and `TestVelopackLocator`. TrimChecks’ legacy
+feed-only fixtures remain download-capable with unavailable changelog metadata.
+These are retrieval/policy/source/compile checks, not native acceptance.
 
 Native Windows acceptance remains required:
 
 - [ ] Offer an update across skipped releases; expand **What’s new**, verify its
   complete installed-to-offered source range and grouped bullets, then expand
-  **Commit details** using keyboard and a screen reader.
+  **Commit details** using keyboard and a screen reader. Inspect HTTP tracing:
+  notes must be fetched during Check, never during either disclosure.
 - [ ] Collapse/reopen before and after Download; retain the same notes and inspect
   the Ready to install card at restored/maximized sizes and increased font scale.
-- [ ] Simulate unavailable/rate-limited history; retry notes without blocking a
-  valid download or triggering installation. Recheck/close while notes are pending
-  and verify old results never describe a replacement offer.
+- [ ] Simulate missing/malformed/rate-limited manifests and absent installed
+  baseline; verify unavailable notes while the valid update remains downloadable.
+  Use **Check again** before downloading; recheck/close during discovery and
+  verify no late completion or same-version replacement revives old notes.
 - [ ] Explicitly restart/install and verify session preservation separately.
 
 ## Collection song selection and actual Played queue — November 19, 2026

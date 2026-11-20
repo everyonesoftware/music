@@ -40,7 +40,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test single-run orchestration and publication guards
-        run: node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs
+        run: node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs tests/release-changelog.test.mjs
       - name: Select changed platforms from verified publications
         id: detect
         env:
@@ -270,7 +270,9 @@ jobs:
       - name: Publish and read back Android release assets
         id: android_publish
         if: ${{ !cancelled() && steps.android_download.outcome == 'success' }}
-        run: python3 scripts/android-release.py publish --directory dist/android --repository "$GH_REPO"
+        run: |
+          node scripts/release-changelog.mjs --platform android --directory dist/android --repository "$GH_REPO"
+          python3 scripts/android-release.py publish --directory dist/android --repository "$GH_REPO"
       - name: Download this run's verified Windows inventory
         id: windows_download
         if: ${{ !cancelled() && needs.windows.result == 'success' }}
@@ -287,7 +289,7 @@ jobs:
           WINDOWS_DOWNLOAD_OUTCOME: ${{ steps.windows_download.outcome }}
         run: |
           node scripts/windows-publication-policy.mjs
-          node scripts/publish-windows-main-release.mjs --directory dist/windows-release --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED"
+          node scripts/publish-windows-main-release.mjs --directory dist/windows-release --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED" --changelog true
       - name: Check out trusted default-branch recovery tooling
         id: trusted
         if: always() && !cancelled()

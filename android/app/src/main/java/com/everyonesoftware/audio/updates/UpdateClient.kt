@@ -38,6 +38,7 @@ data class UpdateRelease(
     val downloadUrl: String,
     val notes: String = "",
     val sourceSha: String = "",
+    val changelog: JsonObject? = null,
 )
 
 /** Deliberately carries neither a URL nor an underlying transport/parser exception. */
@@ -100,124 +101,18 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         check(manifest.tag == published.tag && manifest.count == count)
         check(Regex("[0-9a-f]{40}").matches(manifest.sha))
         val release = UpdateRelease(manifest.count, manifest.version, manifest.apk, manifest.bytes,
-            manifest.sha256, apkAsset.url, sourceSha = manifest.sha)
+            manifest.sha256, apkAsset.url, sourceSha = manifest.sha,
+            changelog = manifestObject["changelog"] as? JsonObject)
         validate(release)
         check(apkAsset.size == release.bytes)
         return release
     }
 
-    /** History failure never invalidates discovery or the independently verified APK download. */
+    /** Uses only the offered manifest fetched by discovery. No history network fallback. */
     suspend fun changelog(installedCode: Long, offered: UpdateRelease): UpdateChangelog = safe {
         validate(offered)
-        check(isSha(offered.sourceSha) && installedCode in 1 until offered.count.toLong())
-        // Exhaust the inventory before resolving either endpoint; later pages may be ambiguous.
-        val publications = inventory().filter { !it.draft && !it.prerelease && !it.publishedAt.isNullOrBlank() }
-            .filter { it.assets.any { asset -> asset.name.endsWith(".apk", ignoreCase = true) } }
-        val installedPublication = publications.single { tagCount(it.tag).toLong() == installedCode }
-        val offeredPublication = publications.single { tagCount(it.tag) == offered.count }
-        val installed = loadPublication(installedPublication)
-        val publishedOffer = loadPublication(offeredPublication)
-        check(publishedOffer == offered.copy(notes = ""))
-        for ((publication, release) in listOf(installedPublication to installed, offeredPublication to publishedOffer)) {
-            check(publication.targetCommitish == release.sourceSha)
-            check(publication.assets.map { it.name.lowercase(java.util.Locale.ROOT) }.distinct().size == publication.assets.size)
-            check(publication.assets.filter { it.name == "release.json" || it.name == release.apk }.all { it.state == "uploaded" })
-            verifyTag(publication.tag, release.sourceSha)
-        }
-        val commits = compare(installed.sourceSha, publishedOffer.sourceSha)
-        val improvements = mutableListOf<String>()
-        val fixes = mutableListOf<String>()
-        for (commit in commits) {
-            if (!relevant(commit)) continue
-            val subject = stripVerified(commit.subject)
-            val fix = Regex("^(?:fix|bugfix|hotfix)(?:\\([^)]*\\))?!?:|^fix(?:es|ed)?\\b", RegexOption.IGNORE_CASE).containsMatchIn(subject)
-            val text = subject.replace(Regex("^[a-z]+(?:\\([^)]*\\))?!?:\\s*", RegexOption.IGNORE_CASE), "")
-            check(text.isNotBlank())
-            (if (fix) fixes else improvements).add(text)
-        }
-        UpdateChangelog(installed.sourceSha, publishedOffer.sourceSha, improvements.toList(), fixes.toList(), commits)
+        requireNotNull(offered.localChangelog(installedCode))
     }
-
-    private suspend fun verifyTag(tag: String, expectedSha: String) {
-        tagCount(tag)
-        val reference = api<GitReference>(API + "git/ref/tags/$tag").value
-        check(reference.ref == "refs/tags/$tag")
-        var obj = reference.objectValue
-        val seen = mutableSetOf<String>()
-        while (obj.type == "tag") {
-            check(isSha(obj.sha) && seen.add(obj.sha) && seen.size <= 16)
-            val annotated = api<AnnotatedTag>(API + "git/tags/${obj.sha}").value
-            check(annotated.sha == obj.sha)
-            obj = annotated.objectValue
-        }
-        check(obj.type == "commit" && obj.sha == expectedSha)
-    }
-
-    private suspend fun compare(from: String, to: String): List<UpdateChangeCommit> {
-        check(isSha(from) && isSha(to) && from != to)
-        val commits = mutableListOf<UpdateChangeCommit>()
-        val seen = mutableSetOf<String>()
-        var expected: Int? = null
-        for (page in 1..MAX_COMPARE_PAGES) {
-            val response = api<Comparison>(API + "compare/$from...$to?per_page=100&page=$page")
-            val range = response.value
-            val total = range.total
-            check(range.status == "ahead" && range.behind == 0 && range.ahead == total &&
-                range.base.sha == from && range.mergeBase.sha == from)
-            check(total in 1..MAX_COMPARE_PAGES * 100 && (expected == null || expected == total))
-            expected = total
-            check(range.commits.size == minOf(100, total - commits.size))
-            for (entry in range.commits) {
-                val subject = entry.commit.message.substringBefore('\n').removeSuffix("\r")
-                check(isSha(entry.sha) && entry.sha != from && seen.add(entry.sha) && subject.isNotBlank())
-                commits.add(UpdateChangeCommit(entry.sha, subject))
-            }
-            if (commits.size == total) {
-                check(!response.hasNext && commits.last().sha == to)
-                return commits.toList()
-            }
-        }
-        error("History limit")
-    }
-
-    private suspend fun relevant(commit: UpdateChangeCommit): Boolean {
-        // Do not hide shared/unknown scopes. File evidence is needed before excluding an
-        // explicitly docs/CI/Windows subject, including renames crossing platform boundaries.
-        val unrelated = Regex("^(?:(?:docs|ci)(?:\\([^)]*\\))?!?:|[a-z]+\\(windows(?:-[^)]*)?\\)!?:|windows:)", RegexOption.IGNORE_CASE)
-        if (!unrelated.containsMatchIn(stripVerified(commit.subject))) return true
-        val paths = mutableSetOf<String>()
-        var relevant = false
-        for (page in 1..MAX_FILE_PAGES) {
-            val response = api<CommitDetail>(API + "commits/${commit.sha}?per_page=100&page=$page")
-            check(response.value.sha == commit.sha && response.value.files.size <= 100)
-            for (file in response.value.files) {
-                check(file.filename.isNotBlank() && paths.add(file.filename))
-                val currentRelevant = relevantPath(file.filename)
-                val previousRelevant = file.previous?.let { relevantPath(it) } == true
-                relevant = relevant || currentRelevant || previousRelevant
-            }
-            if (response.value.files.size < 100) {
-                check(!response.hasNext)
-                return relevant
-            }
-        }
-        error("File inventory limit")
-    }
-
-    private fun relevantPath(path: String): Boolean {
-        check(path.isNotBlank() && !path.startsWith("/") && path.split('/').none { it == ".." || it.isEmpty() })
-        return !path.startsWith("apps/windows/") && !path.startsWith("windows/") &&
-            !path.startsWith("docs/") && !path.startsWith(".github/") &&
-            !path.endsWith(".md", ignoreCase = true) && !path.endsWith(".mdx", ignoreCase = true) &&
-            path !in setOf(".gitignore", ".gitattributes")
-    }
-
-    private fun stripVerified(subject: String) = subject.replace(Regex("^(?:\\[verified\\]\\s*)+", RegexOption.IGNORE_CASE), "")
-
-    private suspend inline fun <reified T> api(url: String): ApiPage<T> = requireNotNull(fetch(url, api = true) {
-        ApiPage(json.decodeFromString<T>(readBounded(it, MAX_HISTORY_JSON).toString(Charsets.UTF_8)),
-            it.headers.values("Link").any { link -> HAS_NEXT.containsMatchIn(link) })
-    })
 
     private suspend fun inventory(): List<PublishedRelease> {
         val releases = mutableListOf<PublishedRelease>()
@@ -378,15 +273,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
             check(url.host == "api.github.com")
             val path = url.encodedPath.removePrefix("/repos/everyonesoftware/music/")
             check(url.encodedPath == "/repos/everyonesoftware/music/$path")
-            val sha = "[0-9a-f]{40}"
-            val allowed = when {
-                path == "releases" -> (1..MAX_RELEASE_PAGES).any { url.toString() == releasesUrl(it) }
-                Regex("compare/$sha\\.\\.\\.$sha").matches(path) -> (1..MAX_COMPARE_PAGES).any { url.query == "per_page=100&page=$it" }
-                Regex("commits/$sha").matches(path) -> (1..MAX_FILE_PAGES).any { url.query == "per_page=100&page=$it" }
-                Regex("git/ref/tags/v0\\.1\\.[1-9][0-9]{0,9}").matches(path) -> url.query == null
-                Regex("git/tags/$sha").matches(path) -> url.query == null
-                else -> false
-            }
+            val allowed = path == "releases" && (1..MAX_RELEASE_PAGES).any { url.toString() == releasesUrl(it) }
             check(allowed)
         } else {
             check(url.host in ASSET_HOSTS)
@@ -425,24 +312,6 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         throw UpdateException(if (failure is IOException) UpdateFailureKind.TRANSIENT else UpdateFailureKind.INVALID_METADATA)
     }
 
-    private data class ApiPage<T>(val value: T, val hasNext: Boolean)
-    @Serializable private data class GitObject(val type: String, val sha: String)
-    @Serializable private data class GitReference(val ref: String, @kotlinx.serialization.SerialName("object") val objectValue: GitObject)
-    @Serializable private data class AnnotatedTag(val sha: String, @kotlinx.serialization.SerialName("object") val objectValue: GitObject)
-    @Serializable private data class Revision(val sha: String)
-    @Serializable private data class Message(val message: String)
-    @Serializable private data class HistoryCommit(val sha: String, val commit: Message)
-    @Serializable private data class Comparison(
-        val status: String,
-        @kotlinx.serialization.SerialName("ahead_by") val ahead: Int,
-        @kotlinx.serialization.SerialName("behind_by") val behind: Int,
-        @kotlinx.serialization.SerialName("total_commits") val total: Int,
-        @kotlinx.serialization.SerialName("base_commit") val base: Revision,
-        @kotlinx.serialization.SerialName("merge_base_commit") val mergeBase: Revision,
-        val commits: List<HistoryCommit>,
-    )
-    @Serializable private data class ChangedFile(val filename: String, @kotlinx.serialization.SerialName("previous_filename") val previous: String? = null)
-    @Serializable private data class CommitDetail(val sha: String, val files: List<ChangedFile>)
     private data class FetchResult<T>(val value: T? = null, val next: HttpUrl? = null)
     @Serializable private data class PublishedRelease(
         @kotlinx.serialization.SerialName("tag_name") val tag: String,
@@ -468,13 +337,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         const val MAX_RELEASE_PAGES = 10
         fun releasesUrl(page: Int) = "https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page=$page"
         const val MAX_RELEASE_JSON = 1024 * 1024
-        const val MAX_MANIFEST_JSON = 64 * 1024
-        const val API = "https://api.github.com/repos/everyonesoftware/music/"
-        const val MAX_COMPARE_PAGES = 10
-        const val MAX_FILE_PAGES = 30
-        const val MAX_HISTORY_JSON = 4 * 1024 * 1024
-        val HAS_NEXT = Regex("""rel\s*=\s*"?next\b""", RegexOption.IGNORE_CASE)
-        fun isSha(value: String) = Regex("[0-9a-f]{40}").matches(value)
+        const val MAX_MANIFEST_JSON = 1024 * 1024
         const val MAX_APK_BYTES = 150L * 1024 * 1024
         const val MAX_REDIRECTS = 5
         val REDIRECT_STATUSES = setOf(301, 302, 303, 307, 308)

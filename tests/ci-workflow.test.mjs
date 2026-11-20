@@ -71,6 +71,15 @@ test('serialized release runs after native jobs even when an unchanged platform 
   }
 });
 
+test('final release enriches Android before draft publication and Windows only after legacy inventory validation', () => {
+  const release = workflowJobs(read('ci.yml')).release;
+  const android = release.slice(release.indexOf('- name: Publish and read back Android release assets'), release.indexOf('- name: Download this run\'s verified Windows inventory'));
+  assert.ok(android.includes('node scripts/release-changelog.mjs --platform android --directory dist/android --repository "$GH_REPO"'));
+  assert.ok(android.indexOf('scripts/release-changelog.mjs') < android.indexOf('scripts/android-release.py publish'));
+  assert.match(release, /scripts\/publish-windows-main-release\.mjs[^\n]*--changelog true/);
+  assert.ok(workflowJobs(read('ci.yml')).validate.includes('tests/release-changelog.test.mjs'));
+});
+
 test('manual platform targeting and build-only trimming remain available', () => {
   const ci = read('ci.yml');
   assert.match(ci, /component:[\s\S]*?options: \[all, android, windows, maintenance\]/);
