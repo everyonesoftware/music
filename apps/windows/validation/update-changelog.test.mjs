@@ -19,3 +19,7 @@ test('notes bind to the offered package and remain visible after download', () =
   assert.match(panel, /await notes\.LoadAsync\(\)/);
   assert.match(panel, /notes\.Dispose\(\)/);
 });
+test('commit details abbreviate displayed commit IDs and source range to seven characters', () => {
+  assert.match(panel, /NoteText\(\$"\{changes\.BaseRevision\[\.\.7\]\}…\{changes\.HeadRevision\[\.\.7\]\}"\)/);
+  assert.match(panel, /NoteText\(\$"\{commit\.Sha\[\.\.7\]\}  \{commit\.Subject\}"\)/);
+});

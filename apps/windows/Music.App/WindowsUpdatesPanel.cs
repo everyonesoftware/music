@@ -83,9 +83,9 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         AddGroup("Fixes", changes.Fixes);
         if (count == 0) notesContent.Children.Add(NoteText("No user-facing Windows changes in this source range."));
         var details = new StackPanel { Spacing = 8 };
-        details.Children.Add(NoteText($"{changes.BaseRevision}…{changes.HeadRevision}"));
+        details.Children.Add(NoteText($"{changes.BaseRevision[..7]}…{changes.HeadRevision[..7]}"));
         foreach (var commit in changes.Commits)
-            details.Children.Add(NoteText($"{commit.Sha}  {commit.Subject}"));
+            details.Children.Add(NoteText($"{commit.Sha[..7]}  {commit.Subject}"));
         notesContent.Children.Add(new Expander { Header = "Commit details", Content = details, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
     }
 
