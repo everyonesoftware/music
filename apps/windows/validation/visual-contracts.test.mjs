@@ -203,6 +203,12 @@ test('unrealized song covers release decoded images and restore their placeholde
   assert.match(unloaded, /fallback.Visibility = Visibility.Visible/);
 });
 
+test('both queue lists reserve a right gutter for the overlay scrollbar', () => {
+  assert.match(source, /InitializeQueueList\(C<ListView>\("QueueList"\)\)/);
+  assert.match(method('CreatePlayedExpander'), /InitializeQueueList\(playedList\)/);
+  assert.match(method('InitializeQueueList'), /list\.Padding = new Thickness\(0, 0, 16, 0\)/);
+});
+
 test('queue lazily realizes occurrence-identified artwork rows and reuses unchanged queue state', () => {
   const row = method('CreateQueueSong');
   assert.match(row, /SongCell\(song, copy, CancellationToken.None, connectionLease, 10\)/);

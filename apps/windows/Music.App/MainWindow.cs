@@ -951,6 +951,8 @@ public sealed partial class MainWindow : Window
     private sealed record QueueEntry(List<Song> Queue, int Index = -1, string? Heading = null, long VisitId = 0, bool Current = false, int PendingOffset = -1);
     private void InitializeQueueList(ListView list)
     {
+        // Inset the items, not the scrollbar, so the native overlay has its own gutter.
+        list.Padding = new Thickness(0, 0, 16, 0);
         var itemStyle = new Style(typeof(ListViewItem));
         itemStyle.Setters.Add(new Setter(Control.HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch));
         itemStyle.Setters.Add(new Setter(Control.PaddingProperty, new Thickness(0)));
