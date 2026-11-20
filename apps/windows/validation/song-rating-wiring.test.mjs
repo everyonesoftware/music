@@ -39,3 +39,15 @@ test('pending writes disable every rating surface and the displayed rating can b
   assert.doesNotMatch(body, /state\.Get\(song\) == rating/);
   assert.match(body, /await state\.SetAsync\(song, rating, owner\.Token\)/);
 });
+
+test('confirmed song ratings update silently while failures still show an error', () => {
+  const body = read('MainWindow.Ratings.cs');
+  assert.doesNotMatch(body, /InfoBarSeverity\.Success|\.ActionButton\s*=/);
+  assert.match(shell, /<InfoBar\b[^>]*x:Name="RatingNotice"[^>]*Severity="Error"[^>]*IsOpen="False"/);
+  const change = body.slice(body.indexOf('private async Task ChangeRatingAsync'), body.indexOf('private bool OwnsRatingResult'));
+  const [success, , failure] = change.split('catch');
+  assert.match(success, /SavePlayback\(\)/);
+  assert.doesNotMatch(success, /IsOpen\s*=\s*true/);
+  assert.match(failure, /Could not confirm the rating[^\n]+\n\s*notice\.IsOpen = true/);
+  assert.match(change, /finally[\s\S]*RefreshRatingViews\(\)/);
+});

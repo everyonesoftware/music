@@ -9,11 +9,8 @@ namespace Music.App;
 public sealed partial class MainWindow
 {
     private SongRatingSession? ratingSession;
-    private Song? ratingUndoSong;
-    private int ratingUndoValue;
     private bool ratingWritePending;
     private Flyout? activeRatingFlyout;
-    private Button undoRatingButton = null!;
     private event Action? RatingViewsChanged;
     private (Song? Song, int Value, bool Available)? playerRatingDisplay;
 
@@ -25,12 +22,6 @@ public sealed partial class MainWindow
             if (queueIndex >= 0 && queueIndex < queue.Count)
                 ShowRatingPicker(button, queue[queueIndex], connectionLease);
         };
-        undoRatingButton = new Button { Content = "Undo", Visibility = Visibility.Collapsed };
-        C<InfoBar>("RatingNotice").ActionButton = undoRatingButton;
-        undoRatingButton.Click += async (_, _) =>
-        {
-            if (ratingUndoSong is { } song) await ChangeRatingAsync(song, 0, connectionLease, undo: true);
-        };
     }
 
     private void ResetRatings(NavidromeClient? target)
@@ -39,7 +30,6 @@ public sealed partial class MainWindow
         ratingSession = null;
         if (target is not null) ratingSession = new SongRatingSession(target.RateSongAsync, target.GetSongRatingAsync);
         ratingWritePending = false;
-        ratingUndoSong = null;
         C<InfoBar>("RatingNotice").IsOpen = false;
         RefreshRatingViews();
     }
@@ -95,7 +85,6 @@ public sealed partial class MainWindow
         if (!RatingAvailable(connectionLease)) activeRatingFlyout?.Hide();
         RatingViewsChanged?.Invoke();
         UpdatePlayerRating();
-        undoRatingButton.IsEnabled = ratingUndoSong is not null && !ratingWritePending && RatingAvailable(connectionLease);
     }
 
     private void UpdatePlayerRating()
@@ -110,30 +99,26 @@ public sealed partial class MainWindow
         if (song is not null) SongRatingView.UpdateTrigger(button, song, display.Item2, display.Item3);
     }
 
-    private async Task ChangeRatingAsync(Song song, int rating, RequestGate.Lease owner, bool undo = false)
+    private async Task ChangeRatingAsync(Song song, int rating, RequestGate.Lease owner)
     {
         var state = ratingSession;
         if (state is null || !RatingAvailable(owner)) return;
-        int requested = undo ? ratingUndoValue : rating;
+
         ratingWritePending = true;
         RefreshRatingViews();
         try
         {
-            var result = undo ? await state.UndoAsync(song.Id, owner.Token) : await state.SetAsync(song, rating, owner.Token);
+            var result = await state.SetAsync(song, rating, owner.Token);
             if (!OwnsRatingResult(state, owner) || result is null) return;
-            ratingUndoSong = !undo && result.Before != result.After ? song : null;
-            ratingUndoValue = result.Before;
+            C<InfoBar>("RatingNotice").IsOpen = false;
             SavePlayback();
-            string message = result.After == 0 ? $"Rating cleared for {song.Title}." : $"{song.Title} rated {result.After} out of 5.";
-            if (result.After != requested)
-                message = $"Server confirmed: {message}";
-            ShowRatingNotice(message, InfoBarSeverity.Success);
         }
         catch (Exception) when (!OwnsRatingResult(state, owner)) { }
         catch
         {
-            ratingUndoSong = null;
-            ShowRatingNotice("Could not confirm the rating with the server. Try again when connected.", InfoBarSeverity.Error);
+            var notice = C<InfoBar>("RatingNotice");
+            notice.Message = "Could not confirm the rating with the server. Try again when connected.";
+            notice.IsOpen = true;
         }
         finally
         {
@@ -147,13 +132,4 @@ public sealed partial class MainWindow
 
     private bool OwnsRatingResult(SongRatingSession session, RequestGate.Lease owner) =>
         !closed && ReferenceEquals(session, ratingSession) && connectionGate.IsCurrent(owner);
-
-    private void ShowRatingNotice(string message, InfoBarSeverity severity)
-    {
-        var notice = C<InfoBar>("RatingNotice");
-        notice.Message = message;
-        notice.Severity = severity;
-        undoRatingButton.Visibility = ratingUndoSong is null ? Visibility.Collapsed : Visibility.Visible;
-        notice.IsOpen = true;
-    }
 }

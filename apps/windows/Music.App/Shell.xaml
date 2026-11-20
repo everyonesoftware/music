@@ -327,5 +327,5 @@
       <Button Grid.Row="0" Grid.Column="2" x:Name="QueueButton" MinHeight="48" MinWidth="48" HorizontalAlignment="Right" VerticalAlignment="Center" Background="Transparent" BorderThickness="0" Padding="12,8" AutomationProperties.Name="Queue"><StackPanel Orientation="Horizontal" Spacing="10"><FontIcon Glyph="&#xE8FD;" FontSize="26" VerticalAlignment="Center"/><TextBlock Text="Queue" FontSize="18" VerticalAlignment="Center"/></StackPanel></Button>
     </Grid>
   </Border>
-  <InfoBar Grid.Row="1" x:Name="RatingNotice" Margin="16" HorizontalAlignment="Right" VerticalAlignment="Bottom" MaxWidth="430" IsOpen="False" IsClosable="True" Canvas.ZIndex="2"/>
+  <InfoBar Grid.Row="1" x:Name="RatingNotice" Margin="16" HorizontalAlignment="Right" VerticalAlignment="Bottom" MaxWidth="430" Severity="Error" IsOpen="False" IsClosable="True" Canvas.ZIndex="2"/>
 </Grid>
