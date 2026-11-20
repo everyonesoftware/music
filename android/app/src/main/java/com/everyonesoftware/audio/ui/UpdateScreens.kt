@@ -1,7 +1,11 @@
 package com.everyonesoftware.audio.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -19,12 +23,20 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.everyonesoftware.audio.updates.UpdateStage
 import com.everyonesoftware.audio.updates.ChangelogStage
 import com.everyonesoftware.audio.updates.UpdateUiState
@@ -158,6 +170,8 @@ private fun UpdateOffer(update: UpdateUiState) {
     // Do not reset disclosures on progress, retry or changelog-stage transitions.
     var expanded by rememberSaveable(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
     var commitsExpanded by rememberSaveable(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
+    var browserUnavailable by remember(release.count, release.sha256, release.sourceSha, release.downloadUrl) { mutableStateOf(false) }
+    val onBrowserResult: (Boolean) -> Unit = { opened -> browserUnavailable = !opened }
     val changelog = update.changelog.takeIf { update.changelogStage == ChangelogStage.AVAILABLE }
     Column(Modifier.fillMaxWidth().testTag("updates-offer"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         FlowRow(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween,
@@ -174,18 +188,66 @@ private fun UpdateOffer(update: UpdateUiState) {
                     UpdateChangeGroup("Fixes", changelog.fixes)
                     UpdateDisclosure("Commit details", "updates-commit-details", commitsExpanded) { commitsExpanded = !commitsExpanded }
                     if (commitsExpanded) {
-                        Text("${changelog.fromSha} → ${changelog.toSha}", Modifier.testTag("updates-source-range"),
-                            style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        if (browserUnavailable) {
+                            Text("Could not open browser. Try again after enabling a browser.",
+                                Modifier.semantics { liveRegion = LiveRegionMode.Polite },
+                                color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+                        }
+                        CommitLink("${changelog.fromSha.take(7)}…${changelog.toSha.take(7)}",
+                            "https://github.com/everyonesoftware/music/compare/${changelog.fromSha}...${changelog.toSha}",
+                            "Compare source range on GitHub (opens browser)", onBrowserResult, Modifier.testTag("updates-source-range"))
                         changelog.commits.forEach { commit ->
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(commit.subject, style = MaterialTheme.typography.bodyMedium)
-                                Text(commit.sha.take(7), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            // Keep the original subject intact; stack rather than squeeze it at large type.
+                            val link: @Composable () -> Unit = {
+                                CommitLink(commit.sha.take(7), "https://github.com/everyonesoftware/music/commit/${commit.sha}",
+                                    "View commit ${commit.sha} on GitHub (opens browser)", onBrowserResult)
+                            }
+                            if (LocalDensity.current.fontScale >= 1.5f) {
+                                Column { link(); Text(commit.subject, style = MaterialTheme.typography.bodyMedium) }
+                            } else {
+                                Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                                    link()
+                                    Text(commit.subject, Modifier.weight(1f).padding(top = 10.dp), style = MaterialTheme.typography.bodyMedium)
+                                }
                             }
                         }
                     }
                 } else ChangelogUnavailable()
             }
         }
+    }
+}
+
+@Composable
+private fun CommitLink(label: String, url: String, description: String, onOpenResult: (Boolean) -> Unit, modifier: Modifier = Modifier) {
+    val uriHandler = LocalUriHandler.current
+    val interactions = remember { MutableInteractionSource() }
+    val focused by interactions.collectIsFocusedAsState()
+    val colors = MaterialTheme.colorScheme
+    val dark = colors.surface.luminance() < 0.5f
+    val fill = if (dark) Color(0xFF2A312C) else colors.surfaceContainerHigh
+    val edge = if (dark) Color(0xFF545E56) else colors.outlineVariant
+    val ink = if (dark) Color(0xFFBBD8C1) else colors.primary
+    val shape = RoundedCornerShape(4.dp)
+    // The compact visual box has a full native 48dp focus/keyboard/touch target.
+    Box(modifier.sizeIn(minWidth = 48.dp, minHeight = 48.dp)
+        .border(2.dp, if (focused) ink else Color.Transparent, shape)
+        .semantics { contentDescription = description }
+        .clickable(interactionSource = interactions, indication = LocalIndication.current,
+            role = Role.Button, onClickLabel = "Open in browser") {
+                val opened = try {
+                    uriHandler.openUri(url)
+                    true
+                } catch (_: IllegalArgumentException) {
+                    // AndroidUriHandler wraps an unavailable activity; never expose its URI-bearing message.
+                    false
+                }
+                onOpenResult(opened)
+            }
+        .padding(3.dp),
+        contentAlignment = Alignment.Center) {
+        Text(label, Modifier.background(fill, shape).border(1.dp, edge, shape).padding(horizontal = 6.dp, vertical = 1.dp),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace, fontSize = 14.sp, lineHeight = 20.sp), color = ink)
     }
 }
 

@@ -76,9 +76,23 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         AddGroup("Fixes", changes.Fixes);
         if (count == 0) notesContent.Children.Add(NoteText("No user-facing Windows changes in this source range."));
         var details = new StackPanel { Spacing = 8 };
-        details.Children.Add(NoteText($"{changes.BaseRevision[..7]}…{changes.HeadRevision[..7]}"));
+        details.Children.Add(CommitLink($"{changes.BaseRevision[..7]}…{changes.HeadRevision[..7]}",
+            $"https://github.com/everyonesoftware/music/compare/{changes.BaseRevision}...{changes.HeadRevision}",
+            $"Compare source range {changes.BaseRevision[..7]} to {changes.HeadRevision[..7]} on GitHub (opens in your browser)"));
         foreach (var commit in changes.Commits)
-            details.Children.Add(NoteText($"{commit.Sha[..7]}  {commit.Subject}"));
+        {
+            var row = new Grid { ColumnSpacing = 9 };
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.Children.Add(CommitLink(commit.Sha[..7],
+                $"https://github.com/everyonesoftware/music/commit/{commit.Sha}",
+                $"View commit {commit.Sha[..7]} on GitHub (opens in your browser)"));
+            var subject = NoteText(commit.Subject);
+            subject.VerticalAlignment = VerticalAlignment.Center;
+            Grid.SetColumn(subject, 1);
+            row.Children.Add(subject);
+            details.Children.Add(row);
+        }
         notesContent.Children.Add(new Expander { Header = "Commit details", Content = details, HorizontalAlignment = HorizontalAlignment.Stretch, HorizontalContentAlignment = HorizontalAlignment.Stretch });
     }
 
@@ -87,6 +101,20 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         if (entries.Count == 0) return;
         notesContent.Children.Add(new TextBlock { Text = heading, FontWeight = Microsoft.UI.Text.FontWeights.SemiBold });
         foreach (string entry in entries) notesContent.Children.Add(NoteText($"• {entry}"));
+    }
+
+    private HyperlinkButton CommitLink(string text, string uri, string accessibleName)
+    {
+        // NavigateUri is inert until native hyperlink activation; disclosures only render cached notes.
+        var link = new HyperlinkButton
+        {
+            Content = text,
+            NavigateUri = new Uri(uri),
+            Style = (Style)notesContent.Resources["CommitLinkStyle"]
+        };
+        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(link, accessibleName);
+        ToolTipService.SetToolTip(link, accessibleName);
+        return link;
     }
 
     private static TextBlock NoteText(string text) => new() { Text = text, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true };

@@ -17,6 +17,13 @@ The studies use historical version examples and real commit subjects from those 
 4. Omit the installed-to-offered arrow row, divider above What’s new, platform subtitles, “Everything since your installed version,” and helper/security paragraphs below the download/install action. Omit Android’s **Automatic update checks** section. State changes must not restore removed copy.
 5. Keep download and installation separate: **Download update → Restart and install** on Windows; **Download update → Install update** on Android. Preserve real progress, verification, error handling, and required OS confirmation. Do not infer a change to existing background-check behavior solely from removing its settings section.
 
+### Commit links
+
+- In nested **Commit details**, display each seven-character commit ID in a small rounded, dark-filled monospace box with a subtle border and sage link text. Keep original commit subjects in the normal body font.
+- Keep the source range in one matching box, showing `base7…head7`; do not split its endpoints into separate boxes.
+- Each commit box opens that commit on the Music GitHub repository; the range box opens its comparison. Construct destinations using the validated full source SHAs, not the abbreviated display strings.
+- Preserve native keyboard focus, accessible link names, readable theme contrast and phone touch targets/font scaling. Opening either disclosure must remain network-free; browser navigation occurs only when a link is activated. Links do not download or install updates.
+
 ### No-update state
 
 - Use the approved **Matched card** treatment on both platforms: the current-version heading and check action sit above a compact **Up to date** card.

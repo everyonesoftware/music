@@ -5,6 +5,8 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toPixelMap
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.unit.Density
@@ -197,7 +199,7 @@ class UpdateScreensTest {
         compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
         compose.onNodeWithText(changelog.commits.first().subject).assertExists()
         compose.onNodeWithText(changelog.commits.first().sha.take(7)).assertExists()
-        compose.onNodeWithText("${changelog.fromSha} → ${changelog.toSha}").assertExists()
+        compose.onNodeWithText("${changelog.fromSha.take(7)}…${changelog.toSha.take(7)}").assertExists()
         compose.onNodeWithText(changelog.commits.last().subject).assertExists()
         compose.onNodeWithText(release.notes).assertDoesNotExist()
         compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
@@ -208,6 +210,176 @@ class UpdateScreensTest {
         compose.onNodeWithText("Faster library browsing").assertExists()
         compose.onNodeWithTag("updates-download").performScrollTo().assertIsEnabled().performClick()
         compose.runOnIdle { assertEquals(1, actions.downloads); assertEquals(0, actions.installs); assertEquals(0, actions.changelogRetries) }
+    }
+
+    @OptIn(androidx.compose.ui.test.ExperimentalTestApi::class)
+    @Test fun commitLinksOpenFullGitHubTargetsOnlyAfterExplicitActivation() {
+        val opened = mutableListOf<String>()
+        compose.setContent {
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides object : androidx.compose.ui.platform.UriHandler {
+                override fun openUri(uri: String) { opened += uri }
+            }) { AudioTheme { AudioApp(state(updates = available()), actions) { null } } }
+        }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        compose.runOnIdle { assertEquals(emptyList<String>(), opened) }
+        val range = compose.onNodeWithTag("updates-source-range")
+        range.assertTextEquals("aaaaaaa…bbbbbbb").assertHasClickAction()
+            .performScrollTo().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+            .performTouchInput { click() }
+        compose.runOnIdle { assertEquals(listOf("https://github.com/everyonesoftware/music/compare/${changelog.fromSha}...${changelog.toSha}"), opened) }
+        InstrumentationRegistry.getInstrumentation().sendKeyDownUpSync(KeyEvent.KEYCODE_TAB)
+        changelog.commits.forEach { commit ->
+            val link = compose.onNodeWithText(commit.sha.take(7))
+            link.performScrollTo().assertHasClickAction().assertHeightIsAtLeast(48.dp).assertWidthIsAtLeast(48.dp)
+                .assertContentDescriptionContains("View commit ${commit.sha} on GitHub (opens browser)")
+                .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.RequestFocus) { it() }
+            link.assertIsFocused().performKeyInput { pressKey(androidx.compose.ui.input.key.Key.Enter) }
+            compose.onNodeWithText(commit.subject).assertExists()
+        }
+        compose.runOnIdle {
+            assertEquals(listOf("https://github.com/everyonesoftware/music/compare/${changelog.fromSha}...${changelog.toSha}") +
+                changelog.commits.map { "https://github.com/everyonesoftware/music/commit/${it.sha}" }, opened)
+            assertEquals(0, actions.changelogRetries)
+            assertEquals(0, actions.downloads)
+            assertEquals(0, actions.checks)
+        }
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        compose.onNodeWithTag("updates-commit-details").performClick()
+        compose.runOnIdle { assertEquals(5, opened.size); assertEquals(0, actions.changelogRetries) }
+    }
+
+    @Test fun unavailableBrowserShowsSafeAccessibleErrorAndLinksCanRetryWithoutChangingUpdates() {
+        val initial = state(updates = available()).copy(playing = true)
+        val current = mutableStateOf(initial)
+        val attempted = mutableListOf<String>()
+        var browserAvailable = false
+        val error = "Could not open browser. Try again after enabling a browser."
+        compose.setContent {
+            CompositionLocalProvider(androidx.compose.ui.platform.LocalUriHandler provides object : androidx.compose.ui.platform.UriHandler {
+                override fun openUri(uri: String) {
+                    attempted += uri
+                    if (!browserAvailable) throw IllegalArgumentException("No enabled handler for $uri; private dispatch details")
+                }
+            }) { AudioTheme { AudioApp(current.value, actions) { null } } }
+        }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        val targets = listOf(
+            "https://github.com/everyonesoftware/music/compare/${changelog.fromSha}...${changelog.toSha}",
+            "https://github.com/everyonesoftware/music/commit/${changelog.commits.first().sha}",
+        )
+        val links = listOf(compose.onNodeWithTag("updates-source-range"),
+            compose.onNodeWithText(changelog.commits.first().sha.take(7)))
+        links.forEachIndexed { index, link ->
+            compose.runOnIdle { browserAvailable = false }
+            repeat(2) {
+                link.performScrollTo().assertIsEnabled().performClick()
+                compose.onNodeWithText(error).performScrollTo().assertIsDisplayed()
+                    .assert(SemanticsMatcher.expectValue(SemanticsProperties.LiveRegion, androidx.compose.ui.semantics.LiveRegionMode.Polite))
+                compose.onNodeWithText("private dispatch details", substring = true).assertDoesNotExist()
+                compose.onNodeWithText(targets[index], substring = true).assertDoesNotExist()
+                compose.onNodeWithTag("updates-changelog").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+                compose.onNodeWithTag("updates-commit-details").assert(SemanticsMatcher.expectValue(SemanticsProperties.StateDescription, "Expanded"))
+                compose.onNodeWithText(changelog.commits.first().subject).assertExists()
+                compose.onNodeWithTag("updates-download").performScrollTo().assertIsEnabled()
+                compose.onNodeWithTag("mini-player").assertIsDisplayed()
+                compose.runOnIdle {
+                    assertEquals(initial, current.value)
+                    assertEquals(0, actions.downloads)
+                    assertEquals(0, actions.cancels)
+                    assertEquals(0, actions.checks)
+                    assertEquals(0, actions.changelogRetries)
+                    assertEquals(0, actions.pauses)
+                    assertEquals(0, actions.installs)
+                    assertEquals(emptyList<Screen>(), actions.screens)
+                }
+            }
+            compose.runOnIdle { browserAvailable = true }
+            link.performScrollTo().performClick()
+            compose.onNodeWithText(error).assertDoesNotExist()
+        }
+        compose.runOnIdle { assertEquals(targets.flatMap { listOf(it, it, it) }, attempted) }
+        compose.onNodeWithTag("updates-download").performScrollTo().performClick()
+        val downloading = initial.copy(updates = initial.updates.copy(stage = UpdateStage.DOWNLOADING, downloadedBytes = 5_000_000L))
+        compose.runOnIdle { assertEquals(1, actions.downloads); current.value = downloading; browserAvailable = false }
+        links.first().performScrollTo().performClick()
+        compose.onNodeWithText(error).assertExists()
+        compose.onNodeWithText("5.0 MB of 10.0 MB · 50%").assertExists()
+        compose.onNodeWithTag("updates-cancel").performScrollTo().assertIsEnabled().performClick()
+        compose.runOnIdle {
+            assertEquals(downloading, current.value)
+            assertEquals(1, actions.downloads)
+            assertEquals(1, actions.cancels)
+            assertEquals(0, actions.pauses)
+            assertEquals(0, actions.installs)
+        }
+    }
+
+    @Test fun commitBoxesUseApprovedThemeAndWrapOriginalSubjectsAtLargeFonts() {
+        val width = mutableStateOf(320.dp)
+        val scale = mutableStateOf(1f)
+        val light = mutableStateOf(false)
+        val original = "[verified] fix(android): preserve the original subject — punctuation, spacing  and a long ending"
+        val notes = changelog.copy(improvements = emptyList(), fixes = emptyList(),
+            commits = listOf(changelog.commits.first().copy(subject = original)))
+        compose.setContent {
+            val density = LocalDensity.current.density
+            CompositionLocalProvider(LocalDensity provides Density(density, scale.value)) {
+                AudioTheme {
+                    val colors = if (light.value) androidx.compose.material3.lightColorScheme(
+                        primary = androidx.compose.ui.graphics.Color(0xFF315B3B)) else androidx.compose.material3.MaterialTheme.colorScheme
+                    androidx.compose.material3.MaterialTheme(colorScheme = colors) {
+                        Box(Modifier.width(width.value)) { AudioApp(state(updates = available().copy(changelog = notes)), actions) { null } }
+                    }
+                }
+            }
+        }
+        compose.onNodeWithTag("updates-changelog").performClick()
+        compose.onNodeWithTag("updates-commit-details").performScrollTo().performClick()
+        for (isLight in listOf(false, true)) for (phoneWidth in listOf(320.dp, 412.dp)) for (fontScale in listOf(1f, 2f)) {
+            compose.runOnIdle { width.value = phoneWidth; scale.value = fontScale; light.value = isLight }
+            val code = compose.onNodeWithText("ccccccc", useUnmergedTree = true)
+            code.performScrollTo().assertIsDisplayed()
+            val layouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            code.performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(layouts) }
+            assertEquals(androidx.compose.ui.text.font.FontFamily.Monospace, layouts.single().layoutInput.style.fontFamily)
+            assertTextFits(layouts.single())
+            if (!isLight) {
+                assertEquals(androidx.compose.ui.graphics.Color(0xFFBBD8C1), layouts.single().layoutInput.style.color)
+                val pixels = compose.onNodeWithText("ccccccc").captureToImage().toPixelMap()
+                val colors = (0 until pixels.height).flatMap { y -> (0 until pixels.width).map { x -> pixels[x, y].toArgb() } }
+                org.junit.Assert.assertTrue("Dark-filled code box", colors.count { it == 0xFF2A312C.toInt() } > 20)
+                org.junit.Assert.assertTrue("Subtle code border", colors.count { it == 0xFF545E56.toInt() } > 10)
+            } else assertEquals(androidx.compose.ui.graphics.Color(0xFF315B3B), layouts.single().layoutInput.style.color)
+            val link = compose.onNodeWithText("ccccccc").assertHeightIsAtLeast(48.dp).fetchSemanticsNode()
+            val subject = compose.onNodeWithText(original).fetchSemanticsNode()
+            val offer = compose.onNodeWithTag("updates-offer").fetchSemanticsNode()
+            org.junit.Assert.assertTrue(subject.positionInRoot.x >= offer.positionInRoot.x)
+            org.junit.Assert.assertTrue(subject.positionInRoot.x + subject.size.width <= offer.positionInRoot.x + offer.size.width)
+            if (fontScale == 1f) org.junit.Assert.assertTrue("ID precedes subject on normal row", link.positionInRoot.x + link.size.width <= subject.positionInRoot.x)
+            else org.junit.Assert.assertTrue("Subject wraps below code at large fonts", link.positionInRoot.y + link.size.height <= subject.positionInRoot.y)
+            compose.onNodeWithText(original).performScrollTo().assertIsDisplayed()
+            val subjectLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            compose.onNodeWithText(original).performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(subjectLayouts) }
+            assertTextFits(subjectLayouts.single())
+            compose.onNodeWithTag("updates-source-range").performScrollTo().assertIsDisplayed()
+            val rangeLayouts = mutableListOf<androidx.compose.ui.text.TextLayoutResult>()
+            compose.onNodeWithText("aaaaaaa…bbbbbbb", useUnmergedTree = true)
+                .performSemanticsAction(androidx.compose.ui.semantics.SemanticsActions.GetTextLayoutResult) { it(rangeLayouts) }
+            assertTextFits(rangeLayouts.single())
+            capture("commit-links-${if (isLight) "light" else "dark"}-${phoneWidth.value.toInt()}-${fontScale.toInt()}")
+        }
+    }
+
+    private fun assertTextFits(layout: androidx.compose.ui.text.TextLayoutResult) {
+        // Tight-width Text can retain a wider paragraph constraint; inspect actual glyph lines.
+        org.junit.Assert.assertFalse(layout.multiParagraph.didExceedMaxLines)
+        for (line in 0 until layout.lineCount) {
+            org.junit.Assert.assertTrue("Text line clips left", layout.getLineLeft(line) >= 0f)
+            org.junit.Assert.assertTrue("Text line clips right", layout.getLineRight(line) <= layout.size.width + 0.5f)
+            org.junit.Assert.assertTrue("Text line clips bottom", layout.getLineBottom(line) <= layout.size.height + 0.5f)
+        }
     }
 
     @Test fun downloadShowsProgressAndCancelThenVerificationDoesNotOfferInstall() {
