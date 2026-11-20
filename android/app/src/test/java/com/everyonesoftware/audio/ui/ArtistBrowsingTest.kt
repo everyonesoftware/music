@@ -8,7 +8,7 @@ class ArtistBrowsingTest {
     private val songs = listOf(Song("two", "Two", "Artist"), Song("one", "One", "Artist"), Song("two", "Two", "Artist"))
     private val artist = Artist("a", "Artist")
     private fun page() = AudioUiState(booting = false, connection = Connection("c", "Music", "https://example.com", "u"), screen = Screen.ARTIST,
-        selectedArtist = artist, artistContents = ArtistContents(artist, listOf(AlbumContents(Album("album", "Album"), songs))))
+        selectedArtist = artist, artistContents = ArtistContents(artist, listOf(ArtistAlbum(Album("album", "Album"), songs))))
 
     @Test fun albumBackRetainsArtistAndOriginalOrigin() {
         for (origin in listOf(Screen.PLAYLISTS, Screen.SEARCH, Screen.ALL_ARTISTS)) {
@@ -39,7 +39,8 @@ class ArtistBrowsingTest {
             page.copy(artistError = "Failed"), page.copy(artistContents = null), page.copy(selectedArtist = artist.copy(id = "other")),
             page.copy(connection = page.connection!!.copy(id = "other-account")), page.copy(screen = Screen.SEARCH),
             page.copy(storage = page.storage.copy(settings = page.storage.settings.copy(offline = true))),
-            page.copy(artistContents = ArtistContents(artist, emptyList())))) assertNull(invalid.collectionSongSession(request))
+            page.copy(artistContents = ArtistContents(artist, emptyList())),
+            page.copy(artistContents = page.artistContents!!.copy(complete = false)))) assertNull(invalid.collectionSongSession(request))
         assertNull(page.collectionSongSession(request.copy(index = 3)))
         assertNull(page.collectionSongSession(request.copy(songs = songs.reversed().dropLast(1))))
     }

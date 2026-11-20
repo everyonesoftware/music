@@ -28,7 +28,7 @@ test('collection entry records metadata before async load; late request guards r
   const open = between(main, 'private async Task OpenCollectionAsync(', 'private void RenderDetail()');
   assert.match(open, /remember && !navigationHistory.Record\(CaptureNavigation\(\), destination\)/);
   assert.ok(open.indexOf('navigationHistory.Record') < open.indexOf('await target.GetAlbumSongsAsync'));
-  assert.match(open, /detailCollection = value/);
+  assert.match(open, /detailCollection = destination\.Collection/);
   assert.match(open, /browseGate.IsCurrent\(lease\).*target != client.*closed/);
   assert.doesNotMatch(open, /StartQueue|SelectTrack|StopPlayback|SavePlayback|player\.|queueIndex\s*=|queue\s*=/);
 });

@@ -14,7 +14,9 @@ class ArtistProtocolTest {
         )) MockWebServer().use { server ->
             server.enqueue(ok(body))
             server.enqueue(ok("\"album\":{\"id\":\"b\",\"name\":\"B\"}"))
-            assertTrue(runCatching { client(server).artist("a") }.exceptionOrNull() is NavidromeException)
+            val result = client(server).artist("a")
+            assertFalse(result.complete)
+            assertTrue(result.songs.isEmpty())
         }
         MockWebServer().use { server ->
             server.enqueue(ok("\"album\":{\"id\":\"b\",\"name\":\"B\",\"songCount\":null}"))
@@ -22,7 +24,7 @@ class ArtistProtocolTest {
         }
     }
 
-    @Test fun explicitArtistAlbumCountMustMatchTheCompleteAlbumArray() = runBlocking {
+    @Test fun contradictoryArtistAlbumCountKeepsListedAlbumsButIsIncomplete() = runBlocking {
         for (fields in listOf(
             "\"albumCount\":2,\"album\":[{\"id\":\"b\",\"name\":\"B\"}]",
             "\"albumCount\":1",
@@ -31,10 +33,11 @@ class ArtistProtocolTest {
         )) MockWebServer().use { server ->
             server.enqueue(ok("\"artist\":{\"id\":\"a\",\"name\":\"Artist\",$fields}"))
             server.enqueue(ok("\"album\":{\"id\":\"b\",\"name\":\"B\",\"song\":[]}"))
-            val failure = runCatching { client(server).artist("a") }.exceptionOrNull()
-            assertTrue("Explicit album count must reject $fields atomically", failure is NavidromeException)
-            assertEquals("The music server returned an invalid response. Check compatibility and retry.", failure?.message)
-            assertEquals("Do not resolve albums from an incomplete artist", 1, server.requestCount)
+            val result = client(server).artist("a")
+            assertFalse("Contradictory album count: $fields", result.complete)
+            val listed = fields.contains("\"album\":")
+            assertEquals(if (listed) listOf("b") else emptyList<String>(), result.albums.map { it.album.id })
+            assertEquals(if (listed) 2 else 1, server.requestCount)
         }
     }
 
@@ -43,9 +46,21 @@ class ArtistProtocolTest {
             server.enqueue(ok("\"artist\":{\"id\":\"a\",\"name\":\"Artist\",\"albumCount\":2,\"album\":[{\"id\":\"b\",\"name\":\"B\",\"songCount\":1},{\"id\":\"c\",\"name\":\"C\",\"songCount\":$count}]}"))
             server.enqueue(ok("\"album\":{\"id\":\"b\",\"name\":\"B\",\"song\":[{\"id\":\"one\",\"title\":\"One\"}]}"))
             server.enqueue(ok("\"album\":{\"id\":\"c\",\"name\":\"C\",\"song\":[{\"id\":\"two\",\"title\":\"Two\"}]}"))
-            val failure = runCatching { client(server).artist("a") }.exceptionOrNull()
-            assertTrue("A later truncated album must reject the whole artist for declared $count", failure is NavidromeException)
-            assertEquals("The music server returned an invalid response. Check compatibility and retry.", failure?.message)
+            val result = client(server).artist("a")
+            assertFalse("Contradictory summary count: $count", result.complete)
+            assertEquals(listOf("one"), result.songs.map { it.id })
+            assertEquals("C", result.albums.last().album.name)
+            assertNull(result.albums.last().songs)
+        }
+    }
+
+    @Test fun verifiedAlbumRemainsPlayableWhenItsArtistSummaryDisagrees() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(""""artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"B","songCount":2}]}"""))
+            server.enqueue(ok(""""album":{"id":"b","name":"B","songCount":1,"song":[{"id":"one","title":"One"}]}"""))
+            val result = client(server).artist("a")
+            assertFalse(result.complete)
+            assertEquals(listOf("one"), result.albums.single().songs?.map { it.id })
         }
     }
 
@@ -55,29 +70,49 @@ class ArtistProtocolTest {
             assertTrue(client(server).artist("a").songs.isEmpty())
             server.enqueue(ok("\"artist\":{\"id\":\"a\",\"name\":\"Artist\",\"albumCount\":1,\"album\":[{\"id\":\"b\",\"name\":\"B\",\"songCount\":0}]}"))
             server.enqueue(ok("\"album\":{\"id\":\"b\",\"name\":\"B\"}"))
-            assertEquals(1, client(server).artist("a").albums.size)
+            val result = client(server).artist("a")
+            assertTrue(result.complete)
+            assertEquals(emptyList<Song>(), result.albums.single().songs)
         }
     }
 
-    @Test fun laterAlbumFailureRejectsTheWholeAggregate() = runBlocking {
+    @Test fun middleAlbumFailureKeepsCardsAndConfirmedOccurrencesInServerOrder() = runBlocking {
         MockWebServer().use { server ->
-            server.enqueue(ok(""""artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"B"},{"id":"c","name":"C"}]}"""))
-            server.enqueue(ok(""""album":{"id":"b","name":"B","song":[{"id":"one","title":"One"}]}"""))
+            server.enqueue(ok(""""artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"B"},{"id":"c","name":"C"},{"id":"d","name":"D"}]}"""))
+            server.enqueue(ok(""""album":{"id":"b","name":"B","song":[{"id":"one","title":"One"},{"id":"one","title":"One"}]}"""))
             server.enqueue(MockResponse().setResponseCode(503))
-            assertTrue(runCatching { client(server).artist("a") }.exceptionOrNull() is NavidromeException)
-            assertEquals(3, server.requestCount)
+            server.enqueue(ok(""""album":{"id":"d","name":"D","song":[{"id":"two","title":"Two"}]}"""))
+            val result = client(server).artist("a")
+            assertEquals(listOf("b", "c", "d"), result.albums.map { it.album.id })
+            assertFalse(result.complete)
+            assertEquals("C", result.albums[1].album.name)
+            assertNull(result.albums[1].songs)
+            assertEquals(listOf("one", "one", "two"), result.songs.map { it.id })
+            assertEquals(4, server.requestCount)
         }
     }
 
-    @Test fun rejectsWrongArtistOrAlbumIdentityAndDuplicateAlbumSummaries() = runBlocking {
-        for (body in listOf(
-            """"artist":{"id":"wrong","name":"Artist","album":[]}""",
-            """"artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"B"},{"id":"b","name":"Again"}]}""",
-            """"artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"B"}]}"""
-        )) MockWebServer().use { server ->
-            server.enqueue(ok(body))
-            server.enqueue(ok(""""album":{"id":"wrong","name":"Wrong","song":[]}"""))
+    @Test fun wrongArtistIdentityOrRootRequestFailureIsStillAHardFailure() = runBlocking {
+        for (response in listOf(ok(""""artist":{"id":"wrong","name":"Artist","album":[{"id":"b","name":"B"}]}"""),
+            MockResponse().setResponseCode(503))) MockWebServer().use { server ->
+            server.enqueue(response)
             assertTrue(runCatching { client(server).artist("a") }.exceptionOrNull() is NavidromeException)
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun malformedRowsDuplicatesAndWrongAlbumIdentityDoNotHideHealthyAlbums() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(""""artist":{"id":"a","name":"Artist","albumCount":"invalid","album":[null,{"name":"Missing id"},{"id":"b","name":"B"},{"id":"b","name":"Repeated"},{"id":"c","name":"C"}]}"""))
+            server.enqueue(ok(""""album":{"id":"wrong","name":"Wrong","song":[{"id":"bad","title":"Wrong"}]}"""))
+            server.enqueue(ok(""""album":{"id":"c","name":"C","song":[{"id":"good","title":"Good"}]}"""))
+            val result = client(server).artist("a")
+            assertFalse(result.complete)
+            assertEquals(listOf("b", "c"), result.albums.map { it.album.id })
+            assertEquals("B", result.albums.first().album.name)
+            assertNull(result.albums.first().songs)
+            assertEquals(listOf("good"), result.songs.map { it.id })
+            assertEquals(3, server.requestCount)
         }
     }
 
@@ -90,6 +125,27 @@ class ArtistProtocolTest {
             val contents = client.artist("a")
             assertTrue(contents.albums.isEmpty())
             assertTrue(contents.songs.isEmpty())
+        }
+    }
+
+    @Test fun malformedOptionalAlbumSummaryMetadataDoesNotDropValidIdentity() = runBlocking {
+        for (failed in listOf(false, true)) MockWebServer().use { server ->
+            server.enqueue(ok(""""artist":{"id":"a","name":"Artist","albumCount":1,"album":[{"id":"b","name":"B","year":{"broken":true},"artist":17,"coverArt":true,"songCount":1}]}"""))
+            server.enqueue(if (failed) MockResponse().setResponseCode(503) else
+                ok(""""album":{"id":"b","name":"B","song":[{"id":"one","title":"One"}]}"""))
+            val result = client(server).artist("a")
+            val album = result.albums.single()
+            assertEquals(Album("b", "B", songCount = if (failed) 0 else 1), album.album)
+            assertEquals(!failed, result.complete)
+            assertEquals(if (failed) null else listOf("one"), album.songs?.map { it.id })
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun malformedAlbumDetailYearStillFailsStrictParsing() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(""""album":{"id":"b","name":"B","year":{},"song":[]}"""))
+            assertTrue(runCatching { client(server).album("b") }.exceptionOrNull() is NavidromeException)
         }
     }
 
@@ -114,12 +170,14 @@ class ArtistProtocolTest {
             assertEquals(2, attempts.get())
         }
     }
-    @Test fun rejectsIncompleteAlbumInsteadOfReturningAPartialArtistQueue() = runBlocking {
+    @Test fun truncatedAlbumIsVisibleWithoutItsUnconfirmedTracks() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(ok(""""artist":{"id":"a","name":"Artist","album":[{"id":"b","name":"Album"}]}"""))
             server.enqueue(ok(""""album":{"id":"b","name":"Album","songCount":2,"song":[{"id":"one","title":"Only one"}]}"""))
-            val failure = runCatching { client(server).artist("a") }.exceptionOrNull()
-            assertTrue("A truncated full album must fail the whole aggregate", failure is NavidromeException)
+            val result = client(server).artist("a")
+            assertFalse(result.complete)
+            assertNull(result.albums.single().songs)
+            assertTrue(result.songs.isEmpty())
         }
     }
     @Test fun aggregatesFullAlbumsPreservingDuplicateOccurrences() = runBlocking {
@@ -129,6 +187,7 @@ class ArtistProtocolTest {
             server.enqueue(ok(""""album":{"id":"first","name":"First","song":[{"id":"s3","title":"Three"}]}"""))
             val result = client(server).artist("a")
             assertEquals("Alpha", result.artist.name)
+            assertTrue(result.complete)
             assertEquals(listOf("second", "first"), result.albums.map { it.album.id })
             assertEquals(listOf("s2", "s1", "s2", "s3"), result.songs.map { it.id })
             assertEquals(listOf(3, 1), result.albums.map { it.album.songCount })

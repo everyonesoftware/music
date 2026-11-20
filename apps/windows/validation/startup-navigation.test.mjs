@@ -47,6 +47,7 @@ ${method(navigation, '    private async Task GoBackAsync()', '\n}')}
     bool closed, updatingNavigation, browsePending, detailLoading, detailError, accountChangePending, artistsLoaded;
     IReadOnlyList<Artist> artists = [];
     IReadOnlyList<Album> artistAlbums = [];
+    bool artistSongsIncomplete;
     string artistView = "albums";
     long browseResultsVersion;
     List<Song> songs = [];
@@ -303,8 +304,9 @@ record Album(string Id, string Name, string Artist = "", int Year = 2026, string
 record Playlist(string Id, string Name, int SongCount = 0, string? CoverArtId = null);
 record Song(string Id);
 record Artist(string Id, string Name, int AlbumCount = 0, string? CoverArtId = null);
-record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs);
+record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs, bool IsComplete = true);
 record ArtistNavigation(Artist Artist, string View);
+record ArtistAlbumNavigation(Album Album);
 record ConnectionProfile(string Name = "Saved", string ServerUrl = "https://example.test", string Username = "user");
 class ProfileStore { public string DirectoryPath => "."; public ConnectionProfile ReadProfile() => new(); public string ReadPassword(ConnectionProfile _) => ""; }
 class SessionStore { public SessionStore(string path) { } }
@@ -319,7 +321,7 @@ class NavidromeClient : IDisposable
     public Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken token) => Task.FromResult(new ArtistLibrary(new Artist(id, "Artist"), [], []));
     public Func<string, int, CancellationToken, Task<IReadOnlyList<Song>>> Search = (_, _, _) => Task.FromResult<IReadOnlyList<Song>>([]);
     public Task<IReadOnlyList<Song>> SearchSongsAsync(string query, int offset, int count, CancellationToken token) => Search(query, offset, token);
-    public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken token) => Task.FromResult<IReadOnlyList<Song>>([]);
+    public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken token, bool validateCount = false) => Task.FromResult<IReadOnlyList<Song>>([]);
     public Task<IReadOnlyList<Song>> GetPlaylistSongsAsync(string id, CancellationToken token) => Task.FromResult<IReadOnlyList<Song>>([]);
     public void Dispose() { }
 }

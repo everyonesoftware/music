@@ -411,18 +411,23 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     }
 
     override fun openAlbum(id: String) {
-        if (graph.networkPolicy.offline) { openOfflineCollection("album", id); return }
-        if (graph.credentials.value == null) return
-        val saved = current.value.storage.collections.firstOrNull { it.kind == "album" && it.id == id }
-        val artistAlbum = current.value.artistContents?.albums?.firstOrNull { it.album.id == id }
-        val album = artistAlbum?.album ?: current.value.albums.firstOrNull { it.id == id }
-            ?: saved?.let { Album(it.id, it.name, it.artist, it.coverArtId, it.songs.size, it.year) } ?: return
-        if (current.value.screen == Screen.ARTIST && artistAlbum != null && !current.value.artistLoading && current.value.artistError == null) {
+        val page = current.value
+        if (page.screen == Screen.ARTIST) {
+            val credentials = graph.credentials.value ?: return
+            if (page.connection != credentials.connection || graph.networkPolicy.offline || page.artistLoading || page.artistError != null) return
+            val album = page.artistContents?.takeIf { it.artist.id == page.selectedArtist?.id }
+                ?.albums?.firstOrNull { it.album.id == id } ?: return
+            val songs = album.songs ?: return
             ++albumDetailGeneration
             albumDetailOperation?.cancel()
-            current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = artistAlbum.songs, albumLoading = false, albumError = null) }
+            current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album.album, albumSongs = songs, albumLoading = false, albumError = null) }
             return
         }
+        if (graph.networkPolicy.offline) { openOfflineCollection("album", id); return }
+        if (graph.credentials.value == null) return
+        val saved = page.storage.collections.firstOrNull { it.kind == "album" && it.id == id }
+        val album = page.albums.firstOrNull { it.id == id }
+            ?: saved?.let { Album(it.id, it.name, it.artist, it.coverArtId, it.songs.size, it.year) } ?: return
         current.update { it.navigateTo(Screen.ALBUM).copy(selectedAlbum = album, albumSongs = emptyList(), albumLoading = true, albumError = null) }
         loadAlbumDetail(id, preferSaved = true)
     }

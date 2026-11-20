@@ -9,10 +9,12 @@ using Music.Core;
 namespace Music.App;
 
 internal sealed record ArtistNavigation(Artist Artist, string View);
+internal sealed record ArtistAlbumNavigation(Album Album);
 
 public sealed partial class MainWindow
 {
     private IReadOnlyList<Album> artistAlbums = [];
+    private bool artistSongsIncomplete;
     private string artistView = "albums";
 
     private async Task OpenArtistAsync(Artist artist, bool remember = true, string view = "albums")
@@ -28,7 +30,7 @@ public sealed partial class MainWindow
         detailCollection = destination.Collection;
         page = "detail"; detailTitle = artist.Name; detailIdentity = ("artist", artist.Id);
         artistView = view == "songs" ? "songs" : "albums";
-        detailSongs = []; artistAlbums = []; detailLoading = true; detailError = false;
+        detailSongs = []; artistAlbums = []; artistSongsIncomplete = false; detailLoading = true; detailError = false;
         C<TextBlock>("PageTitle").Text = artist.Name;
         C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
         C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
@@ -43,6 +45,7 @@ public sealed partial class MainWindow
             detailTitle = library.Artist.Name;
             C<TextBlock>("PageTitle").Text = detailTitle;
             artistAlbums = library.Albums; detailSongs = library.Songs.ToList();
+            artistSongsIncomplete = !library.IsComplete;
             detailLoading = false; RenderDetail();
         }
         catch (OperationCanceledException) { }
@@ -66,7 +69,8 @@ public sealed partial class MainWindow
         copy.Children.Add(Text(origin.Artist.Name, 28));
         copy.Children.Add(Text(detailLoading ? "Loading library…" : detailError ? "Could not load this artist." : $"{artistAlbums.Count} albums", 13, true));
         summary.Children.Add(copy); panel.Children.Add(summary);
-        if (detailError)
+        if (artistSongsIncomplete) panel.Children.Add(Text("Some albums or songs could not load.", 14, true));
+        if (detailError || artistSongsIncomplete)
         {
             var retry = new Button { Content = "Retry loading artist" };
             retry.Click += async (_, _) => { if (current()) await OpenArtistAsync(origin.Artist, false, artistView); };
@@ -104,7 +108,7 @@ public sealed partial class MainWindow
         {
             if (closed || accountChangePending || offlineSettings.Offline || page != "detail" || detailIdentity.Kind != "artist" ||
                 detailLoading || detailError || args.ClickedItem is not Album album || !artistAlbums.Any(a => ReferenceEquals(a, album))) return;
-            await OpenCollectionAsync(album);
+            await OpenCollectionAsync(new ArtistAlbumNavigation(album));
         };
     }
 
@@ -148,7 +152,7 @@ public sealed partial class MainWindow
     private Grid CreateArtistTransport()
     {
         var owner = connectionLease; var identity = detailIdentity; var capturedSongs = detailSongs;
-        bool available() => collectionTransport.CanStart(detailLoading, detailError, offlineSettings.Offline,
+        bool available() => collectionTransport.CanStart(detailLoading, detailError || artistSongsIncomplete, offlineSettings.Offline,
             !closed && !accountChangePending && client is not null && page == "detail" &&
             connectionGate.IsCurrent(owner) && identity == detailIdentity && ReferenceEquals(capturedSongs, detailSongs), capturedSongs.Count);
         var group = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left };

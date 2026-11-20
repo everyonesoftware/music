@@ -700,7 +700,7 @@ public sealed partial class MainWindow : Window
             if (args.ClickedItem is not DetailSong item) return;
             var owner = item.Owner;
             if (closed || accountChangePending || client is null || !connectionGate.IsCurrent(owner) ||
-                detailLoading || detailError || page != "detail" ||
+                detailLoading || detailError || page != "detail" || (detailIdentity.Kind == "artist" && artistSongsIncomplete) ||
                 item.Index < 0 || item.Index >= detailSongs.Count || !ReferenceEquals(detailSongs[item.Index], item.Song)) return;
             int index = item.Index;
             StartQueue(detailSongs, index);
@@ -723,12 +723,14 @@ public sealed partial class MainWindow : Window
         if (value is Artist artist) { await OpenArtistAsync(artist, remember); return; }
         if (client is null) return;
         if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
+        var artistAlbum = value as ArtistAlbumNavigation;
+        if (artistAlbum is not null) value = artistAlbum.Album;
         string title = value switch { Album album => album.Name, Playlist playlist => playlist.Name, _ => "" };
         if (value is not Album and not Playlist) return;
         navigationRevision++;
-        var destination = new NavigationView("detail", query, mode, value);
+        var destination = new NavigationView("detail", query, mode, artistAlbum ?? value);
         if (remember && !navigationHistory.Record(CaptureNavigation(), destination)) return;
-        detailCollection = value;
+        detailCollection = destination.Collection;
         var lease = browseGate.Begin(); var target = client;
         browsePending = false; browseResultsVersion++;
         C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;
@@ -742,7 +744,7 @@ public sealed partial class MainWindow : Window
         try
         {
             IReadOnlyList<Song> tracks;
-            if (value is Album album) tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token);
+            if (value is Album album) tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token, validateCount: artistAlbum is not null);
             else if (value is Playlist playlist) tracks = await target.GetPlaylistSongsAsync(playlist.Id, lease.Token);
             else return;
             if (!browseGate.IsCurrent(lease) || target != client || closed) return;
@@ -768,7 +770,8 @@ public sealed partial class MainWindow : Window
         var panel = C<StackPanel>("DetailHeader"); panel.Children.Clear(); panel.Spacing = 12;
         if (detailIdentity.Kind == "artist") RenderArtistHeader(panel);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
-        actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs", 13, true));
+        bool partialArtist = detailIdentity.Kind == "artist" && artistSongsIncomplete;
+        actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}", 13, true));
         panel.Children.Add(actions);
         panel.Children.Add(detailIdentity.Kind == "artist" ? CreateArtistTransport() : CreateCollectionTransport());
         var header = SongGrid(); header.MinHeight = 32;
@@ -783,6 +786,7 @@ public sealed partial class MainWindow : Window
         panel.Children.Add(header);
         var view = C<ListView>("DetailList");
         view.ItemContainerTransitions = new Microsoft.UI.Xaml.Media.Animation.TransitionCollection();
+        view.IsItemClickEnabled = !partialArtist;
         view.ItemsSource = detailSongs.Select((song, index) => new DetailSong(song, index) { Owner = connectionLease }).ToArray();
         bool showAlbums = detailIdentity.Kind == "artist" && artistView == "albums";
         view.Visibility = showAlbums ? Visibility.Collapsed : Visibility.Visible;

@@ -21,5 +21,5 @@ public sealed record PlaybackSnapshot(string ConnectionId, IReadOnlyList<Song> Q
     }
 }
 public sealed record Artist(string Id, string Name, string? CoverArtId, int AlbumCount);
-public sealed record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs);
+public sealed record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs, bool IsComplete);
 public sealed record Playlist(string Id, string Name, string? CoverArtId, int SongCount);

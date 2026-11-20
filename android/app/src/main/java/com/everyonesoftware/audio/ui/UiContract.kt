@@ -122,7 +122,8 @@ fun AudioUiState.collectionSongSession(request: CollectionSongSelection): Listen
     val name = when (request.kind) {
         "playlist" -> if (screen == Screen.PLAYLIST && selectedPlaylist?.id == request.id && !playlistLoading && playlistDetailError == null && playlistSongs == request.songs) selectedPlaylist.name else null
         "album" -> if (screen == Screen.ALBUM && selectedAlbum?.id == request.id && !albumLoading && albumError == null && albumSongs == request.songs) selectedAlbum.name else null
-        "artist" -> if (screen == Screen.ARTIST && selectedArtist?.id == request.id && !artistLoading && artistError == null && artistContents?.songs == request.songs) selectedArtist.name else null
+        "artist" -> if (screen == Screen.ARTIST && selectedArtist?.id == request.id && !artistLoading && artistError == null &&
+            artistContents?.let { it.complete && it.artist.id == request.id && it.songs == request.songs } == true) selectedArtist.name else null
         else -> null
     } ?: return null
     if (request.index !in request.songs.indices) return null

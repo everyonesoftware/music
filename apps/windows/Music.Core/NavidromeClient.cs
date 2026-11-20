@@ -63,25 +63,35 @@ public sealed class NavidromeClient : IDisposable
         return Items(root, "index").SelectMany(index => Items(index, "artist")).Select(ParseArtist).ToArray();
     }
 
-    /// <summary>Only ID3 library albums and their complete ordered tracks; never publishes a partial queue.</summary>
+    /// <summary>Returns ID3 library albums and confirmed tracks in server order, with explicit completeness for playback.</summary>
     public async Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken cancellationToken = default)
     {
         var root = Object(await Api("getArtist", cancellationToken, ("id", id)).ConfigureAwait(false), "artist");
-        var artist = ParseArtist(root);
+        var artist = new Artist(Required(root, "id"), Required(root, "name"), Text(root, "coverArt", ignoreInvalid: true), 0);
         if (artist.Id != id) throw InvalidResponse();
-        var artistAlbums = Items(root, "album").Select(x => new Album(Required(x, "id"), Required(x, "name"),
-            Text(x, "artist") ?? artist.Name, Text(x, "coverArt"), Number(x, "songCount"), Number(x, "year"))).ToArray();
-        if (artist.AlbumCount > 0 && artistAlbums.Length != artist.AlbumCount) throw InvalidResponse();
+        var summaries = ArrayItems(root, "album");
+        bool complete = CountMatches(root, "albumCount", summaries.Length);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var artistAlbums = new List<Album>();
         var tracks = new List<Song>();
-        foreach (var album in artistAlbums)
+        foreach (var summary in summaries)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var albumTracks = await GetAlbumSongsAsync(album.Id, cancellationToken).ConfigureAwait(false);
-            if (album.SongCount > 0 && albumTracks.Count != album.SongCount) throw InvalidResponse();
-            tracks.AddRange(albumTracks);
+            try
+            {
+                if (summary.ValueKind != JsonValueKind.Object) throw InvalidResponse();
+                var album = new Album(Required(summary, "id"), Required(summary, "name"), Text(summary, "artist", ignoreInvalid: true) ?? artist.Name,
+                    Text(summary, "coverArt", ignoreInvalid: true), ReadCount(summary, "songCount") ?? 0, ReadCount(summary, "year") ?? 0);
+                if (!seen.Add(album.Id)) { complete = false; continue; }
+                artistAlbums.Add(album);
+                var albumTracks = await LoadAlbumSongsAsync(album.Id, cancellationToken, validateCount: true).ConfigureAwait(false);
+                if (!CountMatches(summary, "songCount", albumTracks.Count)) throw InvalidResponse();
+                tracks.AddRange(albumTracks);
+            }
+            catch (NavidromeException) { complete = false; }
         }
         cancellationToken.ThrowIfCancellationRequested();
-        return new ArtistLibrary(artist, artistAlbums, tracks.ToArray());
+        return new ArtistLibrary(artist with { AlbumCount = artistAlbums.Count }, artistAlbums.ToArray(), tracks.ToArray(), complete);
     }
 
     private static Artist ParseArtist(JsonElement value) => new(Required(value, "id"), Required(value, "name"), Text(value, "coverArt"), Number(value, "albumCount"));
@@ -109,11 +119,16 @@ public sealed class NavidromeClient : IDisposable
         return Items(Object(root, "playlist"), "entry").Select(x => ParseSong(x)).ToArray();
     }
 
-    public async Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken cancellationToken = default, bool validateCount = false) =>
+        LoadAlbumSongsAsync(id, cancellationToken, validateCount);
+
+    private async Task<IReadOnlyList<Song>> LoadAlbumSongsAsync(string id, CancellationToken cancellationToken, bool validateCount)
     {
         var root = Object(await Api("getAlbum", cancellationToken, ("id", id)).ConfigureAwait(false), "album");
         if (Required(root, "id") != id) throw InvalidResponse();
-        return Items(root, "song").Select(x => ParseSong(x, Text(root, "artist"), Required(root, "name"), Text(root, "coverArt"))).ToArray();
+        var songs = Items(root, "song");
+        if (validateCount && !CountMatches(root, "songCount", songs.Length)) throw InvalidResponse();
+        return songs.Select(x => ParseSong(x, Text(root, "artist"), Required(root, "name"), Text(root, "coverArt"))).ToArray();
     }
 
     public async Task<IReadOnlyList<Song>> SearchSongsAsync(string query, int offset = 0, int count = 100, CancellationToken cancellationToken = default)
@@ -185,17 +200,33 @@ public sealed class NavidromeClient : IDisposable
 
     private static JsonElement[] Items(JsonElement root, string key)
     {
-        if (!root.TryGetProperty(key, out var value) || value.ValueKind == JsonValueKind.Null) return [];
-        if (value.ValueKind != JsonValueKind.Array) throw InvalidResponse();
-        var items = value.EnumerateArray().ToArray();
+        var items = ArrayItems(root, key);
         if (items.Any(x => x.ValueKind != JsonValueKind.Object)) throw InvalidResponse();
         return items;
     }
 
-    private static string? Text(JsonElement root, string key)
+    private static JsonElement[] ArrayItems(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var value) || value.ValueKind == JsonValueKind.Null) return [];
+        if (value.ValueKind != JsonValueKind.Array) throw InvalidResponse();
+        return value.EnumerateArray().ToArray();
+    }
+
+    private static int? ReadCount(JsonElement root, string key) =>
+        root.TryGetProperty(key, out var value) && value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out int count) && count >= 0 ? count : null;
+
+    private static bool CountMatches(JsonElement root, string key, int actual) =>
+        !root.TryGetProperty(key, out _) || ReadCount(root, key) == actual;
+
+    private static string? Text(JsonElement root, string key, bool ignoreInvalid = false)
     {
         if (!root.TryGetProperty(key, out var value) || value.ValueKind == JsonValueKind.Null) return null;
-        return value.ValueKind == JsonValueKind.String ? value.GetString() : throw InvalidResponse();
+        if (value.ValueKind == JsonValueKind.String)
+        {
+            try { return value.GetString(); }
+            catch (InvalidOperationException) { /* Malformed JSON string encoding. */ }
+        }
+        return ignoreInvalid ? null : throw InvalidResponse();
     }
     private static string Required(JsonElement root, string key) => Text(root, key) is { } text && !string.IsNullOrWhiteSpace(text) ? text : throw InvalidResponse();
     private static int Number(JsonElement root, string key)

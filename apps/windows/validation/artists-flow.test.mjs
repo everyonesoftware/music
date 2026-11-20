@@ -22,8 +22,9 @@ record Artist(string Id,string Name,string? CoverArtId=null,int AlbumCount=0);
 record Album(string Id,string Name);
 record Playlist(string Id,string Name);
 record Song(string Id);
-record ArtistLibrary(Artist Artist,IReadOnlyList<Album> Albums,IReadOnlyList<Song> Songs);
+record ArtistLibrary(Artist Artist,IReadOnlyList<Album> Albums,IReadOnlyList<Song> Songs,bool IsComplete=true);
 record ArtistNavigation(Artist Artist,string View);
+record ArtistAlbumNavigation(Album Album);
 class MainWindow {
 ${method(main,'    private async Task OpenCollectionAsync(', '    private void RenderDetail()')}
 ${method(main,'    private void AddCollection(', '    private FrameworkElement CardElement(')}
@@ -40,7 +41,7 @@ FrameworkElement CardElement(Card c,string l,CancellationToken t)=>new(){Tag=c.V
 FrameworkElement ArtistPortrait(Artist a,double s,CancellationToken t)=>new(); string Text(string s,int size,bool muted=false)=>s;
 RequestGate.Lease connectionLease; NavidromeClient? client=new(); bool closed,accountChangePending,browsePending,detailLoading,detailError;
 long navigationRevision,browseResultsVersion; object? detailCollection; string page="artists",query="same",mode="list",detailTitle="",artistView="albums";
-List<Song> detailSongs=[]; IReadOnlyList<Album> artistAlbums=[]; (string Kind,string Id) detailIdentity;
+List<Song> detailSongs=[]; IReadOnlyList<Album> artistAlbums=[]; bool artistSongsIncomplete; (string Kind,string Id) detailIdentity;
 OfflineSettings offlineSettings=new(); Dictionary<string,object> controls=new(); int renders;
 T C<T>(string n) where T:new() {if(!controls.ContainsKey(n))controls[n]=new T(); return (T)controls[n];}
 void SetNavigation(){} void RenderDetail(){renders++;} void RenderOfflineBrowse(){} void ClearDetail(){} void ShowError(string s){}
@@ -81,7 +82,13 @@ public static async Task Run(){
  Check(!ReferenceEquals(ordered,w.detailSongs)&&ordered.Select(s=>s.Id).SequenceEqual(new[]{"s","t","s"}),"fresh ordered queue");
  Check(shuffled.Count(s=>s.Id=="s")==2&&shuffled.Length==3,"shuffle preserves occurrences");
  w.artistView="songs";w.detailCollection=new ArtistNavigation(a,"songs");
- await w.OpenCollectionAsync(new Album("x","Album"));await w.GoBackAsync();
+ var album=new Album("x","Album");
+ w.client!.CollectionSongs=(_,strict)=>strict ? Task.FromException<IReadOnlyList<Song>>(new Exception()) : Task.FromResult<IReadOnlyList<Song>>([new Song("s")]);
+ await w.OpenCollectionAsync(new ArtistAlbumNavigation(album));
+ Check(w.detailIdentity==("album","x") && w.detailError && w.detailSongs.Count==0,"artist album open must reject a truncated result");
+ await w.OpenCollectionAsync(w.detailCollection,false);
+ Check(w.detailError && w.detailSongs.Count==0,"restoring artist album route preserves strict validation");
+ await w.GoBackAsync();
  Check(w.detailIdentity==("artist","a") && w.artistView=="songs", "album Back restores artist tab");
  await w.GoBackAsync();Check(w.page=="artists","artist Back restores list origin");
  foreach(var stale in new[]{"navigation","account","offline"}) {
@@ -101,14 +108,29 @@ public static async Task Run(){
  Check(w.starts==0,"failed retrieval never starts partial queue");
  w.client.Artist=(a,_)=>Task.FromResult(NavidromeClient.Data(new Artist(a,"Same")));
  await w.OpenCollectionAsync(a,false);Check(!w.detailError&&w.detailSongs.Count==3,"retry publishes complete result");
- Console.WriteLine("PASS artist entry / duplicate queues / album Back / stale account-navigation-offline / failure retry");
+ w=new MainWindow();w.connectionLease=w.connectionGate.Begin();
+ w.client!.Artist=(_,_)=>Task.FromResult(NavidromeClient.Data(a) with { IsComplete=false });
+ await w.OpenCollectionAsync(a);
+ Check(!w.detailError&&!w.detailLoading&&w.artistAlbums.Count==1&&w.detailSongs.Count==3,"partial result retains artist albums and confirmed songs");
+ var partial=(StackPanel)w.CreateArtistTransport().Children.Single();
+ foreach(Button b in partial.Children){Check(!b.IsEnabled,"partial artist actions must look disabled");b.Invoke();}
+ Check(w.starts==0,"partial artist actions cannot start an incomplete queue");
+ var header=new StackPanel();w.RenderArtistHeader(header);
+ Check(header.Children.Contains("Some albums or songs could not load."),"partial artist shows an explicit warning");
+ w.client.Artist=(_,_)=>Task.FromResult(NavidromeClient.Data(a));
+ header.Children.OfType<Button>().Single().Invoke();
+ Check(!w.artistSongsIncomplete&&!w.detailLoading,"retry replaces incomplete state with complete result");
+ ((Button)((StackPanel)w.CreateArtistTransport().Children.Single()).Children[0]).Invoke();
+ Check(w.starts==1,"successful retry restores playback");
+ Console.WriteLine("PASS artist entry / duplicate queues / album Back / stale account-navigation-offline / failure and partial retry");
 }
 }
 class NavidromeClient {
 public Func<string,CancellationToken,Task<ArtistLibrary>> Artist=(id,_)=>Task.FromResult(Data(new Artist(id,"Same")));
 public static ArtistLibrary Data(Artist a)=>new(a,new[]{new Album("x","Album")},new[]{new Song("s"),new Song("t"),new Song("s")});
 public Task<ArtistLibrary> GetArtistAsync(string id,CancellationToken token)=>Artist(id,token);
-public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id,CancellationToken t)=>Task.FromResult<IReadOnlyList<Song>>([new Song("s")]);
+public Func<string,bool,Task<IReadOnlyList<Song>>> CollectionSongs=(_,_)=>Task.FromResult<IReadOnlyList<Song>>([new Song("s")]);
+public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id,CancellationToken t,bool validateCount=false)=>CollectionSongs(id,validateCount);
 public Task<IReadOnlyList<Song>> GetPlaylistSongsAsync(string id,CancellationToken t)=>GetAlbumSongsAsync(id,t);
 }
 class OfflineSettings{public bool Offline;}

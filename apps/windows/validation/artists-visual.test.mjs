@@ -31,3 +31,11 @@ test('artist header has circle artwork, native placeholder, album/song views and
  assert.match(read('Shell.xaml'),/x:Name="ArtistAlbumList"/);
  assert.match(read('MainWindow.cs'),/albumView.ItemsSource = showAlbums \? artistAlbums : null/);
 });
+
+test('partial artist rows stay visible but cannot start an aggregate queue',()=>{
+ const s=read('MainWindow.cs');
+ assert.match(s,/bool partialArtist = detailIdentity.Kind == "artist" && artistSongsIncomplete/);
+ assert.match(s,/view.IsItemClickEnabled = !partialArtist/);
+ assert.match(s,/detailLoading \|\| detailError \|\| page != "detail" \|\| \(detailIdentity.Kind == "artist" && artistSongsIncomplete\)[\s\S]*?StartQueue\(detailSongs, index\)/);
+ assert.match(read('MainWindow.Artists.cs'),/await OpenCollectionAsync\(new ArtistAlbumNavigation\(album\)\)/);
+});

@@ -24,8 +24,10 @@ data class PlaylistContents(val songs: List<Song>, val validUntilMs: Long? = nul
 data class Album(val id: String, val name: String, val artist: String = "Unknown artist", val coverArtId: String? = null, val songCount: Int = 0, val year: Int = 0)
 data class AlbumContents(val album: Album, val songs: List<Song>)
 data class Artist(val id: String, val name: String, val coverArtId: String? = null, val albumCount: Int = 0)
-data class ArtistContents(val artist: Artist, val albums: List<AlbumContents>) {
-    val songs: List<Song> get() = albums.flatMap { it.songs }
+/** A listed album can be browsed only after its complete track list is verified. */
+data class ArtistAlbum(val album: Album, val songs: List<Song>?)
+data class ArtistContents(val artist: Artist, val albums: List<ArtistAlbum>, val complete: Boolean = true) {
+    val songs: List<Song> = albums.flatMap { it.songs.orEmpty() }
 }
 @Serializable
 data class ListeningSession(

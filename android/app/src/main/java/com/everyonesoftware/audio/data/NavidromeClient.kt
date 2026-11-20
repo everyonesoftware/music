@@ -37,23 +37,43 @@ class NavidromeClient(
         if (artists.map { it.id }.distinct().size != artists.size) throw invalidResponse()
         return artists
     }
-    private fun parseArtist(value: JsonObject) = Artist(value.required("id"), value.required("name"),
-        value.text("coverArt"), value.number("albumCount"))
-    /** getArtist returns the complete ID3 album list, not complete tracks. Publish atomically. */
+    private fun parseArtist(value: JsonObject, albumCount: Int = value.number("albumCount")) =
+        Artist(value.required("id"), value.required("name"), value.text("coverArt"), albumCount)
+    /** Retain valid album metadata and confirmed occurrences, but never certify a partial queue. */
     suspend fun artist(id: String): ArtistContents {
         val result = api("getArtist", "id" to id).obj("artist")
-        val artist = parseArtist(result)
+        val artist = parseArtist(result, albumCount = 0)
         if (artist.id != id) throw invalidResponse()
-        val summaries = result.items("album")
-        val albums = summaries.map(::parseAlbum)
-        if (albums.map { it.id }.distinct().size != albums.size) throw invalidResponse()
-        result.validateCount("albumCount", albums.size)
-        val contents = albums.mapIndexed { index, summary ->
-            val contents = album(summary.id)
-            summaries[index].validateCount("songCount", contents.songs.size)
-            contents
+        val listed = result["album"]
+        val summaries = listed as? JsonArray ?: JsonArray(emptyList())
+        var complete = (listed == null || listed == JsonNull || listed is JsonArray) &&
+            result.countMatches("albumCount", summaries.size)
+        val seen = mutableSetOf<String>()
+        val albums = buildList {
+            for (entry in summaries) {
+                currentCoroutineContext().ensureActive()
+                val value = entry as? JsonObject
+                val summary = value?.let {
+                    try { parseArtistAlbumSummary(it) } catch (_: NavidromeException) { null }
+                }
+                if (value == null || summary == null || !seen.add(summary.id)) {
+                    complete = false
+                    continue
+                }
+                val detail = try {
+                    val (album, countVerified) = readAlbum(summary.id)
+                    if (!value.countMatches("songCount", album.songs.size)) {
+                        complete = false
+                        if (!countVerified) throw invalidResponse()
+                    }
+                    album
+                } catch (_: NavidromeException) { null }
+                if (detail == null) complete = false
+                add(if (detail == null) ArtistAlbum(summary, null) else ArtistAlbum(detail.album, detail.songs))
+            }
         }
-        return ArtistContents(artist.copy(albumCount = contents.size), contents)
+        currentCoroutineContext().ensureActive()
+        return ArtistContents(artist.copy(albumCount = albums.size), albums, complete)
     }
     suspend fun libraries(): List<MusicLibrary> = api("getMusicFolders").obj("musicFolders").items("musicFolder").map {
         MusicLibrary(it.required("id"), it.required("name"))
@@ -81,7 +101,9 @@ class NavidromeClient(
         } while (page.size == size)
         return albums
     }
-    suspend fun album(id: String): AlbumContents {
+    suspend fun album(id: String): AlbumContents = readAlbum(id).first
+
+    private suspend fun readAlbum(id: String): Pair<AlbumContents, Boolean> {
         val result = api("getAlbum", "id" to id).obj("album")
         val album = parseAlbum(result)
         if (album.id != id) throw invalidResponse()
@@ -90,12 +112,23 @@ class NavidromeClient(
                 it.text("coverArt") ?: album.coverArtId, it.number("duration"), it.number("userRating"))
         }
         result.validateCount("songCount", songs.size)
-        return AlbumContents(album.copy(songCount = songs.size), songs)
+        return AlbumContents(album.copy(songCount = songs.size), songs) to result.containsKey("songCount")
     }
     private fun JsonObject.validateCount(key: String, actual: Int) {
-        val value = this[key] ?: return
-        val declared = (value as? JsonPrimitive)?.intOrNull ?: throw invalidResponse()
-        if (declared != actual) throw invalidResponse()
+        if (!countMatches(key, actual)) throw invalidResponse()
+    }
+    private fun JsonObject.countMatches(key: String, actual: Int): Boolean {
+        val value = this[key] ?: return true
+        return (value as? JsonPrimitive)?.intOrNull == actual
+    }
+    private fun parseArtistAlbumSummary(value: JsonObject): Album {
+        fun displayText(key: String): String? = (value[key] as? JsonPrimitive)
+            ?.takeIf { it.isString }?.contentOrNull?.takeIf { it.isNotBlank() }
+        return Album(
+            displayText("id") ?: throw invalidResponse(), displayText("name") ?: throw invalidResponse(),
+            displayText("artist") ?: "Unknown artist", displayText("coverArt"),
+            year = (value["year"] as? JsonPrimitive)?.intOrNull?.takeIf { it >= 0 } ?: 0,
+        )
     }
     private fun parseAlbum(value: JsonObject): Album = Album(
         value.required("id"), value.required("name"), value.text("artist") ?: "Unknown artist",

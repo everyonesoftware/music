@@ -56,7 +56,7 @@ class ArtistViewModelTest {
         }
     }
 
-    @Test fun failedLaterAlbumPublishesNoPartialSongsThenExplicitRetryAndUnavailableControllerKeepQueue() = fixture { f ->
+    @Test fun failedLaterAlbumKeepsConfirmedSongsBrowseableWithoutReplacingQueue() = fixture { f ->
         val fail = AtomicBoolean(true)
         val gate = CountDownLatch(1)
         val release = CountDownLatch(1)
@@ -79,13 +79,31 @@ class ArtistViewModelTest {
             assertEquals(previous, f.graph.session.value)
             assertEquals(1, detailRequests.get())
             release.countDown()
-            until { !f.model.state.value.artistLoading && f.model.state.value.artistError != null }
-            assertNull(f.model.state.value.artistContents)
-            main { f.model.playArtist("artist") }
+            until { !f.model.state.value.artistLoading && f.model.state.value.artistContents != null }
+            val partial = f.model.state.value.artistContents!!
+            assertFalse(partial.complete)
+            assertEquals(listOf("b", "a"), partial.albums.map { it.album.id })
+            assertNull(partial.albums.last().songs)
+            assertEquals(listOf("two", "two"), partial.songs.map { it.id })
+            val countBeforeBrowse = f.server.requestCount
+            main {
+                f.model.playArtist("artist")
+                f.model.playArtist("artist", true)
+                f.model.playCollectionSong(CollectionSongSelection(f.account, "artist", "artist", 1, partial.songs))
+                assertFalse(f.model.state.value.loading)
+                f.model.openAlbum("a")
+                assertEquals(Screen.ARTIST, f.model.state.value.screen)
+                f.model.openAlbum("b")
+                assertEquals(Screen.ALBUM, f.model.state.value.screen)
+                assertEquals(partial.songs, f.model.state.value.albumSongs)
+                assertEquals(Screen.ARTIST, f.model.state.value.backDestination)
+                f.model.showScreen(Screen.ARTIST)
+            }
+            assertEquals(countBeforeBrowse, f.server.requestCount)
             assertEquals(previous, f.graph.store.session(f.account))
             fail.set(false)
             main { f.model.openArtist("artist") }
-            until { !f.model.state.value.artistLoading && f.model.state.value.artistContents != null }
+            until { !f.model.state.value.artistLoading && f.model.state.value.artistContents?.complete == true }
             assertEquals(listOf("two", "two", "one"), f.model.state.value.artistContents!!.songs.map { it.id })
             assertEquals(Screen.ALL_ARTISTS, f.model.state.value.backDestination)
             main { f.model.playArtist("artist") }

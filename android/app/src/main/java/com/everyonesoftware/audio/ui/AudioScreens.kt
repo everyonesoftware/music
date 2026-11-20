@@ -404,10 +404,10 @@ private fun Artists(state: AudioUiState, actions: AudioUiActions, artworkUrl: (S
 @Composable
 private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val artist = state.selectedArtist
-    val contents = state.artistContents
+    val contents = state.artistContents?.takeIf { artist?.id == it.artist.id && !state.artistLoading && state.artistError == null && !state.storage.settings.offline }
     val songs = contents?.songs.orEmpty()
-    val ready = artist != null && contents != null && !state.artistLoading && state.artistError == null && !state.storage.settings.offline
-    val enabled = ready && songs.isNotEmpty() && !state.loading
+    val complete = contents?.complete == true
+    val enabled = complete && songs.isNotEmpty() && !state.loading
     var allSongs by rememberSaveable(state.connection?.id, artist?.id) { mutableStateOf(false) }
     Column(Modifier.fillMaxSize()) {
         CollectionDetailHeader("artist-header") { actions.showScreen(state.backDestination) }
@@ -417,7 +417,7 @@ private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkU
                     ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(180.dp).testTag("artist-artwork"))
                     Text(artist.name, Modifier.fillMaxWidth().testTag("artist-name").semantics { heading() },
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center, style = MaterialTheme.typography.headlineSmall)
-                    if (ready) Text("${contents!!.albums.size} ${if (contents.albums.size == 1) "album" else "albums"} · ${songs.size} ${if (songs.size == 1) "song" else "songs"}", Modifier.fillMaxWidth().testTag("artist-summary"),
+                    if (contents != null && complete) Text("${contents.albums.size} ${if (contents.albums.size == 1) "album" else "albums"} · ${songs.size} ${if (songs.size == 1) "song" else "songs"}", Modifier.fillMaxWidth().testTag("artist-summary"),
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Row(Modifier.testTag("artist-transport"), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         FilledIconButton({ actions.playArtist(artist.id, false) }, Modifier.size(56.dp).testTag("artist-play"), enabled = enabled, shape = CircleShape) {
@@ -437,10 +437,13 @@ private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkU
                     Hint("Loading albums and songs…")
                 }
                 if (state.storage.settings.offline) Hint("Artists are unavailable offline. Open Saved music for downloaded albums and songs.")
-                if (state.artistError != null && artist != null) TextButton({ actions.openArtist(artist.id) }, enabled = !state.storage.settings.offline) { Text("Retry artist") }
-                if (ready && songs.isEmpty()) Hint("This artist has no songs.")
+                if (contents?.complete == false) Hint("Artist load incomplete. You can browse available albums, but artist playback is unavailable.")
+                if ((state.artistError != null || contents?.complete == false) && artist != null) {
+                    TextButton({ actions.openArtist(artist.id) }, enabled = !state.storage.settings.offline) { Text("Retry artist") }
+                }
+                if (complete && songs.isEmpty()) Hint("This artist has no songs.")
             }
-            if (ready) {
+            if (contents != null) {
                 item {
                     TabRow(selectedTabIndex = if (allSongs) 1 else 0) {
                         Tab(!allSongs, { allSongs = false }, Modifier.testTag("artist-albums"), text = { Text("Albums") })
@@ -453,12 +456,17 @@ private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkU
                     SongRow(song, artworkUrl, state.storage, enabled, { actions.downloadSongs(listOf(song)) }, Modifier.testTag("artist-song-$index")) {
                         if (state.connection != null) actions.playCollectionSong(CollectionSongSelection(state.connection.id, "artist", artist!!.id, index, songs))
                     }
-                } else items(contents!!.albums, key = { it.album.id }) { album ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).testTag("album-card-${album.album.id}").clickable { actions.openAlbum(album.album.id) },
+                } else items(contents.albums, key = { it.album.id }) { album ->
+                    val count = album.songs?.size
+                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).testTag("album-card-${album.album.id}")
+                        .clickable(enabled = count != null) { actions.openAlbum(album.album.id) },
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Artwork(album.album.coverArtId, artworkUrl, Modifier.size(56.dp))
-                        Column(Modifier.weight(1f)) { Text(album.album.name, style = MaterialTheme.typography.titleMedium); Hint("${album.songs.size} ${if (album.songs.size == 1) "song" else "songs"}") }
-                        Icon(Icons.Default.ChevronRight, null)
+                        Column(Modifier.weight(1f)) {
+                            Text(album.album.name, style = MaterialTheme.typography.titleMedium)
+                            Hint(if (count == null) "Tracks unavailable" else "$count ${if (count == 1) "song" else "songs"}")
+                        }
+                        if (count != null) Icon(Icons.Default.ChevronRight, null)
                     }
                 }
             }

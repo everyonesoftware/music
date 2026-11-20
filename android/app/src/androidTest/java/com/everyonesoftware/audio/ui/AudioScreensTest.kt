@@ -65,7 +65,7 @@ class AudioScreensTest {
         val artist = com.everyonesoftware.audio.data.Artist("a", "A real artist")
         val width = mutableStateOf(320.dp)
         val state = mutableStateOf(playerState().copy(screen = Screen.ARTIST, session = null, selectedArtist = artist,
-            artistContents = com.everyonesoftware.audio.data.ArtistContents(artist, listOf(com.everyonesoftware.audio.data.AlbumContents(Album("b", "Album"), listOf(song, song))))))
+            artistContents = com.everyonesoftware.audio.data.ArtistContents(artist, listOf(com.everyonesoftware.audio.data.ArtistAlbum(Album("b", "Album"), listOf(song, song))))))
         compose.setContent { Box(Modifier.width(width.value)) { AudioTheme { AudioApp(state.value, actions) { null } } } }
         for (size in listOf(320.dp, 412.dp)) {
             compose.runOnIdle { width.value = size }
@@ -111,6 +111,35 @@ class AudioScreensTest {
         compose.onNodeWithTag("artist-play").assertIsNotEnabled()
         compose.onNodeWithText("Artists are unavailable offline. Open Saved music for downloaded albums and songs.").assertIsDisplayed()
     }
+    @Test fun incompleteArtistShowsBrowseableAlbumsAndConfirmedSongsWithoutQueueActions() {
+        val artist = com.everyonesoftware.audio.data.Artist("a", "Artist")
+        val albums = listOf(
+            com.everyonesoftware.audio.data.ArtistAlbum(Album("good", "Healthy album"), listOf(song, song)),
+            com.everyonesoftware.audio.data.ArtistAlbum(Album("bad", "Unavailable album"), null),
+        )
+        val state = playerState().copy(screen = Screen.ARTIST, session = null, selectedArtist = artist,
+            artistContents = com.everyonesoftware.audio.data.ArtistContents(artist, albums, complete = false))
+        compose.setContent { AudioTheme { AudioApp(state, actions) { null } } }
+        val list = compose.onNodeWithTag("artist-content")
+        compose.onNodeWithTag("artist-summary").assertDoesNotExist()
+        compose.onNodeWithTag("artist-play").assertIsNotEnabled()
+        compose.onNodeWithTag("artist-shuffle").assertIsNotEnabled()
+        compose.onNodeWithText("Retry artist").performScrollTo()
+        compose.onNodeWithText("This artist has no songs.").assertDoesNotExist()
+        compose.onNodeWithText("Retry artist").performClick()
+        list.performScrollToNode(hasTestTag("album-card-good"))
+        compose.onNodeWithTag("album-card-good").assertIsEnabled().performClick()
+        list.performScrollToNode(hasTestTag("album-card-bad"))
+        compose.onNodeWithTag("album-card-bad").assertIsNotEnabled()
+        compose.onNodeWithText("Tracks unavailable").assertIsDisplayed()
+        list.performScrollToNode(hasTestTag("artist-all-songs"))
+        compose.onNodeWithTag("artist-all-songs").performClick()
+        list.performScrollToNode(hasTestTag("artist-song-1"))
+        compose.onNodeWithTag("artist-song-0").assertIsNotEnabled()
+        compose.onNodeWithTag("artist-song-1").assertIsNotEnabled()
+        compose.runOnIdle { assertEquals(listOf("a"), actions.openedArtists); assertTrue(actions.collectionSongs.isEmpty()) }
+    }
+
     @Test fun collectionSongRowsSendScopedDuplicateOccurrenceAndUseEachSongsArtwork() {
         val repeated = listOf(song.copy(coverArtId = "one"), song.copy(id = "second", coverArtId = "two"), song.copy(coverArtId = "one"))
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST, selectedPlaylist = Playlist("p", "Playlist"), playlistSongs = repeated,
