@@ -6,6 +6,52 @@ namespace Music.Core.Tests;
 public sealed class WindowsUpdateTests
 {
     [Fact]
+    public async Task Startup_reserves_the_shared_gate_before_locator_work_and_only_discovers_once()
+    {
+        var locating = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseLocator = new ManualResetEventSlim();
+        var backend = new Backend { BeforeLocate = () =>
+        {
+            locating.TrySetResult();
+            Assert.True(releaseLocator.Wait(TimeSpan.FromSeconds(10)));
+        } };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        var startup = controller.CheckOnStartupAsync();
+        try
+        {
+            await locating.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(WindowsUpdatePhase.Checking, controller.Status.Phase);
+            await controller.CheckAsync();
+            await controller.CheckOnStartupAsync();
+            Assert.Equal(0, backend.Checks);
+        }
+        finally { releaseLocator.Set(); }
+        await startup;
+        await controller.CheckOnStartupAsync();
+        Assert.Equal(WindowsUpdatePhase.Available, controller.Status.Phase);
+        Assert.Equal(1, backend.Checks);
+        Assert.Equal(0, backend.Downloads);
+        Assert.Equal(0, backend.Applies);
+    }
+
+    [Fact]
+    public async Task Failed_startup_discovery_can_be_retried_manually()
+    {
+        var backend = new Backend { CheckError = true };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        await controller.CheckOnStartupAsync();
+        Assert.Equal(WindowsUpdatePhase.Error, controller.Status.Phase);
+        backend.CheckError = false;
+        await controller.CheckOnStartupAsync();
+        Assert.Equal(1, backend.Checks);
+        await controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Available, controller.Status.Phase);
+        Assert.Equal(2, backend.Checks);
+        Assert.Equal(0, backend.Downloads);
+        Assert.Equal(0, backend.Applies);
+    }
+
+    [Fact]
     public async Task Check_publishes_notes_immediately_and_preserves_snapshot_through_install()
     {
         var changes = new WindowsChangelog(new string('a', 40), new string('b', 40), ["Faster browsing"], [], []);
@@ -198,7 +244,8 @@ public sealed class WindowsUpdateTests
     {
         public WindowsChangelog? Changelog { get; set; }
         public bool Installed = true;
-        public bool IsInstalled => Installed;
+        public Action? BeforeLocate;
+        public bool IsInstalled { get { BeforeLocate?.Invoke(); return Installed; } }
         public Version CurrentVersion => new(0, 1, 10);
         public Version? Offered = new(0, 1, 20);
         public bool CheckError, DownloadError;

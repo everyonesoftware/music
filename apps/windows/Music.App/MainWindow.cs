@@ -149,6 +149,8 @@ public sealed partial class MainWindow : Window
         UpdateTransport();
     }
 
+    internal Task CheckForUpdatesOnStartupAsync() => updatesPanel.CheckOnStartupAsync();
+
     private async Task InitializeAsync()
     {
 #if MUSIC_NATIVE_ACCEPTANCE

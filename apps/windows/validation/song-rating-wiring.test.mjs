@@ -24,15 +24,22 @@ test('both native compact entry points use the same account-bound rating path', 
   assert.match(main, /queue\.Select\(ApplyConfirmedRating\)/);
 });
 
-test('the now-playing footer reserves room for the rating button before measuring long track text', () => {
-  const row = shell.match(/<Grid>\s*<Grid\.ColumnDefinitions>(?:(?!<\/Grid>)[\s\S])*?x:Name="PlayerRatingButton"[^>]*\/>/)?.[0];
-  assert.ok(row, 'missing now-playing artwork, text and rating row');
+test('the player rating sits immediately to the right of Repeat in the transport row', () => {
+  const transport = shell.match(/<StackPanel\b[^>]*Orientation="Horizontal"[^>]*>\s*<Button x:Name="NextButton"[\s\S]*?<\/StackPanel>/)?.[0] ?? '';
+  assert.match(transport, /<ToggleButton x:Name="RepeatButton"[^>]*\/>\s*<Button x:Name="PlayerRatingButton"[^>]*\/>/);
+  assert.match(transport, /x:Name="PlayerRatingButton"[^>]*\bWidth="40"[^>]*MinHeight="36"[^>]*VerticalAlignment="Center"[^>]*Visibility="Collapsed"/);
+  assert.match(shell, /x:Name="PlayerComposition"[^>]*>\s*<Grid\.ColumnDefinitions>[^\n]*<ColumnDefinition Width="1\.2\*" MinWidth="328"\/>/);
+});
+
+test('now-playing metadata uses flexible space without sharing its row with the rating', () => {
+  const row = shell.match(/<Grid>\s*<Grid\.ColumnDefinitions>(?:(?!<\/Grid>)[\s\S])*?x:Name="TrackArtist"[^>]*\/>(?:(?!<\/Grid>)[\s\S])*?<\/Grid>/)?.[0];
+  assert.ok(row, 'missing now-playing artwork and metadata row');
   const columns = Array.from(row.matchAll(/<ColumnDefinition\b[^>]*\bWidth="([^"]+)"/g), match => match[1]);
-  assert.deepEqual(columns, ['48', '*', 'Auto'], 'track text must take only the space left after artwork and rating');
+  assert.deepEqual(columns, ['48', '*'], 'track text must take only the space left after artwork');
   for (const name of ['TrackTitle', 'TrackArtist']) {
     assert.match(row, new RegExp(`<TextBlock x:Name="${name}"[^>]*TextTrimming="CharacterEllipsis"`));
   }
-  assert.match(row, /x:Name="PlayerRatingButton"[^>]*Grid\.Column="2"[^>]*MinWidth="40"/);
+  assert.doesNotMatch(row, /PlayerRatingButton/);
 });
 
 test('ratings are opted into only for Songs and playlist details', () => {

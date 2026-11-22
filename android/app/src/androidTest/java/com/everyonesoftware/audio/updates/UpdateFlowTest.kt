@@ -204,46 +204,53 @@ class UpdateFlowTest {
         assertEquals(checkedAt, restored.state.value.lastCheckedAt)
         assertTrue(restored.state.value.checkRetryAt!! > System.currentTimeMillis() + 3_500_000L)
         val count = requests.size
-        onMain { restored.onForeground() }
+        onMain {
+            restored.onForeground()
+            assertNull(restored.coordinator.checkAtLaunch())
+            assertNull(restored.coordinator.recoverCheck())
+        }
         assertEquals(count, requests.size)
         assertPreserved()
         assertUnauthenticated()
     }
 
-    @Test fun duplicateChecksShareOneRequestAndAutomaticChecksHonorCachedAttempt() = runBlocking {
+    @Test fun launchDiscoveryCoalescesManualCheckAndRepeatedLaunchWithoutDownloading() = runBlocking {
         val gate = CountDownLatch(1)
         releaseGate = gate
-        val first = withContext(Dispatchers.Main) { graph.updates.coordinator.check() }
+        onMain { model.onLaunch(); model.checkForUpdates(); model.onLaunch() }
         until { requests.size == 1 }
-        val duplicate = withContext(Dispatchers.Main) {
-            model.checkForUpdates()
-            graph.updates.coordinator.check()
-        }
-        assertSame(first, duplicate)
+        onMain { model.checkForUpdates(); model.onLaunch() }
         assertEquals(UpdateStage.CHECKING, model.state.value.updates.stage)
         assertPreserved()
         gate.countDown()
-        withTimeout(30_000) { first!!.join() }
         until { model.state.value.updates.stage == UpdateStage.AVAILABLE }
-        assertEquals(2, requests.size)
-        val automatic = withContext(Dispatchers.Main) { graph.updates.coordinator.check(automatic = true) }
-        assertNull(automatic)
-        assertEquals(2, requests.size)
+        onMain {
+            model.onLaunch()
+            assertNull(graph.updates.coordinator.recoverCheck())
+            assertNull(graph.updates.coordinator.beginInstall())
+        }
+        assertEquals(listOf(API_PATH, "$ASSET_PATH/v0.1.$count/release.json"), requests.map { it.requestUrl!!.encodedPath })
+        assertFalse(directory.exists())
         assertPreserved()
         assertUnauthenticated()
     }
 
-    @Test fun releaseMetadataAndAutomaticPreferenceRestoreWithoutAnotherNetworkRequest() = runBlocking {
+    @Test fun recentMetadataRestoresLocallyAndLegacyOptOutDoesNotSuppressTheNextLaunch() = runBlocking {
         checkViaModel()
-        onMain { model.setAutomaticUpdates(false) }
+        val preferences = app.getSharedPreferences("music_updates", Context.MODE_PRIVATE)
+        assertTrue(preferences.edit().putBoolean("automatic", false).commit())
         val before = graph.updates.state.value
         val restored = newManager()
         assertEquals(UpdateStage.AVAILABLE, restored.state.value.stage)
         assertEquals(before.release, restored.state.value.release)
         assertEquals(before.lastCheckedAt, restored.state.value.lastCheckedAt)
-        assertFalse(restored.state.value.automaticChecks)
         onMain { restored.onForeground() }
         assertEquals(2, requests.size)
+        val next = withContext(Dispatchers.Main) { restored.coordinator.checkAtLaunch() }
+        assertNotNull(next)
+        withTimeout(30_000) { next!!.join() }
+        assertEquals(4, requests.size)
+        assertFalse(preferences.contains("automatic"))
         assertPreserved()
         assertUnauthenticated()
     }

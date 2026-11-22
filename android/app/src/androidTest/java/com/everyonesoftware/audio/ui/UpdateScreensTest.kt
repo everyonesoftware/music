@@ -161,7 +161,6 @@ class UpdateScreensTest {
         compose.onNodeWithTag("updates-check").assertIsEnabled().performClick()
         compose.runOnIdle {
             assertEquals(1, actions.checks)
-            assertEquals(emptyList<Boolean>(), actions.automatic)
             assertEquals(0, actions.pauses)
             assertEquals(0, actions.downloads)
             assertEquals(0, actions.installs)
@@ -607,7 +606,6 @@ class UpdateScreensTest {
 
     private class RecordingActions : AudioUiActions {
         val screens = mutableListOf<Screen>()
-        val automatic = mutableListOf<Boolean>()
         var checks = 0
         var changelogRetries = 0
         var downloads = 0
@@ -616,7 +614,6 @@ class UpdateScreensTest {
         var pauses = 0
         override fun checkForUpdates() { checks++ }
         override fun retryUpdateChangelog() { changelogRetries++ }
-        override fun setAutomaticUpdates(enabled: Boolean) { automatic += enabled }
         override fun downloadUpdate() { downloads++ }
         override fun cancelUpdateDownload() { cancels++ }
         override fun installUpdate() { installs++ }

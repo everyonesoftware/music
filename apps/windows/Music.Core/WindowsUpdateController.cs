@@ -4,6 +4,7 @@ namespace Music.Core;
 public interface IWindowsUpdateBackend
 {
     bool IsInstalled { get; }
+    bool IsStartupCheckDeferred => false;
     Version CurrentVersion { get; }
     WindowsChangelog? Changelog => null;
     Task<Version?> CheckAsync();
@@ -11,18 +12,19 @@ public interface IWindowsUpdateBackend
     void ApplyAndRestart(Version version);
 }
 
-public enum WindowsUpdatePhase { Idle, Checking, Current, Available, Downloading, Ready, Restarting, Error, NotInstalled }
+public enum WindowsUpdatePhase { Idle, Checking, Current, Available, Downloading, Ready, Restarting, Error, NotInstalled, StartupDeferred }
 public sealed record WindowsUpdateStatus(WindowsUpdatePhase Phase, string Message, Version? Version = null, int Progress = 0, WindowsChangelog? Changelog = null);
 
-/// <summary>No work is performed until an explicit user action. Exceptions never enter UI status text.</summary>
+/// <summary>Startup only checks for an offer; download and apply require explicit actions.</summary>
 public sealed class WindowsUpdateController : IDisposable
 {
     private readonly IWindowsUpdateBackend backend;
     private readonly Func<Task> preserveSession;
     private readonly CancellationTokenSource lifetime = new();
     private int busy;
+    private int startupRequested;
     private bool disposed;
-    public WindowsUpdateStatus Status { get; private set; } = new(WindowsUpdatePhase.Idle, "Check for updates when you choose.");
+    public WindowsUpdateStatus Status { get; private set; } = new(WindowsUpdatePhase.Idle, "");
     public event Action<WindowsUpdateStatus>? Changed;
 
     public WindowsUpdateController(IWindowsUpdateBackend backend, Func<Task> preserveSession)
@@ -38,25 +40,35 @@ public sealed class WindowsUpdateController : IDisposable
         Changed?.Invoke(status);
     }
 
-    public async Task CheckAsync()
+    public Task CheckOnStartupAsync() => Interlocked.Exchange(ref startupRequested, 1) == 0
+        ? CheckAsync(background: true) : Task.CompletedTask;
+
+    public Task CheckAsync() => CheckAsync(background: false);
+
+    private async Task CheckAsync(bool background)
     {
         if (disposed || Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
         try
         {
             if (Status.Phase is WindowsUpdatePhase.Ready or WindowsUpdatePhase.Restarting) return;
-            if (!backend.IsInstalled)
-            {
-                Set(new(WindowsUpdatePhase.NotInstalled, "Install Music using the Windows installer to enable in-app updates. Loose development builds cannot update."));
-                return;
-            }
             Set(new(WindowsUpdatePhase.Checking, "Looking for a newer Windows version…"));
-            var version = await backend.CheckAsync();
-            Set(version is not null && version > backend.CurrentVersion
-                ? new(WindowsUpdatePhase.Available, $"Music {version}", version, Changelog: backend.Changelog)
-                : new(WindowsUpdatePhase.Current, "No newer Windows version is available."));
+            // Reserve the shared gate before dispatch, including lazy package locator initialization.
+            Set(await (background ? Task.Run(() => DiscoverAsync(startup: true)) : DiscoverAsync(startup: false)));
         }
         catch { Set(new(WindowsUpdatePhase.Error, "Could not check for updates. Check your internet connection or try again later (GitHub may be rate-limiting requests).")); }
         finally { Interlocked.Exchange(ref busy, 0); }
+    }
+
+    private async Task<WindowsUpdateStatus> DiscoverAsync(bool startup)
+    {
+        if (!backend.IsInstalled)
+            return new(WindowsUpdatePhase.NotInstalled, "Install Music using the Windows installer to enable in-app updates. Loose development builds cannot update.");
+        if (startup && backend.IsStartupCheckDeferred)
+            return new(WindowsUpdatePhase.StartupDeferred, "GitHub recently limited requests. You can still check for updates manually.");
+        var version = await backend.CheckAsync();
+        return version is not null && version > backend.CurrentVersion
+            ? new(WindowsUpdatePhase.Available, $"Music {version}", version, Changelog: backend.Changelog)
+            : new(WindowsUpdatePhase.Current, "No newer Windows version is available.");
     }
 
     public async Task DownloadAsync()

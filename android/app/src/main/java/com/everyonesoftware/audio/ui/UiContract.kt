@@ -155,7 +155,6 @@ interface AudioUiActions {
     fun selectMediaOutput(id: String) = Unit
     fun checkForUpdates() = Unit
     fun retryUpdateChangelog() = Unit
-    fun setAutomaticUpdates(enabled: Boolean) = Unit
     fun downloadUpdate() = Unit
     fun cancelUpdateDownload() = Unit
     fun installUpdate() = Unit

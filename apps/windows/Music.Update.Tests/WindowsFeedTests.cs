@@ -1,7 +1,11 @@
+using System.Net;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Music.App;
+using Music.Core;
 using Velopack;
+using Velopack.Locators;
 using Velopack.Logging;
 using Velopack.Sources;
 using Xunit;
@@ -10,6 +14,129 @@ namespace Music.Update.Tests;
 
 public sealed class WindowsFeedTests
 {
+    [Theory]
+    [InlineData(429, "delta", 120)]
+    [InlineData(403, "date", 120)]
+    [InlineData(403, "reset", 180)]
+    [InlineData(403, "both", 180)]
+    [InlineData(403, "bad-reset", 60)]
+    [InlineData(429, "malformed", 60)]
+    [InlineData(429, "excessive", 3600)]
+    [InlineData(403, "ordinary", 0)]
+    [InlineData(503, "delta", 0)]
+    public async Task Github_throttling_defers_only_startup_across_launches(int status, string headers, int seconds)
+    {
+        var directory = Directory.CreateTempSubdirectory("music-windows-cooldown-");
+        try
+        {
+            string marker = Path.Combine(directory.FullName, "cooldown");
+            var clock = new TestClock();
+            var inventory = new Inventory { NextResponse = new((HttpStatusCode)status) };
+            var response = inventory.NextResponse;
+            if (headers is "delta" or "both") response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+            if (headers == "date") response.Headers.RetryAfter = new RetryConditionHeaderValue(clock.Now.AddSeconds(120));
+            if (headers is "reset" or "both" or "ordinary" or "bad-reset")
+            {
+                response.Headers.Add("X-RateLimit-Remaining", headers == "ordinary" ? "4" : "0");
+                response.Headers.Add("X-RateLimit-Reset", headers == "bad-reset" ? "9223372036854775807" :
+                    clock.Now.AddSeconds(180).ToUnixTimeSeconds().ToString(System.Globalization.CultureInfo.InvariantCulture));
+            }
+            if (headers == "malformed") response.Headers.TryAddWithoutValidation("Retry-After", "invalid");
+            if (headers == "excessive") response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromDays(2));
+
+            using var http = new HttpClient(inventory);
+            var downloader = new Downloader { MainRelease = true };
+            WindowsUpdateController Launch() => new(new WindowsUpdateBackend(
+                new WindowsGithubSource(downloader, http, marker, clock),
+                new TestVelopackLocator("MusicWindows", "0.1.19", directory.FullName, logger: NullVelopackLogger.Instance)),
+                () => throw new InvalidOperationException("Startup must never apply an update."));
+
+            using (var first = Launch())
+            {
+                await first.CheckOnStartupAsync();
+                Assert.Equal(WindowsUpdatePhase.Error, first.Status.Phase);
+            }
+            Assert.Single(inventory.Requests);
+            Assert.Empty(downloader.Requests);
+
+            if (seconds > 0)
+            {
+                clock.Now = clock.Now.AddSeconds(seconds - 1);
+                using var next = Launch();
+                await next.CheckOnStartupAsync();
+                Assert.Single(inventory.Requests);
+                Assert.Empty(downloader.Requests);
+                Assert.Null(next.Status.Version);
+                Assert.Equal(WindowsUpdatePhase.StartupDeferred, next.Status.Phase);
+                await next.CheckAsync();
+                Assert.Equal(WindowsUpdatePhase.Available, next.Status.Phase);
+                Assert.Equal(2, inventory.Requests.Count);
+                clock.Now = clock.Now.AddSeconds(1);
+            }
+
+            using var after = Launch();
+            await after.CheckOnStartupAsync();
+            Assert.Equal(WindowsUpdatePhase.Available, after.Status.Phase);
+            Assert.Equal(seconds > 0 ? 3 : 2, inventory.Requests.Count);
+            Assert.All(downloader.Requests, request => Assert.EndsWith("/releases.win-x64.json", request));
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Unusable_cooldown_storage_does_not_block_future_checks(bool corruptMarker)
+    {
+        var directory = Directory.CreateTempSubdirectory("music-windows-cooldown-");
+        try
+        {
+            string file = Path.Combine(directory.FullName, "invalid");
+            File.WriteAllText(file, "not a deadline");
+            string marker = corruptMarker ? file : Path.Combine(file, "cooldown");
+            var inventory = new Inventory { NextResponse = new(HttpStatusCode.TooManyRequests) };
+            using var http = new HttpClient(inventory);
+            using var first = Launch();
+            await first.CheckOnStartupAsync();
+            Assert.Equal(WindowsUpdatePhase.Error, first.Status.Phase);
+            Assert.Single(inventory.Requests);
+            if (corruptMarker) File.WriteAllText(marker, "corrupt after throttling");
+            using var next = Launch();
+            await next.CheckOnStartupAsync();
+            Assert.Equal(WindowsUpdatePhase.Available, next.Status.Phase);
+            Assert.Equal(2, inventory.Requests.Count);
+
+            WindowsUpdateController Launch() => new(new WindowsUpdateBackend(
+                new WindowsGithubSource(new Downloader { MainRelease = true }, http, marker, new TestClock()),
+                new TestVelopackLocator("MusicWindows", "0.1.19", directory.FullName, logger: NullVelopackLogger.Instance)),
+                () => Task.CompletedTask);
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    private sealed class TestClock : TimeProvider
+    {
+        public DateTimeOffset Now = new(2025, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class Inventory : HttpMessageHandler
+    {
+        public HttpResponseMessage? NextResponse;
+        public readonly List<Uri> Requests = new();
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+        {
+            Requests.Add(request.RequestUri!);
+            Assert.Equal("https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page=1", request.RequestUri!.AbsoluteUri);
+            Assert.Contains(request.Headers.UserAgent, value => value.Product?.Name == "MusicWindows-Updates");
+            Assert.Null(request.Headers.Authorization);
+            return Task.FromResult(Interlocked.Exchange(ref NextResponse, null) ?? new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(JsonSerializer.Serialize(new[] { Release("v0.1.20") }))
+            });
+        }
+    }
+
     [Fact]
     public async Task Stable_main_release_with_windows_feed_is_an_in_app_update()
     {

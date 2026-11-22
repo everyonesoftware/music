@@ -5,6 +5,7 @@ import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
@@ -43,39 +44,38 @@ class UpdateCoordinator(
         error = if (unfinishedCheck) (initialState.checkFailure ?: UpdateFailureKind.TRANSIENT).checkMessage else null))
     val state = current.asStateFlow()
     private var request: Job? = null
-    private var automaticRequest = false
     private var lastAttemptAt = initialLastAttemptAt
     @Volatile private var generation = 0L
     private var installationOpen = false
     /** Kept for existing action callers; disclosure never performs work or network requests. */
     fun retryChangelog(): Job? = null
 
-    fun check(automatic: Boolean = false): Job? {
+    fun check(): Job? = check(CheckTrigger.MANUAL)
+    fun checkAtLaunch(): Job? = check(CheckTrigger.LAUNCH)
+    fun recoverCheck(): Job? = check(CheckTrigger.RECOVERY)
+
+    private fun check(trigger: CheckTrigger): Job? {
         if (installationOpen || request?.isCompleted == false || current.value.stage in listOf(UpdateStage.DOWNLOADING, UpdateStage.VERIFYING)) return request
         val time = now()
-        val failed = current.value.checkOutcome == UpdateCheckOutcome.FAILED
-        val interval = if (failed) retryDelay() else DAY_MS
-        val serverCooldown = failed && current.value.checkRetryAt?.let { it > time && it - time <= DAY_MS } == true
-        if (automatic && (!current.value.automaticChecks || serverCooldown ||
-                lastAttemptAt?.let { time >= it && time - it < interval } == true)) return null
-        val ticket = ++generation
         val before = current.value
+        val serverCooldown = before.checkRetryAt?.let { it > time && it - time <= DAY_MS } == true
+        if (trigger != CheckTrigger.MANUAL && serverCooldown) return null
+        if (trigger == CheckTrigger.RECOVERY && (before.checkOutcome != UpdateCheckOutcome.FAILED ||
+                lastAttemptAt?.let { time >= it && time - it < retryDelay() } == true)) return null
+        val ticket = ++generation
         lastAttemptAt = time
-        automaticRequest = automatic
-        current.update { it.copy(stage = UpdateStage.CHECKING, error = null, checkOutcome = UpdateCheckOutcome.CHECKING) }
-        save()
-        request = scope.launch {
+        val job = scope.launch(start = CoroutineStart.LAZY) {
             try {
+                save(current.value, time)
                 val found = latest(installedCode)?.takeIf { it.count > installedCode }
                 if (ticket == generation) {
                     val history = found?.localChangelog(installedCode)
-                    current.update { it.copy(release = found, changelog = history,
+                    finishCheck(current.value.copy(release = found, changelog = history,
                         changelogStage = when { found == null -> ChangelogStage.IDLE; history == null -> ChangelogStage.UNAVAILABLE; else -> ChangelogStage.AVAILABLE },
                         lastCheckedAt = now(), error = null,
                         checkOutcome = UpdateCheckOutcome.SUCCESS, checkFailure = null, consecutiveCheckFailures = 0, checkRetryAt = null,
                         downloadedBytes = if (found == before.release && before.stage == UpdateStage.READY) before.downloadedBytes else 0,
-                        stage = when { found == null -> UpdateStage.IDLE; found == before.release && before.stage == UpdateStage.READY -> UpdateStage.READY; else -> UpdateStage.AVAILABLE }) }
-                    save()
+                        stage = when { found == null -> UpdateStage.IDLE; found == before.release && before.stage == UpdateStage.READY -> UpdateStage.READY; else -> UpdateStage.AVAILABLE }), time)
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
@@ -86,28 +86,23 @@ class UpdateCoordinator(
                         before.checkRetryAt?.takeIf { it > failedAt },
                         (failure as? UpdateException)?.retryAfterMs?.let { failedAt + it.coerceIn(0L, DAY_MS) },
                     ).maxOrNull()
-                    current.update { it.copy(stage = if (before.stage == UpdateStage.READY) UpdateStage.READY else UpdateStage.ERROR,
+                    finishCheck(current.value.copy(stage = if (before.stage == UpdateStage.READY) UpdateStage.READY else UpdateStage.ERROR,
                         consecutiveCheckFailures = before.consecutiveCheckFailures.coerceIn(0, 4) + 1,
                         checkOutcome = UpdateCheckOutcome.FAILED, checkFailure = kind,
                         checkRetryAt = retryAt,
-                        error = kind.checkMessage) }
-                    save()
+                        error = kind.checkMessage), time)
                 }
             } finally {
-                if (ticket == generation && current.value.stage == UpdateStage.CHECKING) current.value = before.copy(automaticChecks = current.value.automaticChecks)
+                if (ticket == generation && current.value.stage == UpdateStage.CHECKING) {
+                    current.update { before.copy(installPermissionRequired = it.installPermissionRequired) }
+                }
             }
         }
-        return request
-    }
-
-    fun setAutomaticChecks(enabled: Boolean) {
-        current.update { it.copy(automaticChecks = enabled) }
-        if (!enabled && automaticRequest && current.value.stage == UpdateStage.CHECKING) {
-            ++generation
-            request?.cancel()
-            current.update { it.copy(stage = if (it.release != null) UpdateStage.AVAILABLE else UpdateStage.IDLE) }
-        }
-        save()
+        // All entry points are main-thread confined. Reserve before publishing state or scheduling work.
+        request = job
+        current.update { it.copy(stage = UpdateStage.CHECKING, error = null, checkOutcome = UpdateCheckOutcome.CHECKING) }
+        job.start()
+        return job
     }
 
     fun download(): Job? {
@@ -188,7 +183,17 @@ class UpdateCoordinator(
             .coerceAtMost(15 * RETRY_MS)
     }
 
-    private fun save() { persist(current.value, lastAttemptAt) }
+    private suspend fun save(snapshot: UpdateUiState, attemptAt: Long) = withContext(io) {
+        persist(snapshot, attemptAt)
+    }
+
+    private suspend fun finishCheck(result: UpdateUiState, attemptAt: Long) {
+        // Keep the check reserved and visible as Checking until its final snapshot is saved.
+        save(result, attemptAt)
+        current.update { result.copy(installPermissionRequired = it.installPermissionRequired) }
+    }
+
+    private enum class CheckTrigger { MANUAL, LAUNCH, RECOVERY }
 
     private companion object {
         const val DAY_MS = 86_400_000L

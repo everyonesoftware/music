@@ -71,6 +71,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private var generation = 0L
     private var firstLibrarySetup = false
     private var foreground = false
+    private var launchCheckRequested = false
     private var installOperation: Job? = null
     private val installRequests = Channel<Intent>(Channel.RENDEZVOUS)
     val installIntents = installRequests.receiveAsFlow()
@@ -470,18 +471,28 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
+    // The retained ViewModel represents one UI launch, including configuration recreation.
+    fun onLaunch() {
+        if (launchCheckRequested) return
+        launchCheckRequested = true
+        graph.updates.coordinator.checkAtLaunch()
+    }
+
     fun onForeground() {
         foreground = true
         mediaOutput?.start()
         mediaOutput?.refresh()
-        if (connectController) graph.updates.onForeground()
+        if (connectController) {
+            graph.updates.onForeground()
+            graph.updates.coordinator.recoverCheck()
+        }
         recoverBrowsing(refreshLibrary = true)
     }
 
     internal fun onNetworkRecovered() {
         if (!foreground) return
         recoverBrowsing()
-        if (connectController) graph.updates.coordinator.check(automatic = true)
+        if (connectController) graph.updates.coordinator.recoverCheck()
     }
 
     private fun recoverBrowsing(refreshLibrary: Boolean = false) {
@@ -596,7 +607,6 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
 
     override fun checkForUpdates() { graph.updates.coordinator.check() }
     override fun retryUpdateChangelog() { graph.updates.coordinator.retryChangelog() }
-    override fun setAutomaticUpdates(enabled: Boolean) { graph.updates.coordinator.setAutomaticChecks(enabled) }
     override fun downloadUpdate() { graph.updates.coordinator.download() }
     override fun cancelUpdateDownload() { graph.updates.coordinator.cancelDownload() }
     override fun pauseForUpdate() = playerCommand { it.pause() }

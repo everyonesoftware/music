@@ -9,6 +9,14 @@ const panel = read('WindowsUpdatesPanel.cs');
 const main = read('MainWindow.cs');
 const controller = read('../Music.Core/WindowsUpdateController.cs');
 
+test('normal Windows activation starts discovery without waiting for account restoration', () => {
+  const program = read('Program.cs');
+  assert.match(program, /window\.Activate\(\);[\s\S]*?_ = window\.CheckForUpdatesOnStartupAsync\(\);/);
+  assert.match(main, /CheckForUpdatesOnStartupAsync\(\) => updatesPanel\.CheckOnStartupAsync\(\)/);
+  assert.match(panel, /CheckOnStartupAsync\(\) => controller\.CheckOnStartupAsync\(\)/);
+  assert.match(program, /SetAutoApplyOnStartup\(false\)/);
+});
+
 test('installed assembly version labels the update header without duplicate product copy', () => {
   assert.match(main, /C<TextBlock>\("VersionText"\)\.Text = \$"Current Version: \{Assembly\.GetExecutingAssembly\(\)\.GetName\(\)\.Version\?\.ToString\(3\)\}"/);
 });
@@ -21,7 +29,7 @@ test('up-to-date title is rendered only for a completed current check; other pha
     ['Current', 'Up to date'], ['Available', 'Update available'],
     ['Downloading', 'Downloading update'], ['Ready', 'Ready to install'],
     ['Restarting', 'Restarting'], ['Error', 'Update failed'],
-    ['NotInstalled', 'Updates unavailable'],
+    ['NotInstalled', 'Updates unavailable'], ['StartupDeferred', 'Automatic check deferred'],
   ]) assert.ok(panel.includes(`WindowsUpdatePhase.${phase} => "${title}"`), `${phase} needs its own truthful title`);
   assert.match(panel, /status.Text = state.Phase == WindowsUpdatePhase.Downloading \? .*state.Progress.* : state.Message/);
   assert.doesNotMatch(controller, /Windows preview|preview updates|preview releases/);

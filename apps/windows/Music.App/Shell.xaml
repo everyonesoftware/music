@@ -183,7 +183,7 @@
                   <TextBlock x:Name="UpdateTitle" Text="Not checked yet" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
                   <TextBlock Grid.Column="1" x:Name="UpdateOfferedVersion" FontSize="18" VerticalAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"/>
                 </Grid>
-                <TextBlock x:Name="UpdateStatus" Text="Check for updates when you choose." Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
+                <TextBlock x:Name="UpdateStatus" Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                 <Expander x:Name="UpdateChangelog" Header="What’s new" IsExpanded="False" Visibility="Collapsed" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
                   <StackPanel Spacing="12">
                     <TextBlock x:Name="ChangelogStatus" Text="Check for updates to load changes." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
@@ -297,10 +297,11 @@
     </Border>
   </Grid>
   <Border Grid.Row="2" Background="#242c28" BorderBrush="#39453d" BorderThickness="0,1,0,0" Padding="18,10">
-    <Grid x:Name="PlayerComposition" ColumnSpacing="18" RowSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="1.2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <!-- Reserve the full transport width, with equal space on each side of Play. -->
+    <Grid x:Name="PlayerComposition" ColumnSpacing="18" RowSpacing="4"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="1.2*" MinWidth="328"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
       <Grid.RowDefinitions><RowDefinition Height="54"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <StackPanel Grid.RowSpan="2" Spacing="0" VerticalAlignment="Center">
-        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*" MaxWidth="240"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Border Width="44" Height="44" Background="#354239" CornerRadius="4"><Image x:Name="CurrentArt" Stretch="UniformToFill"/></Border><StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center"><TextBlock x:Name="TrackTitle" Text="Nothing playing" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="TrackArtist" Foreground="{StaticResource Muted}" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel><Button x:Name="PlayerRatingButton" Grid.Column="2" Margin="6,0,0,0" MinWidth="40" MinHeight="36" Padding="4,0" VerticalAlignment="Center" Visibility="Collapsed" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Rate current song"/></Grid>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*" MaxWidth="240"/></Grid.ColumnDefinitions><Border Width="44" Height="44" Background="#354239" CornerRadius="4"><Image x:Name="CurrentArt" Stretch="UniformToFill"/></Border><StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center"><TextBlock x:Name="TrackTitle" Text="Nothing playing" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/><TextBlock x:Name="TrackArtist" Foreground="{StaticResource Muted}" FontSize="12" TextTrimming="CharacterEllipsis"/></StackPanel></Grid>
         <Button x:Name="OutputButton" HorizontalAlignment="Left" HorizontalContentAlignment="Left" MaxWidth="320" MinWidth="0" MinHeight="48" Background="Transparent" Foreground="{StaticResource Sage}" BorderThickness="0" Padding="4,0" CornerRadius="24" AutomationProperties.Name="Choose audio output, System default output">
           <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><FontIcon Glyph="&#xE7F4;" FontSize="22" VerticalAlignment="Center"/><StackPanel Grid.Column="1" VerticalAlignment="Center"><TextBlock Text="Media output" FontSize="12" Foreground="{StaticResource Muted}"/><TextBlock x:Name="OutputName" Text="System default output" FontSize="13" TextTrimming="CharacterEllipsis" Foreground="{StaticResource Sage}"/></StackPanel></Grid>
         </Button>
@@ -321,6 +322,7 @@
             <PathIcon Width="16" Height="16" Data="M 0,0 L 12,8 L 0,16 Z M 14,0 L 16,0 L 16,16 L 14,16 Z"/>
           </Button>
           <ToggleButton x:Name="RepeatButton" Content="&#xE8EE;" Style="{StaticResource TransportToggleStyle}" VerticalAlignment="Center" AutomationProperties.Name="Repeat queue"/>
+          <Button x:Name="PlayerRatingButton" Width="40" MinHeight="36" Padding="4,0" VerticalAlignment="Center" Visibility="Collapsed" Background="Transparent" BorderThickness="0" AutomationProperties.Name="Rate current song"/>
         </StackPanel>
       </Grid>
       <Grid Grid.Row="1" Grid.Column="1" MaxWidth="620" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="36"/></Grid.ColumnDefinitions><TextBlock x:Name="ElapsedText" Text="0:00" Foreground="{StaticResource Muted}" VerticalAlignment="Center" FontSize="11"/><Slider Grid.Column="1" x:Name="SeekSlider" Minimum="0" Maximum="1" IsEnabled="False" AutomationProperties.Name="Playback position"/><TextBlock Grid.Column="2" x:Name="DurationText" Text="0:00" Foreground="{StaticResource Muted}" VerticalAlignment="Center" HorizontalAlignment="Right" FontSize="11"/></Grid>

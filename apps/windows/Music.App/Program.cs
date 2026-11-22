@@ -52,7 +52,11 @@ public sealed partial class MusicApplication : Application, Microsoft.UI.Xaml.Ma
         window.Activate();
 #if MUSIC_NATIVE_ACCEPTANCE
         if (NativeAcceptance.IsRequested)
+        {
             window.DispatcherQueue.TryEnqueue(() => _ = window.RunNativeAcceptanceAsync());
+            return;
+        }
 #endif
+        _ = window.CheckForUpdatesOnStartupAsync();
     }
 }

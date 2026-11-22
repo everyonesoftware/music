@@ -1,7 +1,11 @@
+using System.Buffers.Binary;
+using System.Globalization;
+using System.Net;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Music.Core;
 using Velopack;
+using Velopack.Locators;
 using Velopack.Logging;
 using Velopack.Sources;
 
@@ -17,13 +21,103 @@ public sealed class WindowsGithubSource : GithubSource
     private WindowsChangelogClient? changelog;
     private VelopackAsset? manifestOffer;
     private static readonly HttpClient PublicManifestHttp = new() { Timeout = TimeSpan.FromSeconds(30) };
+    private static readonly HttpClient PublicInventoryHttp = new(new HttpClientHandler { AutomaticDecompression = DecompressionMethods.All });
+    private static readonly TimeSpan MaximumCooldown = TimeSpan.FromHours(1);
     private readonly HttpClient? manifestHttp;
+    private readonly HttpClient? inventoryHttp;
+    private readonly string? cooldownPath;
+    private readonly TimeProvider clock = TimeProvider.System;
 
     public WindowsGithubSource(IFileDownloader? downloader = null, HttpClient? manifestClient = null) : base(Repository, accessToken: null, prerelease: true, downloader: downloader)
     {
         // Production streams under a byte/time budget. Injected Velopack fixtures may reuse their
         // external boundary; they still pass the same parser byte limit and identity validation.
         manifestHttp = manifestClient ?? (downloader is null ? PublicManifestHttp : null);
+        if (downloader is null)
+        {
+            inventoryHttp = PublicInventoryHttp;
+            string localData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData, Environment.SpecialFolderOption.DoNotVerify);
+            if (!string.IsNullOrEmpty(localData))
+                cooldownPath = Path.Combine(localData, "EveryoneSoftware", "Music", "windows-update-cooldown");
+        }
+    }
+
+    internal WindowsGithubSource(IFileDownloader? downloader, HttpClient inventoryHttp, string cooldownPath, TimeProvider clock) : this(downloader)
+    {
+        this.inventoryHttp = inventoryHttp;
+        this.cooldownPath = cooldownPath;
+        this.clock = clock;
+    }
+
+    private async Task<string> ReadInventoryAsync(string url)
+    {
+        if (inventoryHttp is null) return await Downloader.DownloadString(url, GetRequestHeaders("application/vnd.github+json"));
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.UserAgent.ParseAdd("MusicWindows-Updates/1.0");
+        request.Headers.Accept.ParseAdd("application/vnd.github+json");
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        using var response = await inventoryHttp.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeout.Token).ConfigureAwait(false);
+        if (cooldownPath is { } path && GetCooldownDeadline(response) is { } deadline)
+            await Task.Run(() => SaveCooldown(path, deadline)).ConfigureAwait(false);
+        response.EnsureSuccessStatusCode();
+        return await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
+    }
+
+    private long? GetCooldownDeadline(HttpResponseMessage response)
+    {
+        if (response.StatusCode is not (HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)) return null;
+        var headers = response.Headers;
+        var retryAfter = headers.RetryAfter;
+        bool exhausted = headers.TryGetValues("X-RateLimit-Remaining", out var remaining) && remaining.FirstOrDefault() == "0";
+        if (response.StatusCode == HttpStatusCode.Forbidden && retryAfter is null && !exhausted) return null;
+
+        var now = clock.GetUtcNow();
+        var delay = retryAfter?.Delta ?? (retryAfter?.Date is { } date ? date - now : TimeSpan.Zero);
+        if (exhausted && headers.TryGetValues("X-RateLimit-Reset", out var values)
+            && long.TryParse(values.FirstOrDefault(), NumberStyles.None, CultureInfo.InvariantCulture, out long reset)
+            && reset <= DateTimeOffset.MaxValue.ToUnixTimeSeconds())
+        {
+            var untilReset = DateTimeOffset.FromUnixTimeSeconds(reset) - now;
+            if (untilReset > delay) delay = untilReset;
+        }
+        if (delay <= TimeSpan.Zero) delay = TimeSpan.FromMinutes(1);
+        return now.UtcTicks + Math.Min(delay.Ticks, MaximumCooldown.Ticks);
+    }
+
+    internal bool IsStartupCheckDeferred => cooldownPath is { } path && ReadActiveDeadline(path) is not null;
+
+    private long? ReadActiveDeadline(string path)
+    {
+        try
+        {
+            using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            Span<byte> bytes = stackalloc byte[sizeof(long) + 1];
+            if (file.ReadAtLeast(bytes, bytes.Length, throwOnEndOfStream: false) != sizeof(long)) return null;
+            long deadline = BinaryPrimitives.ReadInt64LittleEndian(bytes);
+            long now = clock.GetUtcNow().UtcTicks;
+            return deadline > now && deadline <= now + MaximumCooldown.Ticks ? deadline : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException) { return null; }
+    }
+
+    private void SaveCooldown(string path, long deadline)
+    {
+        // Keep only the deadline, not the HTTP payload, headers or any account metadata.
+        string temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        try
+        {
+            if (ReadActiveDeadline(path) >= deadline) return;
+            Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+            byte[] bytes = new byte[sizeof(long)];
+            BinaryPrimitives.WriteInt64LittleEndian(bytes, deadline);
+            File.WriteAllBytes(temp, bytes);
+            File.Move(temp, path, overwrite: true);
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            try { File.Delete(temp); }
+            catch (Exception cleanup) when (cleanup is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     protected override async Task<GithubRelease[]> GetReleases(bool includePrereleases)
@@ -34,7 +128,7 @@ public sealed class WindowsGithubSource : GithubSource
         // Bound API use; never silently call a truncated inventory "up to date".
         for (int page = 1; page <= 10; page++)
         {
-            string json = await Downloader.DownloadString($"https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page={page}", GetRequestHeaders("application/vnd.github+json"));
+            string json = await ReadInventoryAsync($"https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page={page}");
             using var document = JsonDocument.Parse(json);
             var releases = document.RootElement.EnumerateArray().ToArray();
             foreach (var item in releases)
@@ -141,23 +235,27 @@ public sealed class WindowsGithubSource : GithubSource
 [JsonSerializable(typeof(GithubRelease))]
 internal partial class WindowsUpdateJsonContext : JsonSerializerContext { }
 
-/// <summary>Lazy construction keeps native locator work out of startup. Download never implies apply.</summary>
+/// <summary>Lazy construction defers native locator work until a check. Download never implies apply.</summary>
 public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
 {
-    private readonly WindowsGithubSource source = new();
+    private readonly WindowsGithubSource source;
     private readonly Lazy<UpdateManager> manager;
-    public WindowsUpdateBackend()
+    public WindowsUpdateBackend() : this(new WindowsGithubSource()) { }
+
+    internal WindowsUpdateBackend(WindowsGithubSource source, IVelopackLocator? locator = null)
     {
+        this.source = source;
         manager = new(() => new UpdateManager(source, new UpdateOptions
         {
             ExplicitChannel = WindowsGithubSource.Channel,
             AllowVersionDowngrade = false,
             MaximumDeltasBeforeFallback = -1
-        }));
+        }, locator));
     }
     private UpdateInfo? offered;
     private bool downloaded;
     public bool IsInstalled => manager.Value.IsInstalled;
+    public bool IsStartupCheckDeferred => source.IsStartupCheckDeferred;
     public Version CurrentVersion => Version.Parse(manager.Value.CurrentVersion?.ToString() ?? "0.0.0");
     public WindowsChangelog? Changelog { get; private set; }
 

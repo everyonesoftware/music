@@ -5,7 +5,7 @@ using Music.Core;
 
 namespace Music.App;
 
-/// <summary>Bind once after Shell.xaml is loaded; dispose when its window closes. No startup network or apply.</summary>
+/// <summary>Bind once after Shell.xaml is loaded; dispose when its window closes.</summary>
 public sealed partial class WindowsUpdatesPanel : IDisposable
 {
     private readonly WindowsUpdateController controller;
@@ -47,6 +47,8 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         controller.Changed += OnChanged;
         Render(controller.Status);
     }
+
+    internal Task CheckOnStartupAsync() => controller.CheckOnStartupAsync();
 
     private async void CheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
     private async void DownloadClicked(object sender, RoutedEventArgs e) => await controller.DownloadAsync();
@@ -137,6 +139,7 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
             WindowsUpdatePhase.Ready => "Ready to install",
             WindowsUpdatePhase.Restarting => "Restarting",
             WindowsUpdatePhase.Error => "Update failed",
+            WindowsUpdatePhase.StartupDeferred => "Automatic check deferred",
             WindowsUpdatePhase.NotInstalled => "Updates unavailable",
             _ => "Updates"
         };

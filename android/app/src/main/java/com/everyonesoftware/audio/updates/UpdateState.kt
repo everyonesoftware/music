@@ -16,7 +16,6 @@ enum class UpdateFailureKind(val checkMessage: String) {
 
 data class UpdateUiState(
     val stage: UpdateStage = UpdateStage.IDLE,
-    val automaticChecks: Boolean = true,
     val lastCheckedAt: Long? = null,
     val release: UpdateRelease? = null,
     val downloadedBytes: Long = 0,
