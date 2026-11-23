@@ -8,16 +8,18 @@ import { basename, join } from 'node:path';
 import { main } from '../scripts/publish-android-release.mjs';
 
 const repo = 'owner/music', sha = 'a'.repeat(40), tag = 'v0.1.3', apk = 'Music-0.1.3.apk';
+const title = 'Music 0.1.3';
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const missing = { status: 1, stderr: 'HTTP 404' };
 const ok = body => ({ status: 0, stdout: JSON.stringify(body) });
-function setup(t, { published = false, conflict = false, badLocal = false, partial = false } = {}) {
+function setup(t, { published = false, conflict = false, badLocal = false, partial = false, draftHiddenFromList = false, newDraftHiddenByTag = false, lookupError } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'music-android-publish-test-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bytes = Buffer.from('packaging fixture'), sha256 = hash(bytes);
   const files = new Map([[apk, bytes], [`${apk}.sha256`, Buffer.from(`${sha256}  ${apk}\n`)], ['release.json', Buffer.from(JSON.stringify({ count: 3, version: '0.1.3', sha, tag, apk, bytes: bytes.length, sha256, changelog: { example: true } }))]]);
   for (const [name, data] of files) writeFileSync(join(dir, name), badLocal && name === apk ? 'bad' : data);
-  let inventory = new Map(published ? files : partial ? [[apk, bytes]] : []), release = published || partial ? { id: 1, tag_name: tag, target_commitish: sha, draft: !published, prerelease: false, published_at: '2026-01-01T00:00:00Z' } : null;
+  let inventory = new Map(published ? files : partial ? [[apk, bytes]] : []), release = published || partial ? { id: 1, tag_name: tag, name: title, target_commitish: sha, draft: !published, prerelease: false, published_at: '2026-01-01T00:00:00Z' } : null;
+  const create = () => ({ id: 1, tag_name: tag, name: title, target_commitish: sha, draft: true, prerelease: false });
   if (conflict) inventory.set('release.json', Buffer.alloc(files.get('release.json').length, 120));
   const writes = [];
   const assets = () => [...inventory].map(([name, data], i) => ({ id: i + 1, name, state: 'uploaded', size: data.length, digest: `sha256:${hash(data)}`, browser_download_url: `https://github.com/${repo}/releases/download/${tag}/${name}` }));
@@ -29,9 +31,23 @@ function setup(t, { published = false, conflict = false, badLocal = false, parti
     }
     assert.equal(cmd, 'gh');
     if (args[0] === 'api') {
+      if (args[1] === 'graphql') {
+        assert.match(args.join(' '), /release\(tagName:/);
+        assert.ok(['owner=owner', 'name=music', `tagName=${tag}`].every(field => args.includes(field)));
+        const visible = release && !(newDraftHiddenByTag && release.draft && writes.includes('create'));
+        return lookupError ?? ok({ data: { repository: { release: visible ? { databaseId: release.id } : null } } });
+      }
       const path = args[1].replace(`repos/${repo}/`, '');
+      if (path === 'releases') {
+        assert.deepEqual(args.slice(2), ['--method', 'POST', '-f', `tag_name=${tag}`, '-f', `target_commitish=${sha}`, '-f', `name=${title}`, '-f', 'body=', '-F', 'draft=true', '-F', 'prerelease=false', '-f', 'make_latest=false']);
+        assert.equal(release, null);
+        writes.push('create');
+        release = create();
+        return ok(release);
+      }
       if (path === `releases/tags/${tag}`) return release?.draft === false ? ok(release) : missing;
-      if (path === 'releases?per_page=100') return ok([[], release ? [release] : []]);
+      if (path === 'releases?per_page=100') return ok([[], release && !draftHiddenFromList ? [release] : []]);
+      if (path === 'releases/1') return release ? ok(release) : missing;
       if (path === `git/ref/tags/${tag}`) return release?.draft === false ? ok({ object: { sha, type: 'commit' } }) : missing;
       if (path === 'releases/1/assets?per_page=100') return ok([assets()]);
       if (path.startsWith('releases/assets/')) {
@@ -48,7 +64,7 @@ function setup(t, { published = false, conflict = false, badLocal = false, parti
     if (action === 'create') {
       assert.ok(args.includes('--draft') && args.includes('--latest=false'));
       assert.equal(args[args.indexOf('--notes') + 1], '');
-      release = { id: 1, tag_name: tag, target_commitish: sha, draft: true, prerelease: false };
+      release = create();
     } else if (action === 'upload') {
       for (const path of args.slice(3, args.indexOf('--repo'))) {
         const name = basename(path);
@@ -72,10 +88,22 @@ test('Android publishes verified draft bytes without touching Latest; identical 
   assert.deepEqual(f.writes, ['create', 'upload', 'edit']);
 });
 
-test('Android resumes a matching partial draft without replacing assets', t => {
-  const f = setup(t, { partial: true });
+test('Android resumes a matching partial draft missing from the release list without replacing assets', t => {
+  const f = setup(t, { partial: true, draftHiddenFromList: true });
   f.exec();
   assert.deepEqual(f.writes, ['upload', 'edit']);
+});
+
+test('Android reads back the newly created draft by ID when it is not yet visible in tag or list lookups', t => {
+  const f = setup(t, { draftHiddenFromList: true, newDraftHiddenByTag: true });
+  assert.equal(f.exec().tag, tag);
+  assert.deepEqual(f.writes, ['create', 'upload', 'edit']);
+});
+
+test('Android does not create a draft after a failed exact lookup', t => {
+  const f = setup(t, { lookupError: { status: 1, stderr: 'HTTP 403' } });
+  assert.throws(f.exec, /HTTP 403/);
+  assert.deepEqual(f.writes, []);
 });
 
 test('Android rejects mismatched published bytes and invalid local packaging before any writes', t => {

@@ -8,6 +8,9 @@ import { checkoutSource, commands, hash, parseOptions, verifyStable } from './re
 
 const validator = fileURLToPath(new URL('./android-release.py', import.meta.url));
 const manifestLimit = 65536;
+const releaseByTag = `query($owner: String!, $name: String!, $tagName: String!) {
+  repository(owner: $owner, name: $name) { release(tagName: $tagName) { databaseId } }
+}`;
 
 export function main(argv = process.argv.slice(2), { root = fileURLToPath(new URL('..', import.meta.url)), run, output = console.log } = {}) {
   const args = parseOptions(argv, ['directory', 'repository']);
@@ -15,6 +18,7 @@ export function main(argv = process.argv.slice(2), { root = fileURLToPath(new UR
   if (!args.directory) throw new Error('--directory is required.');
   const source = checkoutSource(root, io.invoke);
   const { tag, sha, version } = source, apk = `Music-${version}.apk`;
+  const title = `Music ${version}`;
   const names = [apk, `${apk}.sha256`, 'release.json'];
   const directory = mkdtempSync(join(tmpdir(), 'music-android-publication-'));
   try {
@@ -31,17 +35,24 @@ export function main(argv = process.argv.slice(2), { root = fileURLToPath(new UR
     const manifest = JSON.parse(readFileSync(inventory.get('release.json').path, 'utf8'));
     for (const [name, item] of inventory) item.sha256 = name === apk ? manifest.sha256 : hash(readFileSync(item.path));
     const view = (optional = false) => {
-      // GitHub's tag endpoint advertises published releases only. Drafts
-      // (including earlier partial attempts) are visible in the release list.
+      // Use the exact pending-tag lookup behind `gh release view`: a draft
+      // can be absent from both the REST tag endpoint and the release list.
       const published = io.api(`releases/tags/${tag}`, { optional: true });
       if (published) return published;
-      const matches = io.api('releases?per_page=100', { paginate: true }).flat().filter(r => r.tag_name === tag);
-      if (matches.length > 1 || (!matches.length && !optional)) throw new Error('Missing or ambiguous Android release: ' + tag);
-      return matches[0] ?? null;
+      const [owner, name] = args.repository.split('/');
+      const response = JSON.parse(io.gh('api', 'graphql', '-f', `owner=${owner}`, '-f', `name=${name}`, '-f', `tagName=${tag}`, '-f', `query=${releaseByTag}`));
+      const match = response?.data?.repository?.release;
+      if (response?.errors !== undefined || (match !== null && (!Number.isSafeInteger(match?.databaseId) || match.databaseId < 1))) throw new Error('Invalid exact Android release lookup: ' + tag);
+      if (match === null) {
+        if (optional) return null;
+        throw new Error('Missing Android release: ' + tag);
+      }
+      const release = io.api(`releases/${match.databaseId}`);
+      if (release?.id !== match.databaseId || release.tag_name !== tag) throw new Error('Android release lookup identity mismatch: ' + tag);
+      return release;
     };
     const verifyDraft = (release, id = release?.id) => {
-      if (!Number.isSafeInteger(id) || id < 1 || release?.id !== id || release.tag_name !== tag || release.target_commitish !== sha || release.draft !== true || release.prerelease !== false) throw new Error('Expected matching unpublished Android draft.');
-      io.verifyTag(tag, sha, { optional: true });
+      if (!Number.isSafeInteger(id) || id < 1 || release?.id !== id || release.tag_name !== tag || release.name !== title || release.target_commitish !== sha || release.draft !== true || release.prerelease !== false) throw new Error('Expected matching unpublished Android draft.');
     };
     const check = (release, draft) => {
       const remote = io.assets(release.id);
@@ -61,14 +72,21 @@ export function main(argv = process.argv.slice(2), { root = fileURLToPath(new UR
     if (release?.draft !== false) {
       if (release === null) {
         io.verifyTag(tag, sha, { optional: true });
-        io.gh('release', 'create', tag, '--repo', args.repository, '--target', sha, '--title', `Music ${version}`, '--notes', '', '--draft', '--latest=false');
-        release = view();
+        const created = io.api('releases', { fields: [
+          '--method', 'POST', '-f', `tag_name=${tag}`, '-f', `target_commitish=${sha}`,
+          '-f', `name=${title}`, '-f', 'body=', '-F', 'draft=true', '-F', 'prerelease=false', '-f', 'make_latest=false',
+        ] });
+        verifyDraft(created);
+        release = io.api(`releases/${created.id}`);
+        if (release?.id !== created.id) throw new Error('Android release lookup identity mismatch: ' + tag);
       }
       verifyDraft(release);
+      io.verifyTag(tag, sha, { optional: true });
       const missing = check(release, true);
       if (missing.length) io.gh('release', 'upload', tag, ...missing, '--repo', args.repository);
-      const ready = view();
+      const ready = io.api(`releases/${release.id}`);
       verifyDraft(ready, release.id);
+      io.verifyTag(tag, sha, { optional: true });
       if (check(ready, true).length) throw new Error('Uploaded Android artifact missing from draft.');
       io.gh('release', 'edit', tag, '--repo', args.repository, '--draft=false', '--latest=false');
     }

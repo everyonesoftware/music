@@ -9,7 +9,7 @@ const triggers = text => '\n' + (text.split('\non:\n')[1]?.split('\npermissions:
 
 test('new Android releases omit build and installation boilerplate', () => {
   const publisher = readFileSync(new URL('../scripts/publish-android-release.mjs', import.meta.url), 'utf8');
-  assert.match(publisher, /'--notes', ''/);
+  assert.match(publisher, /'-f', 'body='/);
   for (const text of ['Android alpha build', 'Git commit count / Android versionCode:',
     'Install the signed APK.', 'Keep the same signing key', 'No offline downloads or Android Auto yet.']) {
     assert.ok(!publisher.includes(text), text);
