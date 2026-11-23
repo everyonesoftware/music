@@ -19,22 +19,25 @@ public sealed partial class MainWindow
         return cell;
     }
 
-    private Border SongArtwork(string? id, CancellationToken token, RequestGate.Lease owner)
+    private Border SongArtwork(string? id, CancellationToken token, RequestGate.Lease owner) =>
+        CoverArtwork(id, token, owner, 40);
+
+    private Border CoverArtwork(string? id, CancellationToken token, RequestGate.Lease owner, double size)
     {
-        var image = new Image { Width = 40, Height = 40, Stretch = Stretch.UniformToFill };
-        var fallback = new FontIcon { Glyph = "\uE8D6", FontSize = 20, Foreground = Muted };
+        var image = new Image { Width = size, Height = size, Stretch = Stretch.UniformToFill };
+        var fallback = new FontIcon { Glyph = "\uE8D6", FontSize = size == 40 ? 20 : 36, Foreground = Muted };
         AutomationProperties.SetName(fallback, "No artwork available");
         var content = new Grid(); content.Children.Add(fallback); content.Children.Add(image);
         var cover = new Border
         {
-            Width = 40, Height = 40, CornerRadius = new CornerRadius(4),
+            Width = size, Height = size, CornerRadius = new CornerRadius(size == 40 ? 4 : 6),
             Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57)), Child = content
         };
         image.ImageOpened += (_, _) => fallback.Visibility = Visibility.Collapsed;
         image.ImageFailed += (_, _) => fallback.Visibility = Visibility.Visible;
         var target = client;
         CancellationTokenSource? pending = null;
-        // Realized rows load artwork; creating a large collection does not fetch every cover.
+        // Load only while attached, for both detail headers and realized song rows.
         cover.Loaded += async (_, _) =>
         {
             pending?.Cancel();

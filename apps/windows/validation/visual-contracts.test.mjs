@@ -11,6 +11,7 @@ import './collection-transport.test.mjs';
 import './navigation-contracts.test.mjs';
 import './song-rating-wiring.test.mjs';
 import './song-rating-view.test.mjs';
+import './collection-artwork.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';
@@ -146,12 +147,9 @@ test('collection opens its header before awaiting the server and uses static loa
 
 test('collection detail keeps count above shared left transport without a Library back link', () => {
   const detail = method('RenderDetail');
-  assert.match(detail, /Orientation = Orientation.Horizontal/);
-  assert.match(detail, /panel.Spacing = 12/);
-  assert.doesNotMatch(detail, /actions.Children.Add\(back\)|←|NavigateAsync/);
-  assert.match(detail, /actions.Children.Add\(Text\(/);
-  assert.doesNotMatch(detail, /panel.Children.Add\((back|play)\)/);
-  assert.match(detail, /panel.Children.Add\(detailIdentity.Kind == "artist" \? CreateArtistTransport\(\) : CreateCollectionTransport\(\)\)/);
+  assert.doesNotMatch(detail, /←|NavigateAsync/);
+  assert.match(detail, /C<TextBlock>\("CollectionSummary"\).Text = [^;]+;\s*C<Border>\("CollectionActions"\).Child = CreateCollectionTransport\(\)/);
+  assert.match(shell, /x:Name="CollectionSummary"[\s\S]*?<Border Grid.Row="1" x:Name="CollectionActions"/);
 });
 
 test('track list shares responsive columns with its headings and stretches item containers', () => {
@@ -179,11 +177,12 @@ test('list songs include 40px artwork beside the title while headings retain tex
   const artwork = existsSync(artworkFile) ? readFileSync(artworkFile, 'utf8').replaceAll('\r\n', '\n') : '';
   assert.match(method('SongRow'), /SongCell\(song, copy, token, owner\)/);
   assert.match(artwork, /new GridLength\(40\)/);
-  assert.match(artwork, /Width = 40, Height = 40/);
+  assert.match(artwork, /CoverArtwork\(id, token, owner, 40\)/);
+  assert.match(artwork, /Width = size, Height = size/);
   assert.match(artwork, /ColumnSpacing = spacing/);
   assert.match(artwork, /SongArtwork\(song.CoverArtId, token, owner\)/);
   assert.match(artwork, /Stretch = Stretch.UniformToFill/);
-  assert.match(artwork, /CornerRadius = new CornerRadius\(4\)/);
+  assert.match(artwork, /CornerRadius = new CornerRadius\(size == 40 \? 4 : 6\)/);
   assert.match(artwork, /Glyph = "\\uE8D6"/);
   assert.match(artwork, /No artwork available/);
   assert.match(artwork, /cover.Loaded \+= async/);
@@ -283,10 +282,15 @@ test('view picker updates a native icon without replacing its chevron or menu', 
 });
 
 test('collection title reclaims the hidden search width instead of leaving a header-sized gap', () => {
-  const header = shell.slice(shell.indexOf('<Grid Margin="0,0,0,16">'), shell.indexOf('<InfoBar'));
+  const header = shell.slice(shell.indexOf('<Grid x:Name="PageHeader"'), shell.indexOf('<InfoBar Grid.Row="1"'));
   assert.doesNotMatch(header, /ColumnDefinition Width="260"/);
   assert.match(header, /x:Name="SearchBox"[^>]*Width="260"/);
   assert.match(header, /x:Name="PageTitle"[^>]*TextTrimming="CharacterEllipsis"/);
+  assert.match(method('RenderDetail'), /C<Grid>\("PageHeader"\).Visibility = isCollection \? Visibility.Collapsed : Visibility.Visible/);
+  const collection = shell.slice(shell.indexOf('<Grid x:Name="CollectionHeader"'), shell.indexOf('<StackPanel x:Name="DetailHeader"'));
+  assert.match(collection, /<ColumnDefinition Width="120"\/><ColumnDefinition Width="\*"\/>/);
+  assert.match(collection, /x:Name="CollectionTitle"[^>]*TextTrimming="CharacterEllipsis"/);
+  assert.doesNotMatch(collection, /SearchBox|LayoutButton/);
 });
 
 test('output trigger matches the compact Android two-line control without a chevron', () => {

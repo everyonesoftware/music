@@ -684,6 +684,7 @@ public sealed partial class MainWindow : Window
     private List<Song> detailSongs = new();
     private bool detailLoading, detailError;
     private (string Kind, string Id) detailIdentity;
+    private object? renderedCollectionCover;
     private readonly CollectionTransport collectionTransport = new();
     private sealed record DetailSong(Song Song, int Index)
     {
@@ -726,6 +727,8 @@ public sealed partial class MainWindow : Window
         artistAlbums = [];
         C<ListView>("DetailList").ItemsSource = null;
         C<StackPanel>("DetailHeader").Children.Clear();
+        ClearCollectionHeader();
+        C<Grid>("PageHeader").Visibility = Visibility.Visible;
         C<Grid>("DetailHost").Visibility = Visibility.Collapsed;
         C<ScrollViewer>("MainScroll").Visibility = Visibility.Visible;
         detailLoading = false;
@@ -749,7 +752,6 @@ public sealed partial class MainWindow : Window
         C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;
         page = "detail"; detailTitle = title; detailSongs = new(); detailLoading = true; detailError = false;
         detailIdentity = value switch { Album album => ("album", album.Id), Playlist playlist => ("playlist", playlist.Id), _ => default };
-        C<TextBlock>("PageTitle").Text = title;
         C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
         C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
         SetNavigation();
@@ -781,12 +783,41 @@ public sealed partial class MainWindow : Window
         C<ScrollViewer>("MainScroll").Visibility = Visibility.Collapsed;
         C<Grid>("DetailHost").Visibility = Visibility.Visible;
         var panel = C<StackPanel>("DetailHeader"); panel.Children.Clear(); panel.Spacing = 12;
-        if (detailIdentity.Kind == "artist") RenderArtistHeader(panel);
-        var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
+        bool isCollection = detailIdentity.Kind is "album" or "playlist";
+        C<Grid>("PageHeader").Visibility = isCollection ? Visibility.Collapsed : Visibility.Visible;
         bool partialArtist = detailIdentity.Kind == "artist" && artistSongsIncomplete;
-        actions.Children.Add(Text(detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}", 13, true));
-        panel.Children.Add(actions);
-        panel.Children.Add(detailIdentity.Kind == "artist" ? CreateArtistTransport() : CreateCollectionTransport());
+        string count = detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}";
+        if (!isCollection)
+        {
+            ClearCollectionHeader();
+            RenderArtistHeader(panel);
+            var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 16, Margin = new Thickness(0, 0, 0, 8) };
+            actions.Children.Add(Text(count, 13, true));
+            panel.Children.Add(actions);
+            panel.Children.Add(CreateArtistTransport());
+        }
+        else
+        {
+            if (!ReferenceEquals(renderedCollectionCover, detailCollection))
+            {
+                string? coverArtId = detailCollection switch
+                {
+                    Album album => album.CoverArtId,
+                    Playlist playlist => playlist.CoverArtId,
+                    ArtistAlbumNavigation origin => origin.Album.CoverArtId,
+                    _ => null
+                };
+                C<Border>("CollectionCover").Child = CoverArtwork(coverArtId, CancellationToken.None, connectionLease, 120);
+                renderedCollectionCover = detailCollection;
+            }
+            C<TextBlock>("CollectionTitle").Text = detailTitle;
+            ToolTipService.SetToolTip(C<TextBlock>("CollectionTitle"), detailTitle);
+            var albumDetails = detailCollection as Album ?? (detailCollection as ArtistAlbumNavigation)?.Album;
+            var metadata = new[] { albumDetails?.Artist, albumDetails is { Year: > 0 } ? albumDetails.Year.ToString() : null, count };
+            C<TextBlock>("CollectionSummary").Text = string.Join(" · ", metadata.Where(value => !string.IsNullOrWhiteSpace(value)));
+            C<Border>("CollectionActions").Child = CreateCollectionTransport();
+            C<Grid>("CollectionHeader").Visibility = Visibility.Visible;
+        }
         bool showRatings = detailIdentity.Kind == "playlist";
         var header = SongGrid(showRatings); header.MinHeight = 32;
         string[] headings = showRatings ? ["#", "Title / artist", "Album", "Rating", "Time"] : ["#", "Title / artist", "Album", "Time"];
@@ -808,6 +839,14 @@ public sealed partial class MainWindow : Window
         var albumView = C<GridView>("ArtistAlbumList");
         albumView.Visibility = showAlbums ? Visibility.Visible : Visibility.Collapsed;
         albumView.ItemsSource = showAlbums ? artistAlbums : null;
+    }
+
+    private void ClearCollectionHeader()
+    {
+        renderedCollectionCover = null;
+        C<Grid>("CollectionHeader").Visibility = Visibility.Collapsed;
+        C<Border>("CollectionCover").Child = null;
+        C<Border>("CollectionActions").Child = null;
     }
 
     private static TextBlock Text(string text, double size, bool muted = false) => new() { Text = text, FontSize = size, Foreground = muted ? Muted : new SolidColorBrush(ColorHelper.FromArgb(255, 237, 240, 233)), TextTrimming = TextTrimming.CharacterEllipsis, VerticalAlignment = VerticalAlignment.Center, FontFamily = new FontFamily("Segoe UI") };

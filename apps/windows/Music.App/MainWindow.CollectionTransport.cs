@@ -21,7 +21,7 @@ public sealed partial class MainWindow
             account == connection?.Id && identity == detailIdentity && connectionGate.IsCurrent(owner) &&
             ReferenceEquals(capturedSongs, detailSongs), capturedSongs.Count);
 
-        var transport = new Grid { Margin = new Thickness(0, 0, 0, 8) };
+        var transport = new Grid();
         var group = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
         var download = new Button { Content = new SymbolIcon(Symbol.Download) { Foreground = Sage }, Width = 48, Height = 48,
             Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0),
