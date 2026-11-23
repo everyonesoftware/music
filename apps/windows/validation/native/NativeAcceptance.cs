@@ -111,6 +111,44 @@ public sealed partial class MainWindow
         text.ActualWidth > 0 && text.ActualHeight > 0 && (text.Text.StartsWith("Fixture", StringComparison.Ordinal) || text.Text.StartsWith("Native fixture", StringComparison.Ordinal)));
     private void NativeInvoke(string name) => ((IInvokeProvider)new ButtonAutomationPeer(C<Button>(name)).GetPattern(PatternInterface.Invoke)).Invoke();
 
+    private void NativeCheckPlayerTitleLayout(Dictionary<string, bool> checks)
+    {
+        var composition = C<Grid>("PlayerComposition");
+        var title = C<TextBlock>("TrackTitle");
+        var previous = C<Button>("PreviousButton");
+        var play = C<Button>("PlayButton");
+        var rating = C<Button>("PlayerRatingButton");
+        var queueButton = C<Button>("QueueButton");
+        string selectedTitle = title.Text;
+        double Left(FrameworkElement control) => control.TransformToVisual(composition).TransformPoint(new Windows.Foundation.Point(0, 0)).X;
+        try
+        {
+            NativeRequire(checks, "playerTitleWithSelectedSong", rating.Visibility == Visibility.Visible);
+            foreach (int width in new[] { 640, 940 })
+            {
+                composition.Width = width;
+                title.Text = "Attack on Titan Theme";
+                root.UpdateLayout();
+                double gap = Left(previous) - (Left(title) + title.ActualWidth);
+                NativeRequire(checks, $"playerTitleUsesGap-{width}", title.ActualWidth > 0 && gap >= 0 && gap <= 14);
+                NativeRequire(checks, $"playerTitleFits-{width}", !title.IsTextTrimmed);
+                NativeRequire(checks, $"playerTransportFits-{width}",
+                    Math.Abs(Left(play) + play.ActualWidth / 2 - composition.ActualWidth / 2) <= 1 &&
+                    Left(rating) + rating.ActualWidth <= Left(queueButton) + 1 &&
+                    Left(queueButton) + queueButton.ActualWidth <= composition.ActualWidth + 1);
+                title.Text = string.Join(" — ", Enumerable.Repeat(title.Text, 8));
+                root.UpdateLayout();
+                NativeRequire(checks, $"playerTitleTrimsOnOverflow-{width}", title.IsTextTrimmed);
+            }
+        }
+        finally
+        {
+            composition.ClearValue(FrameworkElement.WidthProperty);
+            title.Text = selectedTitle;
+            root.UpdateLayout();
+        }
+    }
+
     private static bool NativeVaultIsEmpty()
     {
         try { return !new Windows.Security.Credentials.PasswordVault().RetrieveAll().Any(c => c.Resource == "EveryoneSoftware.Music"); }
@@ -244,6 +282,7 @@ public sealed partial class MainWindow
                 SelectTrack(2, false, NativeAcceptance.Position);
                 C<ToggleButton>("RepeatButton").IsChecked = true;
             }
+            NativeCheckPlayerTitleLayout(checks);
             NativeInvoke("QueueButton");
             await NativeAcceptance.WaitAsync(() => C<Border>("QueuePane").Visibility == Visibility.Visible);
             root.UpdateLayout();

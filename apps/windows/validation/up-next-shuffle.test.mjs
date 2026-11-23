@@ -199,8 +199,9 @@ test('footer removes volume, keeps Play centered with Repeat right of Next, and 
   assert.match(shell, /x:Name="QueueButton"[^>]*MinHeight="48"/);
   assert.match(shell, /Glyph="&#xE8FD;" FontSize="26"/);
   assert.match(shell, /Text="Queue" FontSize="18"/);
-  assert.match(shell, /Grid.Row="0" Grid.Column="2" x:Name="QueueButton"/);
-  assert.match(shell, /Grid.Row="1" Grid.Column="1"[^>]*ColumnSpacing="8"/);
+  const transport = shell.split('x:Name="PlayerTransportRow"')[1]?.split('x:Name="PlayerSeekRow"')[0] ?? '';
+  assert.match(transport, /<Grid Grid.Column="2"[^>]*>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="Auto"\/><ColumnDefinition Width="\*"\/>[\s\S]*?<\/StackPanel>\s*<Button Grid.Column="1" x:Name="QueueButton"[^>]*HorizontalAlignment="Right"[^>]*VerticalAlignment="Center"/);
+  assert.match(shell, /<Grid Grid.Row="1" x:Name="PlayerSeekRow"[\s\S]*?<Grid Grid.Column="1"[^>]*ColumnSpacing="8"[^>]*>[\s\S]*?x:Name="SeekSlider"/);
   assert.match(shell, /Grid.Column="1" x:Name="PlayButton"/);
   assert.match(shell, /Grid.Column="2"[^>]*[\s\S]*x:Name="NextButton"[\s\S]*x:Name="RepeatButton"/);
   assert.doesNotMatch(read('MainWindow.PlayerControls.cs'), /VolumeSlider/);

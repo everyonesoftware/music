@@ -9,7 +9,7 @@ const main = readFileSync(new URL('MainWindow.cs', app), 'utf8').replaceAll('\r\
 // Rendering-source contracts, not native WinUI screenshot acceptance.
 test('footer transport uses filled vector triangles and retains them across play/pause updates', () => {
   for (const name of ['PreviousButton', 'NextButton']) {
-    const button = shell.match(new RegExp(`<Button x:Name="${name}"[^>]*>[\\s\\S]*?</Button>`))?.[0];
+    const button = shell.match(new RegExp(`<Button\\b[^>]*\\sx:Name="${name}"[^>]*>[\\s\\S]*?</Button>`))?.[0];
     assert.ok(button, `${name} must have vector content`);
     assert.match(button, /<PathIcon\b/);
     assert.doesNotMatch(button, /(?:Fill|Foreground)="/);

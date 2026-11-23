@@ -284,7 +284,7 @@ test('slider template brushes stay sage across pointer states, including disable
 
 test('player uses one icon vocabulary, balanced columns, and independent output label', () => {
   assert.match(shell, /RowDefinition Height="112"/);
-  assert.match(shell, /x:Name="PlayerComposition"[\s\S]*?Width="\*"\/><ColumnDefinition Width="1\.2\*"[^>]*\/><ColumnDefinition Width="\*"/);
+  assert.match(shell, /x:Name="PlayerSeekRow"[^>]*>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="\*"\/><ColumnDefinition Width="1\.2\*" MinWidth="328"\/><ColumnDefinition Width="\*"\/>/);
   for (const [name, glyph] of [['RepeatButton', 'E8EE']]) {
     assert.match(shell, new RegExp(`x:Name="${name}"[^>]*Content="&#x${glyph};"[^>]*Style="\\{StaticResource TransportToggleStyle\\}"`));
   }

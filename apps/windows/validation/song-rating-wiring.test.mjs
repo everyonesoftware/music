@@ -29,14 +29,16 @@ test('the player rating sits immediately to the right of Repeat in the transport
   const transport = shell.match(/<StackPanel\b[^>]*Orientation="Horizontal"[^>]*>\s*<Button x:Name="NextButton"[\s\S]*?<\/StackPanel>/)?.[0] ?? '';
   assert.match(transport, /<ToggleButton x:Name="RepeatButton"[^>]*\/>\s*<Button x:Name="PlayerRatingButton"[^>]*\/>/);
   assert.match(transport, /x:Name="PlayerRatingButton"[^>]*\bWidth="40"[^>]*MinHeight="36"[^>]*VerticalAlignment="Center"[^>]*Visibility="Collapsed"/);
-  assert.match(shell, /x:Name="PlayerComposition"[^>]*>\s*<Grid\.ColumnDefinitions>[^\n]*<ColumnDefinition Width="1\.2\*" MinWidth="328"\/>/);
+  assert.match(shell, /x:Name="PlayerTransportRow"[^>]*>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="\*"\/>\s*<ColumnDefinition Width="44"\/>\s*<ColumnDefinition Width="\*"\/>/);
 });
 
-test('now-playing metadata uses flexible space without sharing its row with the rating', () => {
-  const row = shell.match(/<Grid>\s*<Grid\.ColumnDefinitions>(?:(?!<\/Grid>)[\s\S])*?x:Name="TrackArtist"[^>]*\/>(?:(?!<\/Grid>)[\s\S])*?<\/Grid>/)?.[0];
+test('now-playing metadata fills the space up to Previous before trimming', () => {
+  assert.match(shell, /x:Name="PlayerTransportRow"[^>]*>\s*<Grid\.ColumnDefinitions>[\s\S]*?<\/Grid\.ColumnDefinitions>\s*<Grid\b[^>]*>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="\*"\/>\s*<ColumnDefinition Width="Auto"\/>\s*<\/Grid\.ColumnDefinitions>\s*<Grid x:Name="PlayerMetadata"[\s\S]*?<\/Grid>\s*<Button Grid.Column="1" x:Name="PreviousButton"/);
+  const row = shell.match(/<Grid x:Name="PlayerMetadata"[\s\S]*?<\/Grid>/)?.[0];
   assert.ok(row, 'missing now-playing artwork and metadata row');
   const columns = Array.from(row.matchAll(/<ColumnDefinition\b[^>]*\bWidth="([^"]+)"/g), match => match[1]);
   assert.deepEqual(columns, ['48', '*'], 'track text must take only the space left after artwork');
+  assert.doesNotMatch(row, /MaxWidth=|TextWrapping="Wrap/);
   for (const name of ['TrackTitle', 'TrackArtist']) {
     assert.match(row, new RegExp(`<TextBlock x:Name="${name}"[^>]*TextTrimming="CharacterEllipsis"`));
   }
