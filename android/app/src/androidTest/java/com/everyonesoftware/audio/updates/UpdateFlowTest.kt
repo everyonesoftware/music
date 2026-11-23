@@ -91,14 +91,12 @@ class UpdateFlowTest {
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests.add(request)
-                return when (request.requestUrl?.encodedPath) {
-                    API_PATH -> {
+                return when (request.path) {
+                    INDEX_PATH -> {
                         releaseGate?.await(15, TimeUnit.SECONDS)
-                        // A newer Windows-only release precedes Android, as it can on GitHub.
-                        val windows = publishedRelease().replace("0.1.$count", "0.1.${count + 1}")
-                            .replace(".apk", ".zip")
-                        json("[$windows,${publishedRelease()}]")
+                        json(index())
                     }
+                    tagPath -> json(publishedRelease())
                     "$ASSET_PATH/v0.1.$count/release.json" -> json(manifest())
                     "$ASSET_PATH/v0.1.$count/Music-0.1.$count.apk" ->
                         MockResponse().setBody(Buffer().write(bytes))
@@ -177,7 +175,7 @@ class UpdateFlowTest {
         until { model.state.value.updates.lastCheckedAt != null }
         assertEquals(UpdateStage.IDLE, model.state.value.updates.stage)
         assertNull(model.state.value.updates.release)
-        assertEquals(listOf(API_PATH), requests.map { it.requestUrl!!.encodedPath })
+        assertEquals(listOf(INDEX_PATH), requests.map { it.path })
         assertPreserved()
         assertUnauthenticated()
     }
@@ -229,7 +227,7 @@ class UpdateFlowTest {
             assertNull(graph.updates.coordinator.recoverCheck())
             assertNull(graph.updates.coordinator.beginInstall())
         }
-        assertEquals(listOf(API_PATH, "$ASSET_PATH/v0.1.$count/release.json"), requests.map { it.requestUrl!!.encodedPath })
+        assertEquals(listOf(INDEX_PATH, tagPath, "$ASSET_PATH/v0.1.$count/release.json"), requests.map { it.path })
         assertFalse(directory.exists())
         assertPreserved()
         assertUnauthenticated()
@@ -245,11 +243,11 @@ class UpdateFlowTest {
         assertEquals(before.release, restored.state.value.release)
         assertEquals(before.lastCheckedAt, restored.state.value.lastCheckedAt)
         onMain { restored.onForeground() }
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
         val next = withContext(Dispatchers.Main) { restored.coordinator.checkAtLaunch() }
         assertNotNull(next)
         withTimeout(30_000) { next!!.join() }
-        assertEquals(4, requests.size)
+        assertEquals(6, requests.size)
         assertFalse(preferences.contains("automatic"))
         assertPreserved()
         assertUnauthenticated()
@@ -264,7 +262,8 @@ class UpdateFlowTest {
             override fun dispatch(request: RecordedRequest): MockResponse {
                 requests.add(request)
                 return when (request.path) {
-                    "$API_PATH?per_page=100&page=1" -> json("[${publishedRelease()}]")
+                    INDEX_PATH -> json(index())
+                    tagPath -> json(publishedRelease())
                     "$ASSET_PATH/v0.1.$count/release.json" -> json(manifest().dropLast(1) + ",\"changelog\":$embedded}")
                     else -> MockResponse().setResponseCode(404)
                 }
@@ -278,12 +277,12 @@ class UpdateFlowTest {
         assertEquals(listOf("Preserve playback position"), history.fixes)
         assertEquals("[verified] fix(android): Preserve playback position", history.commits.single().subject)
         onMain { model.retryUpdateChangelog() }
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
         val restored = newManager()
         assertEquals(model.state.value.updates.release, restored.state.value.release)
         assertEquals(history, restored.state.value.changelog)
         assertEquals(ChangelogStage.AVAILABLE, restored.state.value.changelogStage)
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
         assertPreserved()
         assertUnauthenticated()
     }
@@ -299,7 +298,7 @@ class UpdateFlowTest {
         assertEquals(offered, model.state.value.updates.release)
         assertNull(model.state.value.updates.error)
         assertNull(model.state.value.updates.changelog)
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
         // Old installations saved release-body notes. They must never become history.
         val preferences = app.getSharedPreferences("music_updates", Context.MODE_PRIVATE)
         val saved = requireNotNull(preferences.getString("release", null))
@@ -308,7 +307,7 @@ class UpdateFlowTest {
         assertEquals(offered, restored.state.value.release)
         assertTrue(restored.state.value.release!!.notes.isEmpty())
         assertEquals(ChangelogStage.UNAVAILABLE, restored.state.value.changelogStage)
-        assertEquals(2, requests.size)
+        assertEquals(3, requests.size)
         assertPreserved()
         assertUnauthenticated()
     }
@@ -405,11 +404,7 @@ class UpdateFlowTest {
             assertNull(request.getHeader("Authorization"))
             assertNull(request.getHeader("Proxy-Authorization"))
             assertNull(request.getHeader("Cookie"))
-            if (request.requestUrl!!.encodedPath == API_PATH) {
-                assertEquals("per_page=100&page=1", request.requestUrl!!.encodedQuery)
-            } else {
-                assertNull(request.requestUrl!!.query)
-            }
+            assertNull(request.requestUrl!!.query)
             assertEquals("Music-Android-Updater", request.getHeader("User-Agent"))
             assertFalse(request.path.orEmpty().contains("/rest/"))
             assertFalse(request.toString().contains(credentials.password))
@@ -429,6 +424,10 @@ class UpdateFlowTest {
         bytes = payload
         hash = digest(payload)
     }
+
+    private val tagPath get() = "$TAG_API_PREFIX/v0.1.$count"
+
+    private fun index() = """{"schema":1,"android":"v0.1.$count","windows":"v0.1.${count + 1}"}"""
 
     private fun publishedRelease() = buildJsonObject {
         put("tag_name", "v0.1.$count"); put("draft", false); put("prerelease", false)
@@ -461,7 +460,8 @@ class UpdateFlowTest {
 
     private val snapshot = PlaybackSnapshot(playing = true, positionMs = 34_567L, durationMs = 180_000L)
     private companion object {
-        const val API_PATH = "/repos/everyonesoftware/music/releases"
+        const val INDEX_PATH = "/everyonesoftware/music/releases/latest/download/latest-versions.json"
+        const val TAG_API_PREFIX = "/repos/everyonesoftware/music/releases/tags"
         const val ASSET_PATH = "/everyonesoftware/music/releases/download"
     }
 }

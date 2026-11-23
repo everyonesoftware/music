@@ -54,18 +54,18 @@ test('unsigned Windows packages publish to stable main releases under one serial
   assert.ok(workflow.includes('--allow-unsigned'));
   assert.ok(release.includes('node scripts/publish-windows-main-release.mjs'));
   assert.doesNotMatch(release, /scripts\/windows-release.py publish|--prerelease|node scripts\/attach-windows-installer.mjs/);
-  assert.ok(release.includes('scripts/android-release.py publish'));
+  assert.ok(release.includes('scripts/publish-android-release.mjs'));
   assert.match(release, /contents: write/);
   assert.match(release, /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
   assert.doesNotMatch(workflow, /contents: write/);
 });
 
-test('verified Windows feed publishes to the stable main release after Android, before recovery and refresh', () => {
+test('verified Windows feed publishes after Android, before indexed promotion and independent recovery', () => {
   const commands = [
-    'scripts/android-release.py publish',
+    'scripts/publish-android-release.mjs',
     'node scripts/publish-windows-main-release.mjs',
+    'node scripts/publish-release-index.mjs',
     'node scripts/recover-windows-publication.mjs',
-    'node scripts/current-downloads.mjs',
   ];
   let previous = -1;
   for (const command of commands) {

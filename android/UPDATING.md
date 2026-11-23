@@ -1,6 +1,6 @@
 # In-app updates
 
-Music checks the public `everyonesoftware/music` GitHub release list for the highest numeric published stable `v0.1.<count>` Android release, independent of GitHub's Latest designation and publication order. Windows-only/no-APK releases are skipped. This is separate from Navidrome: no music-server URL, username, password or token enters the updater's HTTP client.
+Music checks the public `latest-versions.json` on the `everyonesoftware/music` GitHub Latest release. The index's `android` tag identifies the published Android release, which need not be the release hosting the index. The Windows entry does not control Android selection. This is separate from Navidrome: no music-server URL, username, password or token enters the updater's HTTP client.
 
 ## Phone flow
 
@@ -15,11 +15,11 @@ Music checks the public `everyonesoftware/music` GitHub release list for the hig
 
 ## Trust and limits
 
-The client is isolated and unauthenticated, disables cookies/cache/authenticators, and requests only the fixed HTTPS GitHub release-list path with `per_page=100&page=N`. It scans sequentially through at most 10 pages before selecting a candidate; a short page establishes exhaustion unless it advertises another page. A full tenth page, failed/truncated inventory, malformed JSON or HTTP error is an error, never a successful up-to-date result or permission to use a partial inventory. API redirects cannot change the requested page, query or repository.
+The client is isolated and unauthenticated and disables cookies, cache and authenticators. The fixed `/everyonesoftware/music/releases/latest/download/latest-versions.json` URL can redirect only to the query-free index asset at a canonical stable tag in the same repository, then to allowlisted GitHub asset CDN hosts. The index is limited to 16 KiB of UTF-8 JSON and must have numeric `schema: 1` and a canonical Android `v0.1.<count>` string (positive, no leading zeroes, maximum 2,100,000,000). A missing or invalid index is a check failure, not an up-to-date result; there is no release-list fallback.
 
-Drafts, prereleases and unpublished entries are ignored. Stable Android candidates must have canonical positive numeric tags (no leading zeroes, maximum count 2,100,000,000); duplicate Android versions fail closed. The highest candidate newer than the installed build must have exactly one APK, named `Music-0.1.<count>.apk`, and exactly one `release.json`. Invalid/ambiguous Android candidates, missing manifests or inconsistent metadata fail closed instead of silently falling back to an older release. Equal/older versions are never offered.
+Equal or older indexed Android versions finish the check without requesting release metadata. For a newer version, the client looks up only `/repos/everyonesoftware/music/releases/tags/v0.1.<count>` on `api.github.com`. API redirects cannot change that exact URL. The response must match the indexed tag and identify a published, non-draft, non-prerelease release with exactly one APK, named `Music-0.1.<count>.apk`, and exactly one `release.json`. Invalid or missing release metadata or manifests fail the check; the client does not try an older release.
 
-The client rejects inconsistent versions/tags/filenames, malformed required manifest metadata and assets outside the exact repository release path. Each release-list page and offered manifest is limited to 1 MiB; APKs are limited to 150 MiB. Optional changelog errors do not reject an otherwise valid APK update. Downloads follow only a bounded number of HTTPS redirects to GitHub's allowlisted asset hosts. Transport/parser failures expose a fixed safe message, not request URLs or exception causes. Cancellation closes the actual network call and removes the partial file.
+The client rejects inconsistent versions/tags/filenames, malformed required manifest metadata and assets outside the exact repository release path. The tag response and offered manifest are each limited to 1 MiB; APKs are limited to 150 MiB. Optional changelog errors do not reject an otherwise valid APK update. Downloads follow only a bounded number of HTTPS redirects to GitHub's allowlisted asset hosts. Transport/parser failures expose a fixed safe message, not request URLs or exception causes. Cancellation closes the actual network call and removes the partial file.
 
 The expected release files already produced by the workflow are:
 
@@ -58,7 +58,7 @@ App-private restoration persists the embedded JSON with release metadata (bounde
 
 ## Verification
 
-- JVM `UpdateClientTest`: real MockWebServer requests using a loopback-only transport seam, mixed-platform numeric selection, pagination/exhaustion/bounds, fail-closed ambiguous candidates and incomplete inventories, stable release/manifest validation, URL and redirect policy, bounded reads, size/checksum failure, safe errors and cancellation.
+- JVM `UpdateClientTest`: real MockWebServer requests using a loopback-only transport seam, platform-index selection, exact requests and no list fallback, index validation and byte bounds, stable release/manifest validation, URL and redirect policy, size/checksum failure, safe errors and cancellation.
 - JVM `UpdateChangelogClientTest` / `UpdateChangelogCoordinatorTest`: skipped-publication range selection, original subjects, null summary kinds, malformed identity/structure/bounds, immediate local preparation/restoration and exact discovery-only request counts.
 - JVM `UpdateCoordinatorTest`: launch discovery, manual retries, recovery backoff and server cooldown, coalescing, explicit downloads, verification failure/retry, cancellation and cached-file revalidation. These tests do not claim real playback or installation.
 - Android `UpdateScreensTest`: native notification icons, existing Queue/chrome preservation, Updates routing/back behavior, preferences, pending/error/progress states, pause gate, permission explanation and consent invalidation if playback resumes.

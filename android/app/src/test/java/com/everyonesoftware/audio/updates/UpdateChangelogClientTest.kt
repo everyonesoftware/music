@@ -12,7 +12,8 @@ class UpdateChangelogClientTest {
     private val to = "b".repeat(40)
     private val hash = "c".repeat(64)
     private fun base(count: Int) = "https://github.com/everyonesoftware/music/releases/download/v0.1.$count/"
-    private fun publication(count: Int = 42) = """[{"tag_name":"v0.1.$count","draft":false,"prerelease":false,"published_at":"2026-01-01","body":"Current downloads | APK | stale notes","assets":[{"name":"release.json","browser_download_url":"${base(count)}release.json"},{"name":"Music-0.1.$count.apk","browser_download_url":"${base(count)}Music-0.1.$count.apk","size":18}]}]"""
+    private fun index(count: Int = 42) = """{"schema":1,"android":"v0.1.$count","windows":"v0.1.900"}"""
+    private fun publication(count: Int = 42) = """{"tag_name":"v0.1.$count","draft":false,"prerelease":false,"published_at":"2026-01-01","body":"Current downloads | APK | stale notes","assets":[{"name":"release.json","browser_download_url":"${base(count)}release.json"},{"name":"Music-0.1.$count.apk","browser_download_url":"${base(count)}Music-0.1.$count.apk","size":18}]}"""
     private fun manifest(history: String, count: Int = 42) = """{"count":$count,"version":"0.1.$count","tag":"v0.1.$count","sha":"$to","apk":"Music-0.1.$count.apk","bytes":18,"sha256":"$hash","changelog":$history}"""
     private fun history() = """{"schema":1,"platform":"android","head":{"version":"0.1.42","sha":"$to"},"releases":[{"version":"0.1.40","sha":"$from","commits":[]},{"version":"0.1.41","sha":"$middle","commits":[{"sha":"$middle","subject":"[verified] feat(shared): Shared transport","kind":"improvement","text":"Shared transport"}]},{"version":"0.1.42","sha":"$to","commits":[{"sha":"$to","subject":"fix(android): Restore playback","kind":"fix","text":"Restore playback"}]}]}"""
 
@@ -126,6 +127,7 @@ class UpdateChangelogClientTest {
     @Test fun optionalHistoryFailuresNeverInvalidateApkDiscovery() = runBlocking {
         for (raw in listOf("null", "[]", "{}", history().replace("\"schema\":1", "\"schema\":9"))) {
             MockWebServer().use { server ->
+                server.enqueue(MockResponse().setBody(index()))
                 server.enqueue(MockResponse().setBody(publication()))
                 server.enqueue(MockResponse().setBody(manifest(raw)))
                 server.start()
@@ -133,7 +135,7 @@ class UpdateChangelogClientTest {
                 val offered = requireNotNull(client.latest(40))
                 assertEquals(42, offered.count)
                 assertNull(offered.localChangelog(40))
-                assertEquals(2, server.requestCount)
+                assertEquals(3, server.requestCount)
             }
         }
     }
@@ -154,17 +156,19 @@ class UpdateChangelogClientTest {
         val raw = """{"schema":1,"platform":"android","head":{"version":"0.1.540","sha":"$to"},"releases":[{"version":"0.1.40","sha":"$from","commits":[]},{"version":"0.1.540","sha":"$to","commits":[$commits]}]}"""
         assertTrue(manifest(raw, 540).toByteArray().size > 65536)
         MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(index(540)))
             server.enqueue(MockResponse().setBody(publication(540)))
             server.enqueue(MockResponse().setBody(manifest(raw, 540)))
             server.start()
             val client = UpdateClient(UpdateTestConfig(server.url("/")))
             assertEquals(500, client.changelog(40, requireNotNull(client.latest(40))).count)
-            assertEquals(2, server.requestCount)
+            assertEquals(3, server.requestCount)
         }
     }
 
     @Test fun discoveryCachesCompleteSkippedReleaseRangeWithoutFurtherRequests() = runBlocking {
         MockWebServer().use { server ->
+            server.enqueue(MockResponse().setBody(index()))
             server.enqueue(MockResponse().setBody(publication()))
             server.enqueue(MockResponse().setBody(manifest(history())))
             // A legacy reconstruction attempt must fail promptly, not hang this test.
@@ -178,11 +182,11 @@ class UpdateChangelogClientTest {
             assertEquals(listOf("Shared transport"), changes.improvements)
             assertEquals(listOf("Restore playback"), changes.fixes)
             assertEquals(listOf(middle, to), changes.commits.map { it.sha })
-            assertEquals(2, server.requestCount)
+            assertEquals(3, server.requestCount)
             assertEquals(changes, client.changelog(40, offered))
-            assertEquals(2, server.requestCount)
+            assertEquals(3, server.requestCount)
             assertEquals("", offered.notes)
-            repeat(2) {
+            repeat(3) {
                 val request = server.takeRequest()
                 assertNull(request.getHeader("Authorization")); assertNull(request.getHeader("Cookie"))
             }

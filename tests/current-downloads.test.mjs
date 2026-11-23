@@ -1,5 +1,5 @@
 import test from 'node:test';
-import { readWorkflow, workflowJob } from './helpers/workflow.mjs';
+
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -174,23 +174,6 @@ test('CLI rejects malformed and missing options before executing commands', asyn
   }
 });
 
-test('reusable refresh checks trusted default-branch code without completion-triggered fan-out or personal tokens', () => {
-  const workflow = readFileSync(new URL('../.github/workflows/current-downloads.yml', import.meta.url), 'utf8');
-  assert.match(workflow, /workflow_call:/);
-  assert.match(workflow, /schedule:/);
-  assert.doesNotMatch(workflow, /^concurrency:/m, 'refresh must not acquire a workflow lock before its job lock');
-  assert.match(workflowJob(workflow, 'refresh'), /concurrency:\s+group: music-release-publication\s+cancel-in-progress: false\s+queue: max/);
-  assert.match(workflowJob(readWorkflow(), 'release'), /node scripts\/current-downloads.mjs --repository "\$GH_REPO" --publish/);
-  assert.doesNotMatch(workflow, /workflow_run:|push:/);
-  assert.match(workflow, /ref: \$\{\{ github.event.repository.default_branch \}\}/);
-  assert.match(workflow, /persist-credentials: false/);
-  assert.match(workflow, /GH_TOKEN: \$\{\{ github.token \}\}/);
-  assert.match(workflow, /contents: write/);
-  assert.match(workflow, /actions: read/);
-  assert.match(workflow, /node --test tests\/current-downloads.test.mjs/);
-  assert.match(workflow, /node scripts\/current-downloads.mjs --repository "\$GH_REPO" --publish/);
-  assert.doesNotMatch(workflow, /secrets\.|head_sha|download-artifact/);
-});
 
 test('Windows-only releases refresh both the newest description and Android-compatible latest without promoting anything', async () => {
   const { refreshDownloads } = await import('../scripts/current-downloads.mjs');

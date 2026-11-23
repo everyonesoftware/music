@@ -19,6 +19,7 @@ test('platform ownership includes shared inputs, renames/deletions, branding dep
     [['tests/shared-api.test.mjs'], ['android', 'windows', 'web']],
     [['README.md', 'docs/CURRENT-DOWNLOADS.md', 'android/RELEASING.md'], []],
     [['scripts/current-downloads.mjs', 'tests/current-downloads.test.mjs', '.github/workflows/current-downloads.yml'], []],
+    [['scripts/publish-android-release.mjs', 'scripts/publish-release-index.mjs', 'scripts/release-publication.mjs', 'tests/publish-android-release.test.mjs', 'tests/publish-release-index.test.mjs', 'tests/update-index-rollout.test.mjs'], []],
     [['android/app/src/main/res/drawable/ic_audio_foreground.xml'], ['android', 'windows']],
     [['scripts/selective-builds.mjs'], ['android', 'windows', 'web']],
     [['.github/workflows/android-release.yml'], ['android']],

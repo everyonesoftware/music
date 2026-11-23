@@ -1,24 +1,10 @@
 # Music — native music players for Navidrome
 
-<!-- current-downloads:start -->
-## Current downloads
-
-Choose your platform. Each link points to its latest published installer, which may come from a different release.
-
-| Platform | Version | Download | Status |
-| --- | --- | --- | --- |
-| Windows x64 | 0.1.123 | [Download installer (.exe)](https://github.com/everyonesoftware/music/releases/download/v0.1.123/MusicWindows-win-x64-Setup.exe) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.123/MusicWindows-win-x64-Setup.exe.sha256) | Unsigned installer; Windows may display a security warning. |
-| Android | 0.1.123 | [Download APK](https://github.com/everyonesoftware/music/releases/download/v0.1.123/Music-0.1.123.apk) · [SHA-256](https://github.com/everyonesoftware/music/releases/download/v0.1.123/Music-0.1.123.apk.sha256) | Signed alpha; install manually on your device. |
-| Web | — | No released web app | Browser design studies only; not a working web player. |
-
-Unchanged platforms keep their existing installers; a new project release does not necessarily mean a new version for every platform.
-<!-- current-downloads:end -->
+[Downloads](https://github.com/everyonesoftware/music/releases/latest)
 
 A native Android alpha for Navidrome, an initial Windows implementation, and the preserved interactive design studies that informed their layouts. See each platform's verification notes; compile checks and isolated fixtures are not substitutes for device/runtime and personal-server testing.
 
-The download tables are refreshed automatically after platform publication. See [download discovery and release-note automation](docs/CURRENT-DOWNLOADS.md) for preview commands and behavior.
-
-[Selective component builds](docs/SELECTIVE-BUILDS.md) compare each platform against its last successful publication: unchanged apps are not rebuilt, and their existing installers stay linked above. Manual workflow runs can force a component build.
+[Selective component builds](docs/SELECTIVE-BUILDS.md) compare each platform against its last successful publication: unchanged apps are not rebuilt, and their existing installers remain on their original releases. Manual workflow runs can force a component build.
 
 ## Privacy
 

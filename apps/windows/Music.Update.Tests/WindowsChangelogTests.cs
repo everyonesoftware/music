@@ -23,7 +23,7 @@ public sealed class WindowsChangelogTests
         var feed = await source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
         Assert.Single(feed.Assets);
         Assert.Single(downloader.Requests, u => u.EndsWith("/v0.1.30/windows-release.json", StringComparison.Ordinal));
-        Assert.Equal(3, downloader.Requests.Count);
+        Assert.Equal(4, downloader.Requests.Count);
         Assert.DoesNotContain(downloader.Requests, u => u.Contains("/compare/") || u.Contains("/commits/") || u.Contains("git/ref") || u.Contains("/v0.1.28/"));
     }
 
@@ -137,6 +137,7 @@ public sealed class WindowsChangelogTests
     [InlineData("missing")]
     [InlineData("duplicate")]
     [InlineData("origin")]
+    [InlineData("malformed-asset-url")]
     [InlineData("unpublished")]
     [InlineData("wrong-source")]
     [InlineData("transport")]
@@ -149,6 +150,33 @@ public sealed class WindowsChangelogTests
         var feed = await source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64");
         Assert.Null(source.GetChangelog(new Version("0.1.28"), Assert.Single(feed.Assets)));
         Assert.DoesNotContain(downloader.Requests, u => u.Contains("attacker.invalid"));
+    }
+
+    [Theory]
+    [InlineData("optional-duplicate-url")]
+    [InlineData("optional-duplicate-name")]
+    [InlineData("optional-nested-duplicate")]
+    public async Task Duplicate_properties_in_optional_manifest_asset_only_disable_notes(string fault)
+    {
+        var downloader = new Fixture { Fault = fault };
+        var source = new WindowsGithubSource(downloader);
+        var offer = Assert.Single((await source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64")).Assets);
+        Assert.Null(source.GetChangelog(new Version("0.1.28"), offer));
+        Assert.Equal(3, downloader.Requests.Count);
+        await source.DownloadReleaseEntry(NullVelopackLogger.Instance, offer, "unused", _ => {}, CancellationToken.None);
+        Assert.EndsWith("/" + Names[1], downloader.Requests.Last());
+    }
+
+    [Theory]
+    [InlineData("duplicate-tag")]
+    [InlineData("duplicate-feed-url")]
+    [InlineData("ambiguous-package-name")]
+    public async Task Duplicate_properties_in_required_release_metadata_stop_before_the_feed(string fault)
+    {
+        var downloader = new Fixture { Fault = fault };
+        var source = new WindowsGithubSource(downloader);
+        await Assert.ThrowsAnyAsync<JsonException>(() => source.GetReleaseFeed(NullVelopackLogger.Instance, "MusicWindows", "win-x64"));
+        Assert.Equal(2, downloader.Requests.Count);
     }
 
     [Fact]
@@ -224,7 +252,7 @@ public sealed class WindowsChangelogTests
             var update = Assert.IsType<UpdateInfo>(await manager.CheckForUpdatesAsync());
             var notes = Assert.IsType<Music.Core.WindowsChangelog>(source.GetChangelog(Version.Parse(manager.CurrentVersion!.ToString()), update.TargetFullRelease));
             Assert.Equal(Head, notes.HeadRevision);
-            Assert.Equal(3, downloader.Requests.Count);
+            Assert.Equal(4, downloader.Requests.Count);
         }
         finally { Directory.Delete(directory, true); }
     }
@@ -334,18 +362,39 @@ public sealed class WindowsChangelogTests
         public object? ManifestValue { get; init; }
         public string? Fault { get; set; }
         public List<string> Requests { get; } = [];
-        public Task<string> DownloadString(string url, IDictionary<string, string>? headers = null, double timeout = 30)
-        {
-            Requests.Add(url);
-            var manifestNames = Fault == "missing" ? Names : Fault == "duplicate" ? Names.Concat(["windows-release.json", "WINDOWS-RELEASE.JSON"]) : Names.Append("windows-release.json");
-            return Task.FromResult(JsonSerializer.Serialize(new[] { new {
-                tag_name = "v0.1.30", target_commitish = Fault == "wrong-source" ? Base : Head, draft = false, prerelease = false,
-                assets = manifestNames.Select(name => new { name, state = Fault == "unpublished" && name == "windows-release.json" ? "new" : "uploaded", size = 123, browser_download_url = Fault == "origin" && name == "windows-release.json" ? "https://attacker.invalid/windows-release.json" : $"{WindowsGithubSource.Repository}/releases/download/v0.1.30/{name}" })
-            } }));
-        }
+        public Task<string> DownloadString(string url, IDictionary<string, string>? headers = null, double timeout = 30) =>
+            throw new InvalidOperationException($"Unexpected string request: {url}");
         public Task<byte[]> DownloadBytes(string url, IDictionary<string, string>? headers = null, double timeout = 30)
         {
             Requests.Add(url);
+            if (url == $"{WindowsGithubSource.Repository}/releases/latest/download/latest-versions.json")
+                return Task.FromResult("""{"schema":1,"android":"v0.1.31","windows":"v0.1.30"}"""u8.ToArray());
+            if (url == "https://api.github.com/repos/everyonesoftware/music/releases/tags/v0.1.30")
+            {
+                var manifestNames = Fault == "missing" ? Names : Fault == "duplicate" ? Names.Concat(["windows-release.json", "WINDOWS-RELEASE.JSON"]) : Names.Append("windows-release.json");
+                string release = JsonSerializer.Serialize(new {
+                    tag_name = "v0.1.30", target_commitish = Fault == "wrong-source" ? Base : Head, draft = false, prerelease = false,
+                    published_at = "2025-01-01T00:00:00Z",
+                    assets = manifestNames.Select(name => new {
+                        name, state = Fault == "unpublished" && name == "windows-release.json" ? "new" : "uploaded", size = 123,
+                        browser_download_url = Fault == "malformed-asset-url" && name == "windows-release.json" ? (object)123
+                            : Fault == "origin" && name == "windows-release.json" ? "https://attacker.invalid/windows-release.json"
+                            : $"{WindowsGithubSource.Repository}/releases/download/v0.1.30/{name}"
+                    })
+                });
+                release = Fault switch
+                {
+                    "optional-duplicate-url" => release.Replace("\"browser_download_url\":\"" + WindowsGithubSource.Repository + "/releases/download/v0.1.30/windows-release.json\"",
+                        "\"browser_download_url\":false,\"browser_download_url\":\"" + WindowsGithubSource.Repository + "/releases/download/v0.1.30/windows-release.json\"", StringComparison.Ordinal),
+                    "optional-duplicate-name" => release.Replace("\"name\":\"windows-release.json\"", "\"name\":\"WINDOWS-RELEASE.JSON\",\"name\":\"windows-release.json\"", StringComparison.Ordinal),
+                    "optional-nested-duplicate" => release.Replace("\"name\":\"windows-release.json\"", "\"name\":\"windows-release.json\",\"extra\":{\"field\":1,\"field\":2}", StringComparison.Ordinal),
+                    "duplicate-tag" => release.Replace("\"tag_name\":", "\"tag_name\":\"v0.1.29\",\"tag_name\":", StringComparison.Ordinal),
+                    "duplicate-feed-url" => release.Replace("\"name\":\"releases.win-x64.json\"", "\"name\":\"releases.win-x64.json\",\"browser_download_url\":false", StringComparison.Ordinal),
+                    "ambiguous-package-name" => release.Replace($"\"name\":\"{Names[1]}\"", $"\"name\":\"{Names[1]}\",\"name\":\"windows-release.json\"", StringComparison.Ordinal),
+                    _ => release
+                };
+                return Task.FromResult(Encoding.UTF8.GetBytes(release));
+            }
             if (url.EndsWith("/windows-release.json", StringComparison.Ordinal))
             {
                 if (Fault == "transport") throw new HttpRequestException("private URL");

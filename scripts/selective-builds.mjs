@@ -18,6 +18,7 @@ export function affectedComponents(paths) {
   for (const path of paths) {
     if (path.startsWith('docs/') || /(?:^|\/)(?:README|RELEASING|UPDATING|VALIDATION|NOTES|AGENTS|CLAUDE)\.md$/.test(path)) continue;
     if (['scripts/current-downloads.mjs', 'tests/current-downloads.test.mjs', '.github/workflows/current-downloads.yml', 'scripts/release-changelog.mjs', 'tests/release-changelog.test.mjs'].includes(path)) continue;
+    if (['scripts/publish-android-release.mjs', 'scripts/publish-release-index.mjs', 'scripts/release-publication.mjs', 'tests/publish-android-release.test.mjs', 'tests/publish-release-index.test.mjs', 'tests/update-index-rollout.test.mjs'].includes(path)) continue;
     if (['scripts/selective-builds.mjs', 'tests/selective-builds.test.mjs'].includes(path)) { add(...components); continue; }
     if (path.startsWith('android/')) {
       add('android');

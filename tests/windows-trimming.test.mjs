@@ -39,10 +39,11 @@ test('connection profiles use generated metadata for both persistence directions
   assert.match(profile, /Serialize\(profile, PersistenceJsonContext.Default.ConnectionProfile\)/);
 });
 
-test('Windows release parsing uses generated metadata, not the reflection overload', () => {
+test('Windows release discovery projects verified JSON without reflection', () => {
   const backend = read('apps/windows/Music.App/WindowsUpdateBackend.cs');
-  assert.match(backend, /item.Deserialize\(WindowsUpdateJsonContext.Default.GithubRelease\)/);
-  assert.match(backend, /\[JsonSerializable\(typeof\(GithubRelease\)\)\]/);
+  assert.match(backend, /verifiedAssets\.Add\(new GithubReleaseAsset/);
+  assert.match(backend, /new GithubRelease \{[^\n]*Assets = verifiedAssets\.ToArray\(\)/);
+  assert.doesNotMatch(backend, /\bDeserialize(?:Async)?\s*(?:<|\()/);
 });
 
 test('build-only native trimming is explicit and compatibility checks run in validation', () => {

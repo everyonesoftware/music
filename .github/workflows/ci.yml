@@ -33,6 +33,7 @@ jobs:
       android: ${{ steps.detect.outputs.android }}
       windows: ${{ steps.detect.outputs.windows }}
       android_changed: ${{ steps.detect.outputs.android_changed }}
+      windows_changed: ${{ steps.detect.outputs.windows_changed }}
       web: ${{ steps.detect.outputs.web }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -40,7 +41,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - name: Test single-run orchestration and publication guards
-        run: node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs tests/release-changelog.test.mjs
+        run: node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs tests/release-changelog.test.mjs tests/publish-android-release.test.mjs tests/publish-release-index.test.mjs tests/update-index-rollout.test.mjs
       - name: Select changed platforms from verified publications
         id: detect
         env:
@@ -272,7 +273,7 @@ jobs:
         if: ${{ !cancelled() && steps.android_download.outcome == 'success' }}
         run: |
           node scripts/release-changelog.mjs --platform android --directory dist/android --repository "$GH_REPO"
-          python3 scripts/android-release.py publish --directory dist/android --repository "$GH_REPO"
+          node scripts/publish-android-release.mjs --directory dist/android --repository "$GH_REPO"
       - name: Download this run's verified Windows inventory
         id: windows_download
         if: ${{ !cancelled() && needs.windows.result == 'success' }}
@@ -282,6 +283,7 @@ jobs:
           path: dist/windows-release
           digest-mismatch: error
       - name: Publish Windows installer and full update feed in the Music release
+        id: windows_publish
         if: ${{ !cancelled() && steps.windows_download.outcome == 'success' }}
         env:
           ANDROID_CHANGED: ${{ needs.validate.outputs.android_changed }}
@@ -290,6 +292,17 @@ jobs:
         run: |
           node scripts/windows-publication-policy.mjs
           node scripts/publish-windows-main-release.mjs --directory dist/windows-release --repository "$GH_REPO" --android-changed "$ANDROID_CHANGED" --changelog true
+      # If this fails after native publication, rerun failed jobs of this run
+      # to retain successful native jobs and their exact-source artifacts.
+      # Rerunning all jobs may select neither platform and skip promotion.
+      - name: Publish release index and promote Latest
+        if: ${{ success() && !cancelled() && (needs.android.result == 'success' || needs.android.result == 'skipped') && (needs.windows.result == 'success' || needs.windows.result == 'skipped') && (steps.android_publish.outcome == 'success' || steps.windows_publish.outcome == 'success') }}
+        env:
+          ANDROID_REQUIRED: ${{ needs.validate.outputs.android_changed }}
+          WINDOWS_REQUIRED: ${{ needs.validate.outputs.windows_changed }}
+          ANDROID_PUBLISHED: ${{ steps.android_publish.outcome == 'success' }}
+          WINDOWS_PUBLISHED: ${{ steps.windows_publish.outcome == 'success' }}
+        run: node scripts/publish-release-index.mjs --repository "$GH_REPO" --source "$GITHUB_SHA" --android-required "$ANDROID_REQUIRED" --windows-required "$WINDOWS_REQUIRED" --android-published "$ANDROID_PUBLISHED" --windows-published "$WINDOWS_PUBLISHED"
       - name: Check out trusted default-branch recovery tooling
         id: trusted
         if: always() && !cancelled()
@@ -301,6 +314,3 @@ jobs:
       - name: Repair historical Windows attachments without rebuilding
         if: always() && !cancelled() && steps.trusted.outcome == 'success'
         run: node scripts/recover-windows-publication.mjs --repository "$GH_REPO"
-      - name: Refresh README and release download tables
-        if: always() && !cancelled() && steps.trusted.outcome == 'success'
-        run: node scripts/current-downloads.mjs --repository "$GH_REPO" --publish

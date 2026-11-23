@@ -7,7 +7,7 @@
     "preview": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node scripts/serve.mjs",
     "build:mockups": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs",
     "test": "node --test tests/settings-order.test.mjs tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/current-downloads.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs tests/release-changelog.test.mjs && node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node tests/mockups.mjs && node tests/playlist-workflow.mjs && node tests/first-install.mjs && node tests/phone-size.mjs && node tests/windows-compact-transport.mjs && node tests/queue-shuffle.mjs && node tests/artists-mockup.mjs",
-    "test:downloads": "node --test tests/current-downloads.test.mjs",
+    "test:downloads": "node --test tests/current-downloads.test.mjs tests/update-index-rollout.test.mjs tests/publish-android-release.test.mjs tests/publish-release-index.test.mjs",
     "test:release-selection": "node --test tests/ci-workflow.test.mjs tests/ci-selection.test.mjs tests/windows-main-baseline.test.mjs tests/windows-main-release.test.mjs tests/windows-publication-policy.test.mjs tests/unified-publisher-state.test.mjs tests/selective-builds.test.mjs tests/ensure-windows-main-release.test.mjs tests/windows-publication-recovery.test.mjs tests/release-changelog.test.mjs",
 
     "test:phone-size": "node scripts/build-onboarding.mjs && node scripts/build-phone-size.mjs && node tests/phone-size.mjs",

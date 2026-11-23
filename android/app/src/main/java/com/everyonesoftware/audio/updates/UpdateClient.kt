@@ -3,6 +3,8 @@ package com.everyonesoftware.audio.updates
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.io.IOException
+import java.nio.ByteBuffer
+import java.nio.charset.CharacterCodingException
 import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
@@ -15,7 +17,13 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.buildClassSerialDescriptor
+import kotlinx.serialization.descriptors.element
+import kotlinx.serialization.encoding.CompositeDecoder
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.decodeStructure
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -70,19 +78,28 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = false }
 
     suspend fun latest(installedCode: Long): UpdateRelease? = safe {
-        val candidates = inventory()
-            .filter { !it.draft && !it.prerelease && !it.publishedAt.isNullOrBlank() }
-            .filter { it.assets.any { asset -> asset.name.endsWith(".apk", ignoreCase = true) } }
-        check(candidates.map { tagCount(it.tag) }.distinct().size == candidates.size)
-        val published = candidates.maxByOrNull { tagCount(it.tag) } ?: return@safe null
-        val count = tagCount(published.tag)
-        // A valid older stable tag cannot become an available downgrade.
+        val tag = fetch(INDEX_URL, RequestKind.INDEX) { response ->
+            val bytes = readBounded(response, MAX_INDEX_JSON)
+            val text = try {
+                Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(bytes)).toString()
+            } catch (_: CharacterCodingException) {
+                throw UpdateException(UpdateFailureKind.INVALID_METADATA)
+            }
+            val index = Json.decodeFromString(ReleaseIndexReader, text)
+            tagCount(index.windows, MAX_WINDOWS_VERSION_CODE)
+            index.android
+        }
+        val count = tagCount(tag)
         if (count.toLong() <= installedCode) return@safe null
-        loadPublication(published)
+
+        val published = fetch("$TAG_API_PREFIX$tag", RequestKind.TAG) {
+            json.decodeFromString<PublishedRelease>(readBounded(it, MAX_RELEASE_JSON).toString(Charsets.UTF_8))
+        }
+        check(published.tag == tag && !published.draft && !published.prerelease && !published.publishedAt.isNullOrBlank())
+        loadPublication(published, count)
     }
 
-    private suspend fun loadPublication(published: PublishedRelease): UpdateRelease {
-        val count = tagCount(published.tag)
+    private suspend fun loadPublication(published: PublishedRelease, count: Int): UpdateRelease {
         val prefix = assetPrefix(count)
         val manifestAsset = published.assets.single { it.name == "release.json" }
         check(manifestAsset.url == prefix + "release.json")
@@ -90,7 +107,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         check(published.assets.count { it.name.endsWith(".apk", ignoreCase = true) } == 1)
         val apkAsset = published.assets.single { it.name == apkName }
         check(apkAsset.url == prefix + apkName)
-        val manifestBytes = requireNotNull(fetch(manifestAsset.url, api = false) { readBounded(it, MAX_MANIFEST_JSON) })
+        val manifestBytes = fetch(manifestAsset.url, RequestKind.ASSET) { readBounded(it, MAX_MANIFEST_JSON) }
         val manifestObject = json.parseToJsonElement(manifestBytes.toString(Charsets.UTF_8)) as JsonObject
         // JSON numeric strings are accepted by some decoders; the release schema requires numbers.
         for (field in listOf("count", "bytes")) {
@@ -114,25 +131,6 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         requireNotNull(offered.localChangelog(installedCode))
     }
 
-    private suspend fun inventory(): List<PublishedRelease> {
-        val releases = mutableListOf<PublishedRelease>()
-        for (page in 1..MAX_RELEASE_PAGES) {
-            currentCoroutineContext().ensureActive()
-            val entries = requireNotNull(fetch(releasesUrl(page), api = true) {
-                val entries = json.decodeFromString<List<PublishedRelease>>(readBounded(it, MAX_RELEASE_JSON).toString(Charsets.UTF_8))
-                // A short page is exhaustion only when GitHub does not advertise a continuation.
-                check(entries.size == 100 || it.headers.values("Link").none { link ->
-                    Regex("""rel\s*=\s*"?next\b""", RegexOption.IGNORE_CASE).containsMatchIn(link)
-                })
-                entries
-            })
-            check(entries.size <= 100)
-            releases.addAll(entries)
-            if (entries.size < 100) return releases
-        }
-        error("Release inventory limit")
-    }
-
     /** Writes only to a new coordinator-owned temporary file; never replaces an existing file. */
     suspend fun download(release: UpdateRelease, target: File, onProgress: (Long, Long) -> Unit) {
         var owned = false
@@ -143,7 +141,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                     check(target.createNewFile())
                     owned = true
                 }
-                requireNotNull(fetch(release.downloadUrl, api = false) { response ->
+                fetch(release.downloadUrl, RequestKind.ASSET) { response ->
                     val body = requireNotNull(response.body)
                     val declared = body.contentLength()
                     check(declared == -1L || declared == release.bytes)
@@ -168,7 +166,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                     val expected = release.sha256.chunked(2).map { it.toInt(16).toByte() }.toByteArray()
                     check(MessageDigest.isEqual(expected, digest.digest()))
                     Unit
-                })
+                }
                 currentCoroutineContext().ensureActive()
             }
         } catch (error: Throwable) {
@@ -178,7 +176,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     }
 
     private fun validate(release: UpdateRelease) {
-        check(release.count in 1..2_100_000_000)
+        check(release.count in 1..MAX_ANDROID_VERSION_CODE)
         check(release.version == "0.1.${release.count}")
         check(release.apk == "Music-${release.version}.apk")
         check(release.bytes in 1..MAX_APK_BYTES)
@@ -186,9 +184,9 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         check(release.downloadUrl == assetPrefix(release.count) + release.apk)
     }
 
-    private fun tagCount(tag: String): Int {
+    private fun tagCount(tag: String, maximum: Int = MAX_ANDROID_VERSION_CODE): Int {
         check(Regex("v0\\.1\\.[1-9][0-9]{0,9}").matches(tag))
-        return requireNotNull(tag.removePrefix("v0.1.").toIntOrNull()).also { check(it <= 2_100_000_000) }
+        return requireNotNull(tag.removePrefix("v0.1.").toIntOrNull()).also { check(it <= maximum) }
     }
 
     private fun readBounded(response: Response, maximum: Int): ByteArray {
@@ -210,16 +208,16 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     /** Redirects are checked on logical HTTPS URLs before any test transport rewriting. */
     private suspend fun <T : Any> fetch(
         initial: String,
-        api: Boolean,
+        kind: RequestKind,
         consume: (Response) -> T,
-    ): T? {
+    ): T {
         var url = initial.toHttpUrl()
+        checkAllowed(url, initial, kind, previous = null)
         repeat(MAX_REDIRECTS + 1) { hop ->
-            checkAllowed(url, api)
             val transport = testConfig?.origin?.newBuilder()
                 ?.encodedPath(url.encodedPath)?.encodedQuery(url.encodedQuery)?.build() ?: url
             val request = Request.Builder().url(transport)
-                .header("Accept", if (api) "application/vnd.github+json" else "application/octet-stream")
+                .header("Accept", if (kind == RequestKind.TAG) "application/vnd.github+json" else "application/octet-stream")
                 .header("Accept-Encoding", "identity")
                 .header("User-Agent", "Music-Android-Updater")
                 .build()
@@ -228,8 +226,7 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
                     response.code in REDIRECT_STATUSES -> {
                         check(hop < MAX_REDIRECTS)
                         val next = requireNotNull(url.resolve(requireNotNull(response.header("Location"))))
-                        checkAllowed(next, api)
-                        if (api) check(next.toString() == initial)
+                        checkAllowed(next, initial, kind, previous = url)
                         FetchResult<T>(next = next)
                     }
                     else -> {
@@ -265,21 +262,28 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         return listOfNotNull(retryAfter, reset).maxOrNull()
     }
 
-    private fun checkAllowed(url: HttpUrl, api: Boolean) {
+    private fun checkAllowed(url: HttpUrl, initial: String, kind: RequestKind, previous: HttpUrl?) {
         check(url.scheme == "https" && url.port == 443 && url.username.isEmpty() &&
             url.password.isEmpty() && url.fragment == null)
-        if (api) {
-            // Every API path/query is fixed here; server-provided URLs are never requested.
-            check(url.host == "api.github.com")
-            val path = url.encodedPath.removePrefix("/repos/everyonesoftware/music/")
-            check(url.encodedPath == "/repos/everyonesoftware/music/$path")
-            val allowed = path == "releases" && (1..MAX_RELEASE_PAGES).any { url.toString() == releasesUrl(it) }
-            check(allowed)
-        } else {
-            check(url.host in ASSET_HOSTS)
-            if (url.host == "github.com") {
-                check(url.query == null)
-                check(Regex("/everyonesoftware/music/releases/download/v0\\.1\\.[1-9][0-9]{0,9}/(?:release\\.json|Music-0\\.1\\.[1-9][0-9]{0,9}\\.apk)").matches(url.encodedPath))
+        when (kind) {
+            RequestKind.INDEX -> when {
+                previous == null -> check(url.toString() == INDEX_URL)
+                previous.toString() == INDEX_URL -> {
+                    check(url.host == "github.com" && url.query == null)
+                    val path = url.encodedPath
+                    check(path.startsWith(ASSET_PATH_PREFIX) && path.endsWith("/$INDEX_NAME"))
+                    tagCount(path.removePrefix(ASSET_PATH_PREFIX).removeSuffix("/$INDEX_NAME"))
+                }
+                else -> check(url.host in CDN_HOSTS)
+            }
+            RequestKind.TAG -> {
+                check(url.toString() == initial && initial.startsWith(TAG_API_PREFIX))
+                tagCount(initial.removePrefix(TAG_API_PREFIX))
+            }
+            RequestKind.ASSET -> if (url.host == "github.com") {
+                check(url.toString() == initial && ASSET_PATH.matches(url.encodedPath))
+            } else {
+                check(previous != null && url.host in CDN_HOSTS)
             }
         }
     }
@@ -312,21 +316,52 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
         throw UpdateException(if (failure is IOException) UpdateFailureKind.TRANSIENT else UpdateFailureKind.INVALID_METADATA)
     }
 
+    private enum class RequestKind { INDEX, TAG, ASSET }
+    private data class ReleaseIndex(val android: String, val windows: String)
+
+    // Read fields before materializing an object map, which would silently overwrite duplicate keys.
+    private object ReleaseIndexReader : DeserializationStrategy<ReleaseIndex> {
+        override val descriptor = buildClassSerialDescriptor("ReleaseIndex") {
+            element<JsonPrimitive>("schema")
+            element<String>("android")
+            element<String>("windows")
+        }
+
+        override fun deserialize(decoder: Decoder): ReleaseIndex = decoder.decodeStructure(descriptor) {
+            val seen = mutableSetOf<Int>()
+            var android: String? = null
+            var windows: String? = null
+            while (true) {
+                val field = decodeElementIndex(descriptor)
+                if (field == CompositeDecoder.DECODE_DONE) break
+                check(seen.add(field))
+                when (field) {
+                    0 -> {
+                        val schema = decodeSerializableElement(descriptor, field, JsonPrimitive.serializer())
+                        check(!schema.isString && schema.content == "1")
+                    }
+                    1 -> android = decodeStringElement(descriptor, field)
+                    2 -> windows = decodeStringElement(descriptor, field)
+                    else -> error("Unknown release index field")
+                }
+            }
+            check(seen.size == 3)
+            ReleaseIndex(requireNotNull(android), requireNotNull(windows))
+        }
+    }
+
     private data class FetchResult<T>(val value: T? = null, val next: HttpUrl? = null)
     @Serializable private data class PublishedRelease(
         @kotlinx.serialization.SerialName("tag_name") val tag: String,
         val draft: Boolean,
         val prerelease: Boolean,
         @kotlinx.serialization.SerialName("published_at") val publishedAt: String?,
-        @kotlinx.serialization.SerialName("target_commitish") val targetCommitish: String? = null,
-        val body: String? = null,
         val assets: List<Asset>,
     )
     @Serializable private data class Asset(
         val name: String,
         @kotlinx.serialization.SerialName("browser_download_url") val url: String,
         val size: Long? = null,
-        val state: String? = null,
     )
     @Serializable private data class Manifest(
         val count: Int, val version: String, val tag: String, val sha: String,
@@ -334,14 +369,20 @@ class UpdateClient private constructor(private val testConfig: UpdateTestConfig?
     )
 
     private companion object {
-        const val MAX_RELEASE_PAGES = 10
-        fun releasesUrl(page: Int) = "https://api.github.com/repos/everyonesoftware/music/releases?per_page=100&page=$page"
+        const val INDEX_NAME = "latest-versions.json"
+        const val INDEX_URL = "https://github.com/everyonesoftware/music/releases/latest/download/$INDEX_NAME"
+        const val TAG_API_PREFIX = "https://api.github.com/repos/everyonesoftware/music/releases/tags/"
+        const val ASSET_PATH_PREFIX = "/everyonesoftware/music/releases/download/"
+        const val MAX_ANDROID_VERSION_CODE = 2_100_000_000
+        const val MAX_WINDOWS_VERSION_CODE = 65_534
+        const val MAX_INDEX_JSON = 16 * 1024
         const val MAX_RELEASE_JSON = 1024 * 1024
         const val MAX_MANIFEST_JSON = 1024 * 1024
         const val MAX_APK_BYTES = 150L * 1024 * 1024
         const val MAX_REDIRECTS = 5
         val REDIRECT_STATUSES = setOf(301, 302, 303, 307, 308)
-        val ASSET_HOSTS = setOf("github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com")
-        fun assetPrefix(count: Int) = "https://github.com/everyonesoftware/music/releases/download/v0.1.$count/"
+        val CDN_HOSTS = setOf("release-assets.githubusercontent.com", "objects.githubusercontent.com")
+        val ASSET_PATH = Regex("${ASSET_PATH_PREFIX}v0\\.1\\.[1-9][0-9]{0,9}/(?:release\\.json|Music-0\\.1\\.[1-9][0-9]{0,9}\\.apk)")
+        fun assetPrefix(count: Int) = "https://github.com${ASSET_PATH_PREFIX}v0.1.$count/"
     }
 }
