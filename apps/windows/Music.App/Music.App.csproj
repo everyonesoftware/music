@@ -20,6 +20,7 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <RootNamespace>Music.App</RootNamespace>
     <AssemblyName>Music</AssemblyName>
     <Version>0.1.0</Version>
@@ -36,7 +37,6 @@
     <DynamicCodeSupport>false</DynamicCodeSupport>
     <CsWinRTAotOptimizerEnabled>true</CsWinRTAotOptimizerEnabled>
     <CsWinRTAotWarningLevel>2</CsWinRTAotWarningLevel>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
   <ItemGroup Condition="'$(MusicTrimmed)' == 'true'">
     <!-- XamlReader resolves controls/properties by name at runtime. Keep the

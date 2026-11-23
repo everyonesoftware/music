@@ -1,5 +1,20 @@
 # Windows implementation checkpoint — validation
 
+## Taskbar thumbnail playback
+
+On Windows, hover over the running Music taskbar icon and check **Previous**,
+**Play/Pause** and **Next** beneath the existing preview. Verify that:
+
+- [ ] All three controls are inactive without a queue and work after a queue is
+  loaded, including a paused restored queue and after an account is removed.
+- [ ] With Music minimized, the controls use the same queue and restart/skip
+  rules as the footer, without bringing Music to the foreground. Play and Pause
+  icons and tooltips follow playback commands from the footer and media keys.
+- [ ] The toolbar returns after restarting Explorer. Check the icons on light
+  and dark taskbars and with mixed display scaling.
+
+The source contracts and cross-build do not verify Explorer rendering or input.
+
 ## Filled footer transport and Android-style slider markers
 
 Play, Previous and Next use filled vector triangles in their existing foreground

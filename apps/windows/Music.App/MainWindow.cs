@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
 {
     private readonly Grid root;
     private readonly WindowsUpdatesPanel updatesPanel;
+    private readonly TaskbarPlayback? taskbarPlayback;
     private readonly RequestGate browseGate = new(), connectGate = new(), testGate = new(), artworkGate = new(), playingArtGate = new(), connectionGate = new();
     private RequestGate.Lease connectionLease;
     private readonly ArtworkLoader artwork = new();
@@ -131,8 +132,8 @@ public sealed partial class MainWindow : Window
                 ShowError("Playback interrupted. Complete saved songs work offline; reconnect to resume this song. Check the format and output device if it still fails.");
             });
         };
-        player.CommandManager.PlayReceived += (_, _) => DispatcherQueue.TryEnqueue(() => playIntended = true);
-        player.CommandManager.PauseReceived += (_, _) => DispatcherQueue.TryEnqueue(() => playIntended = false);
+        player.CommandManager.PlayReceived += (_, _) => DispatcherQueue.TryEnqueue(() => { playIntended = true; UpdateTaskbarPlayback(); });
+        player.CommandManager.PauseReceived += (_, _) => DispatcherQueue.TryEnqueue(() => { playIntended = false; UpdateTaskbarPlayback(); });
         // MediaPlayer's command manager handles play/pause and publishes item metadata.
         player.CommandManager.NextReceived += (_, e) => { e.Handled = true; DispatcherQueue.TryEnqueue(() => Step(1)); };
         player.CommandManager.PreviousReceived += (_, e) => { e.Handled = true; DispatcherQueue.TryEnqueue(Previous); };
@@ -146,6 +147,8 @@ public sealed partial class MainWindow : Window
         C<TextBlock>("VersionText").Text = $"Current Version: {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
         SetNavigation();
         RenderQueue();
+        taskbarPlayback = TaskbarPlayback.Attach(
+            WinRT.Interop.WindowNative.GetWindowHandle(this), DispatcherQueue, Previous, TogglePlayback, () => Step(1));
         UpdateTransport();
     }
 
@@ -848,6 +851,7 @@ public sealed partial class MainWindow : Window
             previousSongId = previous; activeSongId = song.Id;
             interruptedPosition = Math.Max(0, position);
             playIntended = play; playbackInterrupted = false;
+            UpdateTaskbarPlayback();
             C<TextBlock>("TrackTitle").Text = song.Title;
             C<TextBlock>("TrackArtist").Text = song.Artist;
             UpdatePlayerRating();
@@ -923,7 +927,7 @@ public sealed partial class MainWindow : Window
     }
     private void TogglePlayback()
     {
-        if (queueIndex < 0) return;
+        if (closed || queueIndex < 0) return;
         try
         {
             if (playIntended) { playIntended = false; player.Pause(); SavePlayback(); }
@@ -936,6 +940,7 @@ public sealed partial class MainWindow : Window
             }
         }
         catch { ShowError("Playback is unavailable right now."); }
+        finally { UpdateTaskbarPlayback(); }
     }
     private void Previous()
     {
@@ -1115,6 +1120,13 @@ public sealed partial class MainWindow : Window
         AutomationProperties.SetName(C<Button>("PlayButton"), playing ? "Pause" : "Play");
         bool enabled = queueIndex >= 0;
         foreach (var name in new[] { "PlayButton", "PreviousButton", "NextButton" }) C<Button>(name).IsEnabled = enabled;
+        UpdateTaskbarPlayback();
+    }
+    private void UpdateTaskbarPlayback()
+    {
+        if (closed) return;
+        bool enabled = queueIndex >= 0;
+        taskbarPlayback?.Update(enabled, playIntended);
     }
     private void Tick()
     {
@@ -1329,6 +1341,7 @@ public sealed partial class MainWindow : Window
     {
         if (closed) return;
         updatesPanel.Dispose();
+        taskbarPlayback?.Dispose();
         SavePlayback(); closed = true;
         ShutdownOffline();
         timer.Stop(); browseGate.Dispose(); connectGate.Dispose(); testGate.Dispose(); artworkGate.Dispose(); playingArtGate.Dispose(); connectionGate.Dispose();

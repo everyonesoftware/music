@@ -3,6 +3,7 @@ import './artists-flow.test.mjs';
 import './artists-visual.test.mjs';
 import './up-next-shuffle.test.mjs';
 import './player-controls.test.mjs';
+import './taskbar-playback.test.mjs';
 import './played-queue.test.mjs';
 import './updates-card.test.mjs';
 import './update-changelog.test.mjs';
