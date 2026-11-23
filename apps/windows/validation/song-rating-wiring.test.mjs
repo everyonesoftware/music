@@ -13,9 +13,10 @@ test('Songs and collection tracks share the rating column with the list row rend
   assert.match(main, /Grid\.SetColumn\(duration, showRatings \? 4 : 3\)/);
 });
 
-test('both native compact entry points use the same account-bound rating path', () => {
+test('native compact entry points use the same account-bound rating path', () => {
   assert.match(shell, /x:Name="PlayerRatingButton"/);
-  assert.match(main, /CreateQueueRating\(song, connectionLease\)/);
+  assert.match(main, /CreateCompactRating\(song, connectionLease, HorizontalAlignment.Right\)/);
+  assert.match(main, /CreateCompactRating\(song, owner\)/);
   assert.ok(existsSync(file), 'missing shared rating integration');
   const body = read('MainWindow.Ratings.cs');
   assert.match(body, /ShowRatingPicker\(button, song, owner\)/);

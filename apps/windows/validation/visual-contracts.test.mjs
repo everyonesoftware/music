@@ -158,18 +158,43 @@ test('track list shares responsive columns with its headings and stretches item 
   for (const label of ['#', 'Title / artist', 'Album', 'Time']) assert.ok(songs.includes(`"${label}"`));
   const row = method('SongRow');
   assert.match(songs, /view.Items.Add\(SongRow\(/);
-  assert.match(row, /var grid = SongGrid\(showRatings\)/);
+  assert.match(row, /var grid = SongGrid\(showRatings,/);
   assert.match(songs, /HorizontalContentAlignmentProperty, HorizontalAlignment.Stretch/);
   assert.match(songs, /view.ItemContainerStyle = itemStyle/);
   assert.match(songs, /PaddingProperty, new Thickness\(0\)/);
   assert.match(row, /ToolTipService.SetToolTip\(album, song.Album\)/);
   assert.match(songs, /StartQueue\(playQueue, index\)/);
   const grid = method('SongGrid');
-  assert.match(grid, /new GridLength\(1, GridUnitType.Star\)/);
+  assert.match(grid, /new GridLength\(showRatings \? 2 : 1, GridUnitType.Star\)/);
   assert.match(grid, /new GridLength\(0.8, GridUnitType.Star\)/);
   assert.match(grid, /ColumnSpacing = 12/);
   assert.match(grid, /MinHeight = 56/);
   assert.doesNotMatch(grid, /new GridLength\(160\)/);
+});
+
+test('rated track lists prioritize titles and reclaim inline star space at the reported narrow width', () => {
+  const grid = method('SongGrid');
+  const baseColumns = [...grid.matchAll(/new GridLength\(([\d.]+)\)/g)].map(match => Number(match[1]));
+  const [number, time] = baseColumns;
+  const compact = grid.match(/const double compactRatingWidth = (\d+);/);
+  assert.ok(compact, 'a narrow rated list must not reserve the full five-star width');
+  const compactWidth = Number(compact[1]);
+  const fullRating = Number(grid.match(/const double inlineRatingWidth = (\d+);/)?.[1]);
+  const starColumns = [...grid.matchAll(/new GridLength\((?:showRatings \? ([\d.]+) : )?([\d.]+), GridUnitType.Star\)/g)]
+    .map(match => Number(match[1] ?? match[2]));
+  const [title, album] = starColumns;
+  const spacing = Number(grid.match(/ColumnSpacing = (\d+)/)?.[1]);
+  const padding = Number(grid.match(/Padding = new Thickness\((\d+),/)?.[1]);
+  const titleWidth = width => (width - number - time - compactWidth - 4 * spacing - 2 * padding) * title / (title + album) - 52;
+  assert.ok(titleWidth(444) >= 135, 'at the reported scale the title needs room beyond the artwork');
+  assert.ok(compactWidth >= 40 && compactWidth < fullRating);
+  assert.match(grid, /SizeChanged \+=/);
+  assert.match(grid, /args\.NewSize\.Width >= (\d+)/);
+  const threshold = Number(grid.match(/args\.NewSize\.Width >= (\d+)/)[1]);
+  assert.ok(444 < threshold && threshold <= 800);
+  assert.match(grid, /ratingColumn\.Width = new GridLength\(inline \? inlineRatingWidth : compactRatingWidth\)/);
+  assert.match(method('RenderDetail'), /var header = SongGrid\(showRatings\)/);
+  assert.match(method('SongRow'), /showRatings \? inline => inline \? CreateInlineRating\(song, owner\) : CreateCompactRating\(song, owner\) : null/);
 });
 
 test('list songs include 40px artwork beside the title while headings retain text alignment', () => {

@@ -220,6 +220,22 @@ public sealed partial class MainWindow
             NativeRequire(checks, "albumDetail", detailSongs.Count == 2 && page == "detail");
             await OpenCollectionAsync(playlists[0]);
             NativeRequire(checks, "playlistDetail", detailSongs.Count == 2);
+            var detailHost = C<Grid>("DetailHost");
+            var list = C<ListView>("DetailList");
+            var heading = C<StackPanel>("DetailHeader").Children.OfType<Grid>().Single();
+            Grid? FirstRatedRow() => NativeTree(list).OfType<Grid>().FirstOrDefault(g => g.Tag is 0 && g.ColumnDefinitions.Count == 5);
+            // Resize the live detail viewport, independent of the runner's desktop DPI.
+            detailHost.Width = 444;
+            try
+            {
+                await NativeAcceptance.WaitAsync(() => FirstRatedRow() is { } row &&
+                    row.Children.OfType<Button>().Any(b => Grid.GetColumn(b) == 3 && b.ActualWidth >= 40));
+                var row = FirstRatedRow()!;
+                NativeRequire(checks, "narrowPlaylistTitleBudget", row.ColumnDefinitions[1].ActualWidth - 52 >= 135);
+                NativeRequire(checks, "narrowPlaylistColumnAlignment", heading.ColumnDefinitions.Zip(row.ColumnDefinitions)
+                    .All(pair => Math.Abs(pair.First.ActualWidth - pair.Second.ActualWidth) <= 1));
+            }
+            finally { detailHost.ClearValue(FrameworkElement.WidthProperty); }
             if (stage == "seed")
             {
                 queue = new List<Song> { detailSongs[0], detailSongs[1], detailSongs[0] };

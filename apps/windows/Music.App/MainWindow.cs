@@ -619,7 +619,8 @@ public sealed partial class MainWindow : Window
         if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token, song);
         else
         {
-            var grid = SongGrid(showRatings); grid.Tag = index;
+            var grid = SongGrid(showRatings, showRatings ? inline => inline ? CreateInlineRating(song, owner) : CreateCompactRating(song, owner) : null);
+            grid.Tag = index;
             grid.Children.Add(Text((index + 1).ToString(), 12, true));
             var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
             copy.Children.Add(SongTitle(song, 14)); copy.Children.Add(Text(song.Artist, 12, true));
@@ -627,10 +628,7 @@ public sealed partial class MainWindow : Window
             var cell = SongCell(song, copy, token, owner);
             Grid.SetColumn(cell, 1); grid.Children.Add(cell);
             var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
-            if (showRatings)
-            {
-                var rating = CreateInlineRating(song, owner); Grid.SetColumn(rating, 3); grid.Children.Add(rating);
-            }
+
             var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, showRatings ? 4 : 3); grid.Children.Add(duration);
             AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
         }
@@ -638,7 +636,7 @@ public sealed partial class MainWindow : Window
         return row;
     }
 
-    private static Grid SongGrid(bool showRatings)
+    private static Grid SongGrid(bool showRatings, Func<bool, FrameworkElement>? createRating = null)
     {
         var grid = new Grid
         {
@@ -647,9 +645,29 @@ public sealed partial class MainWindow : Window
             BorderBrush = new SolidColorBrush(ColorHelper.FromArgb(255, 57, 69, 61)), BorderThickness = new Thickness(0, 0, 0, 1)
         };
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(28) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(showRatings ? 2 : 1, GridUnitType.Star) });
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(0.8, GridUnitType.Star) });
-        if (showRatings) grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(145) });
+        if (showRatings)
+        {
+            const double compactRatingWidth = 40;
+            const double inlineRatingWidth = 145;
+            var ratingColumn = new ColumnDefinition { Width = new GridLength(compactRatingWidth) };
+            grid.ColumnDefinitions.Add(ratingColumn);
+            FrameworkElement? rating = null;
+            bool? wasInline = null;
+            // The sidebar, Queue and DPI can all change the actual room for titles.
+            grid.SizeChanged += (_, args) =>
+            {
+                bool inline = args.NewSize.Width >= 600;
+                if (inline == wasInline) return;
+                wasInline = inline;
+                ratingColumn.Width = new GridLength(inline ? inlineRatingWidth : compactRatingWidth);
+                if (createRating is null) return; // Heading uses the same column without an action.
+                if (rating is not null) grid.Children.Remove(rating);
+                rating = createRating(inline);
+                Grid.SetColumn(rating, 3); grid.Children.Add(rating);
+            };
+        }
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
         return grid;
     }
@@ -1065,7 +1083,7 @@ public sealed partial class MainWindow : Window
         duration.HorizontalAlignment = HorizontalAlignment.Right;
         var tail = new StackPanel { VerticalAlignment = VerticalAlignment.Center };
         tail.Children.Add(duration);
-        tail.Children.Add(CreateQueueRating(song, connectionLease));
+        tail.Children.Add(CreateCompactRating(song, connectionLease, HorizontalAlignment.Right));
         Grid.SetColumn(tail, 1); row.Children.Add(tail);
         if (entry.Current) row.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57));
         AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + SongAvailability(song) + ", " + song.Artist);

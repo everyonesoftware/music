@@ -57,11 +57,11 @@ public sealed partial class MainWindow
         return control;
     }
 
-    private Button CreateQueueRating(Song song, RequestGate.Lease owner)
+    private Button CreateCompactRating(Song song, RequestGate.Lease owner, HorizontalAlignment alignment = HorizontalAlignment.Left)
     {
         var button = new Button { Width = 40, MinWidth = 0, Height = 32, Padding = new(2, 0, 2, 0),
             BorderThickness = new(0), Background = new Microsoft.UI.Xaml.Media.SolidColorBrush(Microsoft.UI.Colors.Transparent),
-            HorizontalAlignment = HorizontalAlignment.Right };
+            HorizontalAlignment = alignment };
         button.Click += (_, _) => ShowRatingPicker(button, song, owner);
         button.Unloaded += (_, _) => { if (ReferenceEquals(activeRatingFlyout?.Target, button)) activeRatingFlyout.Hide(); };
         BindRatingView(button, song, owner, (rating, enabled) => SongRatingView.UpdateTrigger(button, song, rating, enabled));
