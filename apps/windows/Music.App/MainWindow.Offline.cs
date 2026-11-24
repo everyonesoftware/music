@@ -1,5 +1,7 @@
 using System.Text.Json;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Controls;
 using Music.Core;
 using Windows.Networking.Connectivity;
@@ -15,7 +17,10 @@ public sealed partial class MainWindow
     private Task cacheTask = Task.CompletedTask;
     private readonly BackgroundStorage storageWork = new();
     private Task cacheInitialization = Task.CompletedTask;
-    private readonly Dictionary<string, List<(Song Song, WeakReference<TextBlock> Label)>> songLabels = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, List<WeakReference<Border>>> songBadges = new(StringComparer.Ordinal);
+    private readonly List<(string Key, int Count, WeakReference<Border> Badge)> collectionBadges = [];
+    private readonly Dictionary<string, IReadOnlyList<Song>> verifiedCollectionMembership = new(StringComparer.Ordinal);
+    private bool deviceActionRunning;
     private readonly HashSet<string> changedCacheSongs = new(StringComparer.Ordinal);
     private IReadOnlyDictionary<string, CachedSong> renderedCacheSnapshot = new Dictionary<string, CachedSong>();
     private Microsoft.UI.Dispatching.DispatcherQueueTimer? cacheRefreshTimer;
@@ -24,7 +29,6 @@ public sealed partial class MainWindow
     private readonly List<Song> offlinePlaybackSongs = [];
     private TextBlock? offlineEmpty;
     private int cacheMaintenance;
-    private readonly List<Song> pendingDownloads = [];
     private bool playIntended, playbackInterrupted, offlineOnly, offlineInitialized;
     private double interruptedPosition;
     private bool localPlayback;
@@ -47,7 +51,7 @@ public sealed partial class MainWindow
         var section = new StackPanel { Spacing = 12 };
         section.Children.Add(Text("Storage & offline", 21));
         var offline = new ToggleSwitch { Header = "Offline mode — no server playback or browsing", IsOn = offlineSettings.Offline };
-        var played = new ToggleSwitch { Header = "Save played songs automatically", IsOn = offlineSettings.SavePlayed };
+        var played = new ToggleSwitch { Header = "Cache played songs automatically", IsOn = offlineSettings.SavePlayed };
         var mobile = new ToggleSwitch { Header = "Allow upcoming songs on mobile / metered networks", IsOn = offlineSettings.MobilePrefetch };
         var limit = new ComboBox { Header = "Automatic cache limit", HorizontalAlignment = HorizontalAlignment.Stretch };
         long mb = 1024L * 1024;
@@ -63,7 +67,7 @@ public sealed partial class MainWindow
         var recent = new Button { Content = "Offline & recent songs" };
         var removeAccount = new Button { Content = "Remove account and all saved songs" };
         foreach (var control in new FrameworkElement[] { offline, played, limit, custom, next, mobile, storageUsage, clear, recent, removeAccount }) section.Children.Add(control);
-        section.Children.Add(new TextBlock { Text = "Complete saved songs play locally. Downloads are pinned until removed and are not included in the automatic cache limit. Active and previous songs are protected; usage can temporarily exceed the limit. Incomplete transfers retry from the beginning. Current-song saving uses your playback connection; the network restriction applies to prefetch only.", TextWrapping = TextWrapping.Wrap, Foreground = Muted });
+        section.Children.Add(new TextBlock { Text = "Saved songs play offline and stay on this device until removed. Cached songs play offline too, but can be cleared automatically. Streamed songs need a connection. Saved songs are not included in the cache limit. Active and previous songs are protected; usage can temporarily exceed the limit. Incomplete transfers retry from the beginning. Current-song saving uses your playback connection; the network restriction applies to prefetch only.", TextWrapping = TextWrapping.Wrap, Foreground = Muted });
         C<StackPanel>("SettingsPanel").Children.Insert(2, section);
         offline.Toggled += async (_, _) => await SetOfflineAsync(offline.IsOn);
         played.Toggled += (_, _) => { offlineSettings = offlineSettings with { SavePlayed = played.IsOn }; SaveOfflineSettings(); ScheduleCache(); };
@@ -102,7 +106,8 @@ public sealed partial class MainWindow
     private async Task ActivateCache(ConnectionProfile profile)
     {
         cacheCancellation.Cancel();
-        var old = cache; cache = null; pendingDownloads.Clear(); songLabels.Clear();
+        var old = cache; cache = null; songBadges.Clear(); collectionBadges.Clear();
+        InvalidateCollectionMembership();
         changedCacheSongs.Clear(); renderedCacheSnapshot = new Dictionary<string, CachedSong>();
         var owner = connectionLease;
         if (profiles is null) return;
@@ -118,6 +123,7 @@ public sealed partial class MainWindow
             cache = created;
         }
         catch { if (!closed && connectionGate.IsCurrent(owner)) ShowError("Song storage is unavailable. Streaming still works while online. Check free disk space and folder permissions, then reconnect to retry storage."); }
+        QueueCacheRefresh("");
         RefreshStorageUsage();
     }
     private async Task PurgeAccountCacheAsync(ConnectionProfile profile)
@@ -162,7 +168,7 @@ public sealed partial class MainWindow
             var items = entries.Where(x => x.Pinned == pin).ToArray();
             return $"{items.Sum(x => x.Bytes) / (1024d * 1024):F1} MB · {items.Count(x => x.Complete)} complete · {items.Count(x => !x.Complete)} incomplete";
         }
-        storageUsage.Text = $"Automatic cache: {Usage(false)}\nPinned downloads: {Usage(true)}";
+        storageUsage.Text = $"Automatic cache: {Usage(false)}\nSaved to Device: {Usage(true)}";
     }
     private async Task TrimCacheAsync(bool clear)
     {
@@ -177,8 +183,8 @@ public sealed partial class MainWindow
             long limit = offlineSettings.CacheLimitBytes;
             await storageWork.RunAsync(() => { if (clear) storage.ClearAutomatic(protect); else storage.Trim(limit, protect); });
             if (closed || cache != storage) return;
+            QueueCacheRefresh("");
             RefreshStorageUsage();
-            if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
         }
         catch { ShowError("Could not clear storage. Active playback files have been kept."); }
         finally { cacheMaintenance--; }
@@ -192,7 +198,7 @@ public sealed partial class MainWindow
         filter.Click += (_, _) => { offlineOnly = filter.IsChecked == true; RenderOfflineBrowse(); };
         panel.Children.Add(filter);
         offlineRows.Clear();
-        offlineEmpty = Text("No saved songs match. Play or download songs while connected to save them here.", 14, true);
+        offlineEmpty = Text("No songs match. Play or save songs while connected to make them available offline.", 14, true);
         panel.Children.Add(offlineEmpty);
         AddSongs(panel, offlineRows, "list", CancellationToken.None, offlinePlaybackSongs);
         offlineSongsView = panel.Children.OfType<ListViewBase>().Last();
@@ -228,50 +234,93 @@ public sealed partial class MainWindow
                 { row.Tag = i; if (row.Children[0] is TextBlock number) number.Text = (i + 1).ToString(); }
         if (offlineEmpty is not null) offlineEmpty.Visibility = found.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
-    private async Task DownloadSongs(IEnumerable<Song> tracks)
+    private Button CreateDeviceActions(string title, double size, Func<bool> current,
+        Func<IReadOnlyDictionary<string, CachedSong>, bool> requested, Func<Task> save, Func<Task> remove)
     {
-        if (offlineSettings.Offline) { ShowError("Turn off Offline mode to download songs."); return; }
-        var requested = tracks.ToArray();
+        var button = new Button { Content = new SymbolIcon(Symbol.More), Width = size, Height = size,
+            MinWidth = 0, MinHeight = 0, Padding = new Thickness(0), BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(size / 2), VerticalAlignment = VerticalAlignment.Center,
+            Background = new SolidColorBrush(Microsoft.UI.Colors.Transparent), IsEnabled = current() };
+        string name = "Device actions for " + title;
+        AutomationProperties.SetName(button, name);
+        ToolTipService.SetToolTip(button, name);
+        var menu = new MenuFlyout();
+        var action = new MenuFlyoutItem();
+        bool removing = false;
+        menu.Items.Add(action);
+        button.Flyout = menu;
+        menu.Opening += (_, _) =>
+        {
+            removing = requested(CacheSnapshot());
+            action.Text = removing ? "Remove from Device" : "Save to Device";
+            action.IsEnabled = !deviceActionRunning && current() && cache is not null;
+        };
+        action.Click += async (_, _) =>
+        {
+            if (deviceActionRunning || !current() || cache is null || removing != requested(CacheSnapshot())) return;
+            deviceActionRunning = true;
+            try { if (removing) await remove(); else await save(); }
+            finally { deviceActionRunning = false; }
+        };
+        return button;
+    }
+
+    private void AddSongDeviceActions(FrameworkElement row, Song song, RequestGate.Lease owner)
+    {
+        if (row is not Grid grid) return;
+        var actions = CreateDeviceActions(song.Title, 32,
+            () => !closed && !accountChangePending && connectionGate.IsCurrent(owner),
+            snapshot => snapshot.TryGetValue(song.Id, out var entry) && entry.Pinned,
+            () => SaveToDeviceAsync([song], "", owner), () => RemoveFromDeviceAsync(song.Id, null, owner));
+        if (grid.ColumnDefinitions.Count == 0) // Song tile: keep the whole title width below the artwork.
+        {
+            actions.VerticalAlignment = VerticalAlignment.Top;
+            actions.Margin = new Thickness(0, 4, 4, 0);
+            actions.Background = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(235, 36, 44, 40));
+        }
+        else Grid.SetColumn(actions, grid.ColumnDefinitions.Count - 1);
+        actions.HorizontalAlignment = HorizontalAlignment.Right;
+        grid.Children.Add(actions);
+    }
+
+    private async Task SaveToDeviceAsync(IReadOnlyList<Song> tracks, string key, RequestGate.Lease owner)
+    {
         var storage = cache;
-        var owner = connectionLease;
-        if (storage is null) { ShowError("Song storage is not ready. Reconnect or retry shortly."); return; }
-        try { await storageWork.RunAsync(() => storage.Pin(requested)); }
-        catch { if (!closed && storage == cache && connectionGate.IsCurrent(owner)) ShowError("Could not save download choices. Check free disk space and retry."); return; }
+        if (storage is null || !connectionGate.IsCurrent(owner)) return;
+        if (offlineSettings.Offline && tracks.Any(song => !HasSavedSong(song.Id)))
+        { ShowError("Turn off Offline mode to save songs that are not cached yet."); return; }
+        try { await storageWork.RunAsync(() => storage.Pin(tracks, key)); }
+        catch { if (!closed && storage == cache && connectionGate.IsCurrent(owner)) ShowError("Could not save to this device. Check free disk space and retry."); return; }
         if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
-        var pendingIds = pendingDownloads.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
-        foreach (var song in requested) if (pendingIds.Add(song.Id)) pendingDownloads.Add(song);
-        foreach (var song in requested) QueueCacheRefresh(song.Id);
-        RefreshStorageUsage();
+        QueueCacheRefresh(tracks[0].Id);
         ScheduleCache();
     }
-    private void AddDownloadMenu(FrameworkElement row, Song song, RequestGate.Lease owner)
+
+    private async Task RemoveFromDeviceAsync(string? songId, string? collectionKey, RequestGate.Lease owner)
     {
-        var menu = new MenuFlyout();
-        var download = new MenuFlyoutItem { Text = "Download song" };
-        var remove = new MenuFlyoutItem { Text = "Remove download" };
-        download.Click += async (_, _) => { if (connectionGate.IsCurrent(owner)) await DownloadSongs([song]); };
-        remove.Click += async (_, _) =>
+        var storage = cache;
+        if (storage is null || !connectionGate.IsCurrent(owner)) return;
+        cacheMaintenance++;
+        cacheCancellation.Cancel();
+        try
         {
-            if (!connectionGate.IsCurrent(owner)) return;
-            cacheMaintenance++;
-            cacheCancellation.Cancel();
-            try
+            await cacheTask;
+            if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
+            bool removed = await storageWork.RunAsync(() => collectionKey is not null
+                ? storage.RemoveCollection(collectionKey) : storage.RemoveDownload(songId!));
+            if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
+            if (!removed) ShowError("The current or previous song is protected. Change songs before removing its copy from this device.");
+        }
+        catch { if (!closed && storage == cache && connectionGate.IsCurrent(owner)) ShowError("Could not fully remove the saved music from this device."); }
+        finally
+        {
+            cacheMaintenance--;
+            if (!closed && storage == cache && connectionGate.IsCurrent(owner))
             {
-                await cacheTask;
-                if (!connectionGate.IsCurrent(owner) || closed) return;
-                var storage = cache;
-                if (storage is null) return;
-                bool removed = await storageWork.RunAsync(() => storage.RemoveDownload(song.Id));
-                if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;
-                if (!removed) { ShowError("The current or previous song is protected. Change songs before removing its download."); return; }
-                pendingDownloads.RemoveAll(x => x.Id == song.Id);
-                QueueCacheRefresh(song.Id); RefreshStorageUsage();
-                if (page == "offline" || offlineSettings.Offline) RenderOfflineBrowse();
+                QueueCacheRefresh(songId ?? "");
+                ScheduleCache();
             }
-            catch { ShowError("Could not remove this download."); }
-            finally { cacheMaintenance--; ScheduleCache(); }
-        };
-        menu.Items.Add(download); menu.Items.Add(remove); row.ContextFlyout = menu;
+        }
     }
     private void NetworkChanged(object sender) => DispatcherQueue.TryEnqueue(() =>
     {
@@ -290,6 +339,7 @@ public sealed partial class MainWindow
             var data = await ReadLibraryAsync(target, owner.Token);
             if (closed || offlineSettings.Offline || client != target || !connectionGate.IsCurrent(owner)) return;
             albums = data.Albums; playlists = data.Playlists;
+            InvalidateCollectionMembership();
             if (page is not "offline" and not "settings" and not "detail") await LoadBrowseAsync();
         }
         catch { /* No surprise replay after a failed reconnect. */ }
@@ -299,7 +349,7 @@ public sealed partial class MainWindow
     {
         if (connection is null || profiles is null || accountChangePending) return;
         var profile = connection;
-        var dialog = new ContentDialog { Title = "Remove account?", Content = "This deletes all automatic cache, pinned downloads and the saved queue for this account.", PrimaryButtonText = "Remove", CloseButtonText = "Cancel", XamlRoot = root.XamlRoot, DefaultButton = ContentDialogButton.Close };
+        var dialog = new ContentDialog { Title = "Remove account?", Content = "This deletes all automatic cache, saved songs and the saved queue for this account.", PrimaryButtonText = "Remove", CloseButtonText = "Cancel", XamlRoot = root.XamlRoot, DefaultButton = ContentDialogButton.Close };
         if (await dialog.ShowAsync() != ContentDialogResult.Primary) return;
         if (closed || connection != profile || accountChangePending) return;
         accountChangePending = true;
@@ -319,7 +369,8 @@ public sealed partial class MainWindow
             cache = null; client?.Dispose(); client = null; connection = null;
             ResetRatings(null);
             navigationHistory.Clear(); detailCollection = null;
-            pendingDownloads.Clear(); albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
+            albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
+            InvalidateCollectionMembership();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
             C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";
             RefreshStorageUsage(); await NavigateAsync("settings", remember: false);
@@ -327,21 +378,96 @@ public sealed partial class MainWindow
         finally { accountChangePending = false; cacheMaintenance--; if (!closed) SetConnecting(false); }
     }
 
-    private string SongAvailability(Song song)
+    private static readonly IReadOnlyDictionary<string, CachedSong> EmptyCache = new Dictionary<string, CachedSong>();
+    private IReadOnlyDictionary<string, CachedSong> CacheSnapshot() => cache?.Snapshot() ?? EmptyCache;
+    private bool HasSavedSong(string id) => DeviceAvailability.Song(CacheSnapshot(), id) != DeviceSongState.Streamed;
+
+    private static void ConfigureSavedBadge(Border badge, double size)
     {
-        CachedSong? entry = null;
-        cache?.Snapshot().TryGetValue(song.Id, out entry);
-        return entry is { Complete: true } ? (entry.Pinned ? " · Downloaded · Offline" : " · Offline") : entry is not null ? " · Incomplete" : "";
+        badge.Width = badge.Height = size;
+        badge.CornerRadius = new CornerRadius(size / 2);
+        badge.Background = Sage;
+        badge.VerticalAlignment = VerticalAlignment.Center;
+        badge.Child = new FontIcon { Glyph = "\uE8FB", FontSize = size * .68,
+            Foreground = new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, 36, 52, 31)) };
+        AutomationProperties.SetAccessibilityView(badge.Child, Microsoft.UI.Xaml.Automation.Peers.AccessibilityView.Raw);
+        AutomationProperties.SetName(badge, "Saved to Device");
+        ToolTipService.SetToolTip(badge, "Saved to Device");
     }
-    private bool HasSavedSong(string id) => cache?.Snapshot().TryGetValue(id, out var entry) == true && entry.Complete;
-    private TextBlock SongTitle(Song song, double size)
+
+    private static void UpdateSongBadge(Border badge, string? id, IReadOnlyDictionary<string, CachedSong> snapshot)
     {
-        var label = Text(song.Title + SongAvailability(song), size);
-        if (!songLabels.TryGetValue(song.Id, out var labels)) songLabels[song.Id] = labels = [];
-        labels.RemoveAll(x => !x.Label.TryGetTarget(out _));
-        labels.Add((song, new(label)));
-        return label;
+        var state = id is null ? DeviceSongState.Streamed : DeviceAvailability.Song(snapshot, id);
+        badge.Visibility = state == DeviceSongState.Saved ? Visibility.Visible : Visibility.Collapsed;
+        if (badge.Tag is TextBlock title)
+            AutomationProperties.SetHelpText(title, id is null ? "" : state == DeviceSongState.Cached
+                ? "Cached: available offline but can be cleared automatically." : state.ToString());
     }
+
+    private static Grid TitleWithBadge(TextBlock title, Border badge)
+    {
+        var line = new Grid { HorizontalAlignment = HorizontalAlignment.Left };
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        line.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        badge.Margin = new Thickness(6, 0, 0, 0);
+        Grid.SetColumn(badge, 1);
+        line.Children.Add(title);
+        line.Children.Add(badge);
+        return line;
+    }
+
+    private Grid SongTitle(Song song, double size, bool current = false)
+    {
+        var title = Text(song.Title, size);
+        if (current) title.Foreground = Sage;
+        var badge = new Border { Tag = title };
+        ConfigureSavedBadge(badge, 16);
+        UpdateSongBadge(badge, song.Id, CacheSnapshot());
+        if (!songBadges.TryGetValue(song.Id, out var badges)) songBadges[song.Id] = badges = [];
+        badges.RemoveAll(x => !x.TryGetTarget(out _));
+        badges.Add(new(badge));
+        return TitleWithBadge(title, badge);
+    }
+
+    private FrameworkElement CardTitle(Card card)
+    {
+        var title = Text(card.Title, 14);
+        var (key, count) = card.Value switch
+        {
+            Album album => ("album:" + album.Id, album.SongCount),
+            Playlist playlist => ("playlist:" + playlist.Id, playlist.SongCount),
+            _ => ("", 0)
+        };
+        if (count <= 0) return title;
+        var badge = new Border();
+        ConfigureSavedBadge(badge, 16);
+        UpdateCardBadge(badge, key, count, CacheSnapshot());
+        collectionBadges.Add((key, count, new(badge)));
+        return TitleWithBadge(title, badge);
+    }
+
+    private void RememberCollectionMembership((string Kind, string Id) identity, IReadOnlyList<Song>? tracks)
+    {
+        string key = identity.Kind + ":" + identity.Id;
+        if (tracks is null) verifiedCollectionMembership.Remove(key);
+        else verifiedCollectionMembership[key] = tracks;
+    }
+
+    private void InvalidateCollectionMembership() => verifiedCollectionMembership.Clear();
+
+    private void UpdateCardBadge(Border badge, string key, int count, IReadOnlyDictionary<string, CachedSong> snapshot)
+        => badge.Visibility = DeviceAvailability.SavedCard(snapshot, key, count, verifiedCollectionMembership.GetValueOrDefault(key))
+            ? Visibility.Visible : Visibility.Collapsed;
+
+    private void UpdateCollectionDeviceBadge()
+    {
+        bool saved = page == "detail" && detailIdentity.Kind is "album" or "playlist" && !detailLoading && !detailError &&
+            DeviceAvailability.Collection(CacheSnapshot(), detailIdentity.Kind + ":" + detailIdentity.Id, detailSongs).Saved;
+        C<Border>("CollectionDeviceBadge").Visibility = saved ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateTrackDeviceBadge(Song? song) => UpdateSongBadge(C<Border>("TrackDeviceBadge"), song?.Id, CacheSnapshot());
+
     private void QueueCacheRefresh(string id)
     {
         changedCacheSongs.Add(id);
@@ -354,7 +480,7 @@ public sealed partial class MainWindow
             {
                 cacheRefreshTimer.Stop();
                 if (closed) return;
-                var snapshot = cache?.Snapshot() ?? new Dictionary<string, CachedSong>();
+                var snapshot = CacheSnapshot();
                 foreach (var entry in snapshot)
                     if (!renderedCacheSnapshot.TryGetValue(entry.Key, out var prior) || prior.Complete != entry.Value.Complete || prior.Pinned != entry.Value.Pinned)
                         changedCacheSongs.Add(entry.Key);
@@ -363,17 +489,25 @@ public sealed partial class MainWindow
                 renderedCacheSnapshot = snapshot;
                 foreach (var changed in changedCacheSongs)
                 {
-                    if (!songLabels.TryGetValue(changed, out var labels)) continue;
-                    labels.RemoveAll(item =>
+                    if (!songBadges.TryGetValue(changed, out var badges)) continue;
+                    badges.RemoveAll(item =>
                     {
-                        if (!item.Label.TryGetTarget(out var label)) return true;
-                        label.Text = item.Song.Title + SongAvailability(item.Song);
+                        if (!item.TryGetTarget(out var badge)) return true;
+                        UpdateSongBadge(badge, changed, snapshot);
                         return false;
                     });
+                    if (badges.Count == 0) songBadges.Remove(changed);
                 }
                 changedCacheSongs.Clear();
+                collectionBadges.RemoveAll(item =>
+                {
+                    if (!item.Badge.TryGetTarget(out var badge)) return true;
+                    UpdateCardBadge(badge, item.Key, item.Count, snapshot);
+                    return false;
+                });
                 RefreshStorageUsage();
-                if (queueIndex >= 0) C<TextBlock>("TrackTitle").Text = queue[queueIndex].Title + SongAvailability(queue[queueIndex]);
+                UpdateCollectionDeviceBadge();
+                UpdateTrackDeviceBadge(queueIndex >= 0 ? queue[queueIndex] : null);
                 if (page == "offline" || offlineSettings.Offline) RefreshOfflineRows();
             };
         }
@@ -405,7 +539,7 @@ public sealed partial class MainWindow
     }
     private static string CacheFailureMessage(Exception error) => error switch
     {
-        UnauthorizedAccessException => "Song storage is not writable. Check Windows folder permissions and retry the download.",
+        UnauthorizedAccessException => "Song storage is not writable. Check Windows folder permissions and retry saving.",
         IOException => "Could not save this song. Free disk space or clear automatic cache, then retry. It is not available offline yet.",
         _ => "Could not finish saving this song. Check the connection and free disk space, then retry. Incomplete songs are not available offline."
     };
@@ -436,7 +570,6 @@ public sealed partial class MainWindow
         int capturedIndex = queueIndex;
         var settings = offlineSettings;
         bool prefetch = PrefetchAllowed();
-        var requested = pendingDownloads.ToArray();
         var protectedTracks = ProtectedTracks().ToArray();
         long limit = offlineSettings.CacheLimitBytes;
         long scheduledPlaybackVersion = playbackVersion;
@@ -446,12 +579,10 @@ public sealed partial class MainWindow
             try { await previousTask; } catch { /* A failed generation must not poison retries. */ }
             if (token.IsCancellationRequested) return;
             Song[] plan;
-            HashSet<string> pinnedIds;
             try
             {
                 var recent = storage.Recent();
-                var pins = requested.Concat(recent.Where(x => x.Pinned && !x.Complete).Select(x => x.Song)).DistinctBy(x => x.Id).ToArray();
-                pinnedIds = pins.Select(x => x.Id).ToHashSet(StringComparer.Ordinal);
+                var pins = recent.Where(x => x.HasActiveSave() && !x.Complete).Select(x => x.Song);
                 plan = OfflinePolicy.Plan(capturedQueue, capturedIndex, recent, settings, prefetch, upcoming)
                     .Concat(pins).DistinctBy(x => x.Id).ToArray();
             }
@@ -468,14 +599,13 @@ public sealed partial class MainWindow
                 if (token.IsCancellationRequested) break;
                 try
                 {
-                    bool pin = pinnedIds.Contains(song.Id);
-                    await storage.SaveMediaAsync(song, pin, (output, cancel) => target.DownloadSongAsync(song.Id, output, cancel), token);
+                    // Retention claims were recorded by Pin, never inferred from a transfer.
+                    await storage.SaveMediaAsync(song, false, (output, cancel) => target.DownloadSongAsync(song.Id, output, cancel), token);
                     token.ThrowIfCancellationRequested();
                     storage.Trim(limit, protectedTracks);
                     DispatcherQueue.TryEnqueue(() =>
                     {
                         if (closed || storage != cache || token.IsCancellationRequested) return;
-                        pendingDownloads.RemoveAll(x => x.Id == song.Id);
                         QueueCacheRefresh(song.Id);
                         // A queue-only shuffle may reprioritize prefetch, never replace
                         // the active source as a side effect of that click.

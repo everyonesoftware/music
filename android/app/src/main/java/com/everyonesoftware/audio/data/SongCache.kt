@@ -24,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.asStateFlow
 
 data class SongCacheState(val settings: OfflineSettings = OfflineSettings(),
@@ -31,7 +32,11 @@ data class SongCacheState(val settings: OfflineSettings = OfflineSettings(),
     val cachedSongs: Set<String> = emptySet(), val downloadedSongs: Set<String> = emptySet(),
     val songs: List<Song> = emptyList(), val error: String? = null,
     val pendingDownloads: List<Song> = emptyList(), val recentSongs: List<Song> = emptyList(),
-    val collections: List<OfflineCollection> = emptyList(), val explicitDownloads: Set<String> = emptySet())
+    val collections: List<OfflineCollection> = emptyList(), val explicitDownloads: Set<String> = emptySet(),
+    val owner: Connection? = null) {
+    internal fun forConnection(connection: Connection?): SongCacheState =
+        if (connection != null && owner == connection) this else SongCacheState(settings = settings)
+}
 
 /** One persistent, private Media3 span store shared by foreground playback and whole-song fetches. */
 @UnstableApi
@@ -41,9 +46,7 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
     private val index = OfflineIndex(File(directory, "metadata"))
     private val cacheDirectory = File(directory, "audio").canonicalFile
     private val cache = acquire(context, cacheDirectory)
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, _ ->
-        mutable.value = mutable.value.copy(error = "Offline storage is unavailable. Free space and retry.")
-    })
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val manager = context.getSystemService(ConnectivityManager::class.java)
     private val mutable = MutableStateFlow(SongCacheState(settings = index.settings))
     val state = mutable.asStateFlow()
@@ -52,19 +55,49 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
     private val openSources = ConcurrentHashMap.newKeySet<GuardedSource>()
     private val fetching = AtomicReference<DataSource?>(null)
     private val maintenance = Any()
+    private val publication = Any()
     @Volatile private var generation = 0L
     @Volatile private var closed = false
     @Volatile private var target: Target? = null
-    private var worker: Job? = null
+    @Volatile private var worker: Job? = null
+    private var automaticEnabled = true
     private data class Target(val credentials: Credentials, val queue: List<Song>, val index: Int,
         val upstream: DataSource.Factory, val uri: (String) -> String, val queueIdentity: Any, val repeatMode: Int)
+    private data class PublicationOwner(val epoch: Long, val credentials: Credentials?)
+
+    private fun publicationOwner() = synchronized(publication) { PublicationOwner(generation, activeCredentials()) }
+
+    // Called under publication so invalidation and the final error write cannot race.
+    private fun ownsPublication(owner: PublicationOwner) = !closed && owner.epoch == generation &&
+        owner.credentials == activeCredentials()
+
+    private fun reportError(owner: PublicationOwner, message: String, stillRelevant: () -> Boolean = { true }) {
+        synchronized(publication) {
+            if (ownsPublication(owner) && owner.credentials?.connection?.id !in removed && stillRelevant()) {
+                mutable.update { it.copy(error = message) }
+            }
+        }
+    }
+
+    private fun launchCacheWork(
+        owner: PublicationOwner = publicationOwner(),
+        stillRelevant: () -> Boolean = { true },
+        work: suspend CoroutineScope.() -> Unit,
+    ): Job = scope.launch {
+        try { work() }
+        catch (cancelled: CancellationException) { throw cancelled }
+        catch (_: Exception) {
+            reportError(owner, "Offline storage is unavailable. Free space and retry.") { isActive && stillRelevant() }
+        }
+    }
+
     private val listener = object : Cache.Listener {
         override fun onSpanAdded(cache: Cache, span: CacheSpan) {
             // Tombstones stop in-flight writes from resurrecting a removed account after purge.
             if (span.key in blocked) cache.removeSpan(span)
-            scope.launch { synchronized(maintenance) { trim(); publish() } }
+            launchCacheWork { synchronized(maintenance) { trim(); publish() } }
         }
-        override fun onSpanRemoved(cache: Cache, span: CacheSpan) { scope.launch { synchronized(maintenance) { publish() } } }
+        override fun onSpanRemoved(cache: Cache, span: CacheSpan) { launchCacheWork { synchronized(maintenance) { publish() } } }
         override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) = Unit
     }
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -77,7 +110,7 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         val known = index.entries().map { it.key }.toSet()
         (cache.keys - known).forEach(cache::removeResource)
         index.entries().forEach { cache.addListener(it.key, listener) }
-        scope.launch { synchronized(maintenance) { trim(); publish() } }
+        launchCacheWork { synchronized(maintenance) { trim(); publish() } }
         manager?.registerDefaultNetworkCallback(networkCallback)
     }
     fun complete(credentials: Credentials, songId: String): Boolean = completeKey(OfflineIndex.key(credentials.connection, songId))
@@ -90,12 +123,16 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         return length > 0 && cache.isCached(key, 0, length)
     }
     fun factory(credentials: Credentials, song: Song, upstream: DataSource.Factory, background: Boolean = false,
-        writeThrough: Boolean = true): DataSource.Factory {
+        writeThrough: Boolean = true): DataSource.Factory =
+        sourceFactory(credentials, song, upstream, background, writeThrough) { !background || !networkPolicy.offline }
+
+    private fun sourceFactory(credentials: Credentials, song: Song, upstream: DataSource.Factory, background: Boolean,
+        writeThrough: Boolean, stillRelevant: () -> Boolean): DataSource.Factory {
         val key = OfflineIndex.key(credentials.connection, song.id)
         val epoch = generation
         return DataSource.Factory {
             checkOwner(credentials, key, epoch)
-            GuardedSource(credentials, song, key, epoch, background) {
+            GuardedSource(credentials, song, key, epoch, background, stillRelevant) {
                 val settings = index.settings
                 val pinned = index.entries().any { it.key == key && it.pinned }
                 CacheDataSource.Factory().setCache(cache).setCacheKeyFactory { key }
@@ -112,7 +149,8 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
             throw IOException("The active music account changed.")
     }
     private inner class GuardedSource(val credentials: Credentials, private val song: Song,
-        val key: String, val epoch: Long, val background: Boolean, private val createDelegate: () -> DataSource) : DataSource {
+        val key: String, val epoch: Long, val background: Boolean, private val stillRelevant: () -> Boolean,
+        private val createDelegate: () -> DataSource) : DataSource {
         private val sourceLock = Any()
         private val listeners = mutableListOf<TransferListener>()
         private var delegate: DataSource? = null
@@ -127,7 +165,9 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
             synchronized(maintenance) {
                 checkOwner(credentials, key, epoch)
                 try { index.remember(key, credentials.connection.id, song) }
-                catch (_: Exception) { mutable.value = mutable.value.copy(error = "Offline metadata could not be saved. Existing saved audio can still play.") }
+                catch (_: Exception) {
+                    reportError(PublicationOwner(epoch, credentials), "Offline metadata could not be saved. Existing saved audio can still play.", stillRelevant)
+                }
                 cache.addListener(key, listener)
             }
             return synchronized(sourceLock) {
@@ -159,7 +199,7 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
             delegate = null
             try { current?.close() } finally {
                 openSources.remove(this)
-                scope.launch { synchronized(maintenance) { trim(); publish() } }
+                launchCacheWork(PublicationOwner(epoch, credentials), stillRelevant) { synchronized(maintenance) { trim(); publish() } }
             }
             Unit
         }
@@ -168,23 +208,30 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         if (credentials != activeCredentials() || credentials.connection.id in removed) return
         val previous = target
         if (previous?.credentials == credentials && previous.queue == queue && previous.index == index && previous.queueIdentity == queueIdentity && previous.repeatMode == repeatMode) return
-        target = Target(credentials, queue, index, upstream, uri, queueIdentity, repeatMode)
+        synchronized(publication) { target = Target(credentials, queue, index, upstream, uri, queueIdentity, repeatMode) }
         restart()
     }
-    @Synchronized fun accountChanged() {
-        generation++
-        target = null
-        worker?.cancel()
+    @Synchronized internal fun accountChanged(changeCredentials: () -> Unit = {}) {
+        synchronized(publication) {
+            generation++
+            mutable.update { SongCacheState(settings = it.settings) }
+            changeCredentials()
+            target = null
+            worker?.cancel()
+        }
         fetching.getAndSet(null)?.let { source -> scope.launch { runCatching { source.close() } } }
-        scope.launch { publish() }
+        launchCacheWork { synchronized(maintenance) { publish() } }
     }
     private fun unmetered(): Boolean = manager?.isActiveNetworkMetered == false
     @Synchronized private fun restart(includeAutomatic: Boolean = true) {
         if (closed) return
-        worker?.cancel()
+        automaticEnabled = includeAutomatic
+        synchronized(publication) { worker?.cancel() }
         fetching.getAndSet(null)?.let { source -> scope.launch { runCatching { source.close() } } }
         val selected = target ?: return
-        worker = scope.launch {
+        val owner = PublicationOwner(generation, selected.credentials)
+        val fetchRelevant = { selected === target && !networkPolicy.offline }
+        worker = launchCacheWork(owner, fetchRelevant) {
             // Retry failed partials on a bounded interval, without issuing player commands.
             while (isActive && selected == target && selected.credentials == activeCredentials()) {
                 val settings = index.settings
@@ -197,7 +244,11 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
                     for (song in (automatic + pinned).distinctBy { it.id }) {
                         ensureActive()
                         if (complete(selected.credentials, song.id)) continue
-                        val source = try { factory(selected.credentials, song, selected.upstream, background = true).createDataSource() }
+                        val source = try {
+                            sourceFactory(selected.credentials, song, selected.upstream, background = true, writeThrough = true) {
+                                isActive && fetchRelevant()
+                            }.createDataSource()
+                        }
                         catch (_: Exception) { break }
                         fetching.set(source)
                         try {
@@ -231,7 +282,9 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
                                 cache.applyContentMetadataMutations(key, mutations)
                             }
                         } catch (cancelled: CancellationException) { throw cancelled }
-                        catch (_: Exception) { mutable.value = mutable.value.copy(error = "Some songs could not be saved. Retrying when connected.") }
+                        catch (_: Exception) {
+                            reportError(owner, "Some songs could not be saved. Retrying when connected.") { isActive && fetchRelevant() }
+                        }
                         finally { runCatching { source.close() }; fetching.compareAndSet(source, null) }
                     }
                 }
@@ -243,11 +296,11 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
     @Synchronized fun setSettings(settings: OfflineSettings) {
         val previous = index.settings
         index.settings = settings
-        networkPolicy.offline = settings.offline
+        synchronized(publication) { networkPolicy.offline = settings.offline }
         if (settings.offline != previous.offline) openSources.toList().forEach { runCatching { it.close() } }
-        mutable.value = mutable.value.copy(settings = settings)
+        mutable.update { it.copy(settings = settings) }
         restart()
-        scope.launch { synchronized(maintenance) { trim(); publish() } }
+        launchCacheWork { synchronized(maintenance) { trim(); publish() } }
     }
     fun downloadCollection(credentials: Credentials, collection: OfflineCollection) {
         synchronized(maintenance) {
@@ -274,18 +327,11 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         require(credentials == activeCredentials() && credentials.connection.id !in removed) { "The active music account changed." }
         action()
     }
-    fun removeCollection(credentials: Credentials, kind: String, id: String) {
-        synchronized(maintenance) {
-            require(credentials == activeCredentials() && credentials.connection.id !in removed)
-            worker?.cancel()
-            fetching.getAndSet(null)?.let { runCatching { it.close() } }
-            val before = index.entries().filter { it.pinned }.map { it.key }.toSet()
-            index.removeCollection(credentials.connection, kind, id)
-            val retained = index.entries().filter { it.pinned }.map { it.key }.toSet() + protectedKeys()
-            (before - retained).forEach(cache::removeResource)
-            publish()
-        }
-        restart()
+    fun removeCollection(credentials: Credentials, kind: String, id: String) = removePins(credentials) {
+        val before = index.entries().filter { it.pinned }.map { it.key }.toSet()
+        index.removeCollection(credentials.connection, kind, id)
+        val retained = index.entries().filter { it.pinned }.map { it.key }.toSet() + protectedKeys()
+        (before - retained).forEach(cache::removeResource)
     }
     fun download(credentials: Credentials, songs: List<Song>) {
         pin(credentials, songs)
@@ -320,31 +366,54 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         restart()
     }
     fun played(credentials: Credentials, song: Song) {
-        scope.launch {
+        val owner = publicationOwner()
+        if (owner.credentials != credentials) return
+        launchCacheWork(owner) {
             synchronized(maintenance) {
-                if (credentials != activeCredentials() || credentials.connection.id in removed) return@synchronized
+                if (!synchronized(publication) { ownsPublication(owner) && credentials.connection.id !in removed }) return@synchronized
                 val key = OfflineIndex.key(credentials.connection, song.id)
                 try { index.remember(key, credentials.connection.id, song); index.markPlayed(key) }
-                catch (_: Exception) { mutable.value = mutable.value.copy(error = "Listening history could not be saved.") }
+                catch (_: Exception) { reportError(owner, "Listening history could not be saved.") }
                 publish()
             }
         }
     }
-    fun removeDownload(credentials: Credentials, songId: String) {
-        synchronized(maintenance) {
-            require(credentials == activeCredentials() && credentials.connection.id !in removed)
-            val key = OfflineIndex.key(credentials.connection, songId)
-            worker?.cancel()
-            fetching.getAndSet(null)?.let { runCatching { it.close() } }
-            index.unpin(key)
-            if (key !in protectedKeys() && index.entries().none { it.key == key && it.pinned }) { cache.removeResource(key) }
-            publish()
+    fun removeDownload(credentials: Credentials, songId: String) = removePins(credentials) {
+        val key = OfflineIndex.key(credentials.connection, songId)
+        index.unpin(key)
+        if (key !in protectedKeys() && index.entries().none { it.key == key && it.pinned }) cache.removeResource(key)
+    }
+
+    private fun removePins(credentials: Credentials, remove: () -> Unit) {
+        var interrupted: Job? = null
+        var epoch = -1L
+        try {
+            synchronized(maintenance) {
+                require(credentials == activeCredentials() && credentials.connection.id !in removed)
+                epoch = generation
+                synchronized(publication) {
+                    interrupted = worker
+                    interrupted?.cancel()
+                }
+                fetching.getAndSet(null)?.let { runCatching { it.close() } }
+                remove()
+                publish()
+            }
+        } finally {
+            // A failed metadata commit leaves the pins intact, but the shared worker
+            // still needs to resume. Don't touch a newer worker/account or enable prefetch.
+            synchronized(this) {
+                if (interrupted != null && worker === interrupted && epoch == generation &&
+                    credentials == activeCredentials() && target?.credentials == credentials &&
+                    credentials.connection.id !in removed && !networkPolicy.offline) {
+                    restart(includeAutomatic = automaticEnabled)
+                }
+            }
         }
-        restart()
     }
     fun clearCache() {
         synchronized(maintenance) {
-            worker?.cancel()
+            synchronized(publication) { worker?.cancel() }
             val protected = protectedKeys()
             val keys = index.entries().filter { !it.pinned && it.key !in protected }.map { it.key }.toSet()
             // Close every background open, including a cancelled worker superseded in fetching.
@@ -358,10 +427,12 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         restart(includeAutomatic = false)
     }
     fun removeConnection(id: String) = synchronized(maintenance) {
-        removed.add(id)
+        synchronized(publication) {
+            removed.add(id)
+            if (target?.credentials?.connection?.id == id) { target = null; worker?.cancel() }
+        }
         val keys = index.entries().filter { it.connectionId == id }.map { it.key }.toSet()
         blocked.addAll(keys)
-        if (target?.credentials?.connection?.id == id) { target = null; worker?.cancel() }
         openSources.filter { it.credentials.connection.id == id }.forEach { runCatching { it.close() } }
         keys.forEach(cache::removeResource)
         index.removeConnection(id)
@@ -381,24 +452,34 @@ class SongCache(context: Context, directory: File = File(context.filesDir, "offl
         }
     }
     private fun publish() {
-        val credentials = activeCredentials()
+        val owner = publicationOwner()
+        val credentials = owner.credentials
         val entries = index.entries().filter { it.connectionId == credentials?.connection?.id &&
             it.key == credentials?.let { c -> OfflineIndex.key(c.connection, it.song.id) } }
-        mutable.value = SongCacheState(index.settings,
-            entries.filter { !it.pinned }.sumOf { bytes(it.key) }, entries.filter { it.pinned }.sumOf { bytes(it.key) },
-            entries.filter { !it.pinned && completeKey(it.key) }.map { it.song.id }.toSet(),
-            entries.filter { it.pinned && completeKey(it.key) }.map { it.song.id }.toSet(),
-            entries.filter { completeKey(it.key) }.sortedByDescending { it.touched }.map { it.song }, mutable.value.error,
+        val snapshot = SongCacheState(
+            cacheBytes = entries.filter { !it.pinned }.sumOf { bytes(it.key) },
+            downloadBytes = entries.filter { it.pinned }.sumOf { bytes(it.key) },
+            cachedSongs = entries.filter { !it.pinned && completeKey(it.key) }.map { it.song.id }.toSet(),
+            downloadedSongs = entries.filter { it.pinned && completeKey(it.key) }.map { it.song.id }.toSet(),
+            songs = entries.filter { completeKey(it.key) }.sortedByDescending { it.touched }.map { it.song },
             pendingDownloads = entries.filter { it.pinned && !completeKey(it.key) }.map { it.song },
             recentSongs = entries.filter { it.playedAt != null }.sortedByDescending { it.playedAt }.map { it.song },
             collections = credentials?.let { index.collections(it.connection) }.orEmpty(),
-            explicitDownloads = entries.filter { it.pinned && (it.owners.isEmpty() || "song:${it.song.id}" in it.owners) }.map { it.song.id }.toSet())
+            explicitDownloads = entries.filter { it.pinned && (it.owners.isEmpty() || "song:${it.song.id}" in it.owners) }.map { it.song.id }.toSet(),
+            owner = credentials?.connection)
+        synchronized(publication) {
+            if (ownsPublication(owner)) {
+                mutable.update { snapshot.copy(settings = it.settings, error = it.error) }
+            }
+        }
     }
     fun close() {
-        if (closed) return
-        closed = true
-        generation++
-        target = null
+        synchronized(publication) {
+            if (closed) return
+            closed = true
+            generation++
+            target = null
+        }
         manager?.unregisterNetworkCallback(networkCallback)
         worker?.cancel()
         openSources.toList().forEach { runCatching { it.close() } }

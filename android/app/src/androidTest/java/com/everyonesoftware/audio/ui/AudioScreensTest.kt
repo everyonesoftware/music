@@ -109,7 +109,7 @@ class AudioScreensTest {
         compose.runOnIdle { state.value = state.value.copy(storage = state.value.storage.copy(settings = state.value.storage.settings.copy(offline = true))) }
         compose.onNodeWithTag("artist-summary").assertDoesNotExist()
         compose.onNodeWithTag("artist-play").assertIsNotEnabled()
-        compose.onNodeWithText("Artists are unavailable offline. Open Saved music for downloaded albums and songs.").assertIsDisplayed()
+        compose.onNodeWithText("Artists are unavailable offline. Open Saved music for albums and songs on this device.").assertIsDisplayed()
     }
     @Test fun incompleteArtistShowsBrowseableAlbumsAndConfirmedSongsWithoutQueueActions() {
         val artist = com.everyonesoftware.audio.data.Artist("a", "Artist")
@@ -652,7 +652,8 @@ class AudioScreensTest {
             albumSongs = listOf(song)))
         compose.onNodeWithTag("album-transport").assertIsDisplayed()
         assertCollectionShuffleAction("album")
-        compose.onNodeWithContentDescription("Download album").performClick()
+        compose.onNodeWithTag("album-more").performClick()
+        compose.onNodeWithText("Save to Device").performClick()
         compose.onNodeWithContentDescription("Play album in order").assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertEquals(1, actions.albumDownloads)
@@ -666,7 +667,8 @@ class AudioScreensTest {
             selectedPlaylist = Playlist("test-playlist", "Test playlist", songCount = 1),
             playlistSongs = listOf(song.copy(title = "Playlist track"))))
         compose.onNodeWithText("Playlist track").assertIsDisplayed()
-        compose.onNodeWithTag("playlist-download").performClick()
+        compose.onNodeWithTag("playlist-more").performClick()
+        compose.onNodeWithText("Save to Device").performClick()
         compose.onNodeWithContentDescription("Play playlist in order").assertIsDisplayed().performClick()
         compose.runOnIdle {
             assertTrue("Detail Play must not call the shuffle shortcut", actions.startedPlaylists.isEmpty())
@@ -778,7 +780,7 @@ class AudioScreensTest {
         }
     }
 
-    @Test fun collectionTransportFitsLeftAlignedPlayShuffleDownloadAtNarrowAndNormalWidths() {
+    @Test fun collectionTransportFitsLeftAlignedPlayShuffleMoreAtNarrowAndNormalWidths() {
         val width = mutableStateOf(320.dp)
         val state = mutableStateOf(playerState().copy(screen = Screen.PLAYLIST,
             selectedPlaylist = Playlist("p", "Compact playlist"), playlistSongs = listOf(song, song),
@@ -790,21 +792,21 @@ class AudioScreensTest {
             for (dp in listOf(320.dp, 412.dp)) {
                 compose.runOnIdle { width.value = dp }
                 val row = compose.onNodeWithTag("$prefix-transport").assertIsDisplayed().fetchSemanticsNode().boundsInRoot
-                val nodes = listOf("$prefix-play", "$prefix-shuffle", "$prefix-download").map {
+                val nodes = listOf("$prefix-play", "$prefix-shuffle", "$prefix-more").map {
                     compose.onNodeWithTag(it).assertIsDisplayed().assertWidthIsAtLeast(48.dp).assertHeightIsAtLeast(48.dp)
                         .fetchSemanticsNode().boundsInRoot
                 }
-                val (play, shuffle, download) = nodes
+                val (play, shuffle, more) = nodes
                 assertTrue("Compact row height", row.height <= 64 * density)
                 assertEquals("Play starts at left", row.left, play.left, 1f)
                 assertEquals("Round compact Play", 56 * density, play.width, 1f)
                 assertEquals(play.width, play.height, 1f)
                 for (node in nodes) assertEquals("Same-row centers", row.center.y, node.center.y, 1f)
-                assertTrue("Play, Shuffle, Download order", play.right <= shuffle.left && shuffle.right <= download.left)
+                assertTrue("Play, Shuffle, More order", play.right <= shuffle.left && shuffle.right <= more.left)
                 assertTrue("Shuffle sits beside Play", shuffle.left - play.right <= 9 * density)
-                assertTrue("Download sits beside Shuffle", download.left - shuffle.right <= 9 * density)
-                compose.onNodeWithText("Download").assertDoesNotExist()
-                compose.onNodeWithContentDescription("Download $prefix").assertIsDisplayed()
+                assertTrue("More sits beside Shuffle", more.left - shuffle.right <= 9 * density)
+                compose.onNodeWithText("Save to Device").assertDoesNotExist()
+                compose.onNodeWithContentDescription("Device actions for Compact $prefix").assertIsDisplayed()
                 val neutralPixels = compose.onRoot().captureToImage().toPixelMap()
                 val neutralShuffleBackground = neutralPixels[(shuffle.left + 8 * density).toInt(), shuffle.center.y.toInt()]
                 compose.onNodeWithTag("$prefix-shuffle").performClick()
@@ -831,7 +833,7 @@ class AudioScreensTest {
         )
         for (value in unavailable) {
             compose.runOnIdle { state.value = value }
-            for (tag in listOf("playlist-download", "playlist-shuffle", "playlist-play")) {
+            for (tag in listOf("playlist-more", "playlist-shuffle", "playlist-play")) {
                 compose.onNodeWithTag(tag).assertIsDisplayed().assertIsNotEnabled().performClick()
             }
         }
@@ -863,7 +865,7 @@ class AudioScreensTest {
         )
         for (value in unavailable) {
             compose.runOnIdle { state.value = value }
-            for (tag in listOf("album-download", "album-shuffle", "album-play")) {
+            for (tag in listOf("album-more", "album-shuffle", "album-play")) {
                 compose.onNodeWithTag(tag).assertIsDisplayed().assertIsNotEnabled().performClick()
             }
         }

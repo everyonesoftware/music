@@ -8,6 +8,7 @@ import './played-queue.test.mjs';
 import './updates-card.test.mjs';
 import './update-changelog.test.mjs';
 import './collection-transport.test.mjs';
+import './device-offline-ui.test.mjs';
 import './navigation-contracts.test.mjs';
 import './song-rating-wiring.test.mjs';
 import './song-rating-view.test.mjs';
@@ -242,7 +243,7 @@ test('queue lazily realizes occurrence-identified artwork rows and reuses unchan
   assert.match(row, /Tag = entry.Index/);
   assert.match(row, /MinHeight = 60/);
   assert.match(row, /Padding = new Thickness\(8, 10, 8, 10\)/);
-  assert.match(row, /entry.Current.*title.Foreground = Sage/);
+  assert.match(row, /SongTitle\(song, 14, current: entry.Current\)/);
   assert.match(row, /AutomationProperties.SetName\(row,/);
   assert.doesNotMatch(row, /Text\(.*entry.Index|entry.Index \+ 1/); // No queue track numbers.
   const initialize = method('InitializeQueueList');

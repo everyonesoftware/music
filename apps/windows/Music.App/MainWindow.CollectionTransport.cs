@@ -2,9 +2,9 @@ using Microsoft.UI;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Controls.Primitives;
 using Microsoft.UI.Xaml.Media;
 using Microsoft.UI.Xaml.Shapes;
+using Music.Core;
 
 namespace Music.App;
 
@@ -16,27 +16,19 @@ public sealed partial class MainWindow
         var account = connection?.Id;
         var identity = detailIdentity;
         var capturedSongs = detailSongs;
-        bool available() => collectionTransport.CanStart(detailLoading, detailError, offlineSettings.Offline,
-            !closed && !accountChangePending && page == "detail" && client is not null && account is not null &&
+        bool current() => !closed && !accountChangePending && page == "detail" && client is not null && account is not null &&
             account == connection?.Id && identity == detailIdentity && connectionGate.IsCurrent(owner) &&
-            ReferenceEquals(capturedSongs, detailSongs), capturedSongs.Count);
+            ReferenceEquals(capturedSongs, detailSongs);
+        bool available() => collectionTransport.CanStart(detailLoading, detailError, offlineSettings.Offline,
+            current(), capturedSongs.Count);
 
         var transport = new Grid();
         var group = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left };
-        var download = new Button { Content = new SymbolIcon(Symbol.Download) { Foreground = Sage }, Width = 48, Height = 48,
-            Background = new SolidColorBrush(Colors.Transparent), BorderThickness = new Thickness(0),
-            MinWidth = 0, Padding = new Thickness(0), IsEnabled = available(), VerticalAlignment = VerticalAlignment.Center };
-        download.Resources["ButtonBackground"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBackgroundPointerOver"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBackgroundPressed"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBackgroundDisabled"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBorderBrush"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBorderBrushPointerOver"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBorderBrushPressed"] = new SolidColorBrush(Colors.Transparent);
-        download.Resources["ButtonBorderBrushDisabled"] = new SolidColorBrush(Colors.Transparent);
-        AutomationProperties.SetName(download, "Download " + detailTitle);
-        ToolTipService.SetToolTip(download, AutomationProperties.GetName(download));
-        download.Click += async (_, _) => { if (available()) await DownloadSongs(capturedSongs); };
+        string key = identity.Kind + ":" + identity.Id;
+        bool hasClaims(IReadOnlyDictionary<string, CachedSong> snapshot) => DeviceAvailability.HasCollectionClaims(snapshot, key);
+        bool deviceAvailable() => available() || (current() && !detailLoading && !detailError && !offlineSettings.Offline && hasClaims(CacheSnapshot()));
+        var device = CreateDeviceActions(detailTitle, 48, deviceAvailable, hasClaims,
+            () => SaveToDeviceAsync(capturedSongs, key, owner), () => RemoveFromDeviceAsync(null, key, owner));
         var shuffle = new Button { Content = new SymbolIcon(Symbol.Shuffle) { Foreground = Muted }, Width = 48, Height = 48,
             CornerRadius = new CornerRadius(24), MinWidth = 0, IsEnabled = available(), Padding = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center };
@@ -62,7 +54,7 @@ public sealed partial class MainWindow
         }
         play.Click += (_, _) => start(false);
         shuffle.Click += (_, _) => start(true);
-        group.Children.Add(play); group.Children.Add(shuffle); group.Children.Add(download);
+        group.Children.Add(play); group.Children.Add(shuffle); group.Children.Add(device);
         transport.Children.Add(group);
         return transport;
     }

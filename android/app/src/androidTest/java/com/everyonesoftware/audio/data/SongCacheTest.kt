@@ -2,6 +2,7 @@ package com.everyonesoftware.audio.data
 
 import android.content.Context
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.ByteArrayDataSource
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.okhttp.OkHttpDataSource
@@ -9,6 +10,12 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
 import java.io.IOException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit.SECONDS
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
@@ -19,6 +26,72 @@ import org.junit.runner.RunWith
 @UnstableApi
 @RunWith(AndroidJUnit4::class)
 class SongCacheTest {
+    @Test fun oldFetchFailureDoesNotPublishToReplacementAccount() {
+        assertObsoleteFetchFailureIgnored(switchAccount = true)
+    }
+
+    @Test fun oldFetchFailureDoesNotPublishAfterGoingOffline() {
+        assertObsoleteFetchFailureIgnored(switchAccount = false)
+    }
+
+    private fun assertObsoleteFetchFailureIgnored(switchAccount: Boolean) {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val dir = File(context.filesDir, "stale-fetch-error-${System.nanoTime()}")
+        val original = Credentials(Connection("original", "Original", "https://music.example", "alice"), "test")
+        val replacement = Credentials(original.connection.copy(id = "replacement", username = "bob"), "test")
+        val active = AtomicReference(original)
+        val policy = MusicNetworkPolicy()
+        val cache = SongCache(context, dir, policy, active::get)
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val settingsFailure = AtomicReference<Throwable?>()
+        var settingsThread: Thread? = null
+        val song = Song("song", "Title", "Artist")
+        val upstream = DataSource.Factory {
+            val bytes = ByteArrayDataSource(ByteArray(8192))
+            object : DataSource by bytes {
+                override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                    entered.countDown()
+                    check(release.await(10, SECONDS)) { "Fetch failure was not released" }
+                    throw IOException("Controlled stale fetch failure")
+                }
+            }
+        }
+        try {
+            cache.schedule(original, listOf(song), 0, upstream) { "https://music.example/$it" }
+            assertTrue("Fetch did not reach the failure gate", entered.await(10, SECONDS))
+            val oldWorker = SongCache::class.java.getDeclaredField("worker").apply { isAccessible = true }
+                .get(cache) as Job
+
+            if (switchAccount) {
+                cache.accountChanged { active.set(replacement) }
+                assertTrue("Old account worker was not cancelled", oldWorker.isCancelled)
+            } else {
+                // setSettings changes network policy before waiting to close the gated source.
+                settingsThread = Thread {
+                    try { cache.setSettings(cache.state.value.settings.copy(offline = true)) }
+                    catch (error: Throwable) { settingsFailure.set(error) }
+                }.also { it.start() }
+                val deadline = System.nanoTime() + SECONDS.toNanos(5)
+                while (!policy.offline && System.nanoTime() < deadline) Thread.sleep(10)
+                assertTrue("Offline policy did not change while the fetch was held", policy.offline)
+            }
+
+            release.countDown()
+            runBlocking { withTimeout(10_000) { oldWorker.join() } }
+            settingsThread?.join(10_000)
+            assertFalse("Settings update did not finish", settingsThread?.isAlive == true)
+            settingsFailure.get()?.let { throw AssertionError("Settings update failed", it) }
+            assertEquals(!switchAccount, cache.state.value.settings.offline)
+            assertNull("Obsolete fetch failure reached current cache state", cache.state.value.error)
+        } finally {
+            release.countDown()
+            settingsThread?.join(10_000)
+            cache.close()
+            dir.deleteRecursively()
+        }
+    }
+
     @Test fun clearCacheResumesPendingExplicitDownloadWithoutRefillingAutomaticAudio() {
         clearCacheResumesPendingDownload(collection = false)
     }
@@ -116,7 +189,8 @@ class SongCacheTest {
             cache.schedule(credentials, listOf(song), 0, upstream) { "https://music.example/song" }
             val deadline = System.currentTimeMillis() + 10_000
             while (cache.state.value.error == null && System.currentTimeMillis() < deadline) Thread.sleep(25)
-            assertNotNull("Early EOF was silently accepted", cache.state.value.error)
+            assertEquals("The active fetch must still report early EOF",
+                "Some songs could not be saved. Retrying when connected.", cache.state.value.error)
             assertFalse("Truncated whole fetch was marked complete", cache.complete(credentials, song.id))
         } finally { cache.close(); dir.deleteRecursively() }
     }

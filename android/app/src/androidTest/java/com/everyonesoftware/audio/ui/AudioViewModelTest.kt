@@ -16,6 +16,45 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class AudioViewModelTest {
+    @Test fun deviceActionPersistenceFailuresStayOnTheOriginatingPageAndAllowRetry() = runBlocking {
+        withAlbumFixture { model, graph, _ ->
+            val app = ApplicationProvider.getApplicationContext<Application>()
+            val blockedWrite = java.io.File(app.filesDir, "offline-music/metadata/catalog.tmp")
+            val account = requireNotNull(graph.credentials.value)
+            onMain { model.openAlbum("a") }
+            until { !model.state.value.albumLoading && model.state.value.albumSongs.isNotEmpty() }
+            val session = graph.session.value
+            assertTrue(blockedWrite.mkdir())
+            try {
+                onMain { model.downloadAlbum() }
+                until { model.state.value.deviceActionFailure != null }
+                val failed = requireNotNull(model.state.value.deviceActionFailure)
+                assertEquals(DeviceActionPage(account.connection, Screen.ALBUM, "a"), failed.page)
+                assertEquals("Cannot save this collection. Previously saved music is kept. Open Device actions and try again.", failed.message)
+                assertNull(model.state.value.error)
+                assertNull(graph.songCache.collection(account, "album", "a"))
+                onMain { model.showScreen(Screen.SEARCH) }
+                assertNull(model.state.value.deviceActionFailure)
+            } finally { assertTrue(blockedWrite.delete()) }
+            onMain { model.openAlbum("a") }
+            until { !model.state.value.albumLoading && model.state.value.albumSongs.isNotEmpty() }
+            onMain { model.downloadAlbum() }
+            until { model.state.value.storage.collections.any { it.kind == "album" && it.id == "a" } }
+            assertTrue(blockedWrite.mkdir())
+            try {
+                onMain { model.removeOfflineCollection("album", "a") }
+                until { model.state.value.deviceActionFailure != null }
+                assertEquals("Cannot remove this collection from the device. Open Device actions and try again.",
+                    model.state.value.deviceActionFailure?.message)
+                assertNotNull(graph.songCache.collection(account, "album", "a"))
+            } finally { assertTrue(blockedWrite.delete()) }
+            onMain { model.removeOfflineCollection("album", "a") }
+            until { model.state.value.storage.collections.none { it.kind == "album" && it.id == "a" } }
+            assertNull(model.state.value.deviceActionFailure)
+            assertEquals(session, graph.session.value)
+        }
+    }
+
     @Test fun foregroundRecoversFailedSearchAlbumCatalogWithBlankQuery() = runBlocking {
         assertSearchAlbumRecovery(network = false, query = "   ")
     }

@@ -36,11 +36,10 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
     val songCache = com.everyonesoftware.audio.data.SongCache(context, networkPolicy = networkPolicy) { currentCredentials.value }
     val store = AudioStore(context) { id ->
         if (currentCredentials.value?.connection?.id == id) {
-            currentCredentials.value = null
+            songCache.accountChanged { currentCredentials.value = null }
             browseArtwork.clear()
             currentSession.value = null
             playback.value = PlaybackSnapshot()
-            songCache.accountChanged()
             artworkCache.accountChanged()
         }
         songCache.removeConnection(id)
@@ -95,10 +94,9 @@ class AudioGraph(context: Context, updateClient: UpdateClient = UpdateClient()) 
         playlists.activate(credentials)
         if (currentCredentials.value != credentials) {
             browseArtwork.clear()
-            songCache.accountChanged()
             artworkCache.accountChanged()
+            songCache.accountChanged { currentCredentials.value = credentials }
         }
-        currentCredentials.value = credentials
         currentSession.value = restored
         songCache.download(credentials, emptyList())
         playback.value = PlaybackSnapshot(positionMs = restored?.positionMs ?: 0)

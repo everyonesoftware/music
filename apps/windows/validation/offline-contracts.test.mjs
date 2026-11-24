@@ -25,15 +25,15 @@ test('settings, offline startup/browse and account leases are integrated into th
   assert.ok(main.includes('if (offlineSettings.Offline)\n            {'));
   assert.ok(source.includes('Storage & offline'));
   assert.ok(source.includes('Clear automatic cache'));
-  assert.ok(source.includes('Download song'));
-  assert.ok(source.includes('Remove download'));
+  assert.ok(source.includes('Save to Device'));
+  assert.ok(source.includes('Remove from Device'));
   assert.ok(source.includes('SaveOfflineSettings'));
   assert.ok(source.includes('NetworkInformation.NetworkStatusChanged'));
 });
 
 test('row actions, complete-only badges, intent-aware reconnect and shutdown are wired', () => {
-  assert.ok(main.includes('AddDownloadMenu(row, song, owner)'));
-  assert.ok(main.includes('SongAvailability(song)'));
+  assert.ok(main.includes('AddSongDeviceActions(row, song, owner)'));
+  assert.ok(main.includes('UpdateTrackDeviceBadge(song)'));
   assert.ok(main.includes('playbackInterrupted = true'));
   assert.ok(main.includes('playIntended = false'));
   assert.ok(main.includes('ShutdownOffline()'));
@@ -49,11 +49,11 @@ test('cache scheduling drains cancelled predecessors before clear and completion
 });
 test('explicit collection pin intentions are durable and resumed independently of memory', () => {
   const source = offline();
-  assert.ok(source.includes('storage.Pin(requested)'));
-  assert.ok(source.includes('recent.Where(x => x.Pinned && !x.Complete)'));
+  assert.ok(source.includes('storage.Pin(tracks, key)'));
+  assert.ok(source.includes('recent.Where(x => x.HasActiveSave() && !x.Complete)'));
   assert.match(main, /C<Border>\("CollectionActions"\).Child = CreateCollectionTransport\(\)/);
   const transport = readFileSync(new URL('../Music.App/MainWindow.CollectionTransport.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
-  assert.match(transport, /if \(available\(\)\) await DownloadSongs\(capturedSongs\)/);
+  assert.match(transport, /CreateDeviceActions\(detailTitle, 48, deviceAvailable, hasClaims,[\s\S]*SaveToDeviceAsync\(capturedSongs, key, owner\)/);
   assert.match(transport, /ReferenceEquals\(capturedSongs, detailSongs\)/);
 });
 test('completed current media hands off with latest position/intent and shared playback order', () => {
@@ -77,16 +77,16 @@ test('optional cache storage failure cannot prevent server connection or playbac
   assert.ok(source.includes('Song storage is unavailable. Streaming still works'));
   assert.ok(source.includes('cacheMaintenance != 0'));
 });
-test('explicit removal awaits live protection refusal before dropping pending downloads', () => {
+test('removal drains transfers then honors live protection and account ownership before updating the view', () => {
   const source = offline();
-  const menu = source.slice(source.indexOf('private void AddDownloadMenu('), source.indexOf('private void NetworkChanged('));
-  assert.match(menu, /bool removed = await storageWork.RunAsync\(\(\) => storage.RemoveDownload\(song.Id\)\)/);
-  const awaited = menu.indexOf('bool removed = await');
-  const leaseGuard = menu.indexOf('if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;', awaited);
-  const refusal = menu.indexOf('if (!removed)', awaited);
-  const pending = menu.indexOf('pendingDownloads.RemoveAll(');
-  assert.ok(awaited >= 0 && awaited < leaseGuard && leaseGuard < refusal && refusal < pending);
-  assert.match(menu.slice(refusal, pending), /ShowError\("[^"\n]*current or previous[^"\n]*"\); return;/);
+  const remove = source.slice(source.indexOf('private async Task RemoveFromDeviceAsync('), source.indexOf('private void NetworkChanged('));
+  const drain = remove.indexOf('await cacheTask');
+  const awaited = remove.indexOf('bool removed = await');
+  const leaseGuard = remove.indexOf('if (closed || storage != cache || !connectionGate.IsCurrent(owner)) return;', awaited);
+  const refusal = remove.indexOf('if (!removed)', awaited);
+  assert.ok(drain >= 0 && drain < awaited && awaited < leaseGuard && leaseGuard < refusal);
+  assert.match(remove, /storage.RemoveCollection\(collectionKey\) : storage.RemoveDownload\(songId!\)/);
+  assert.match(remove, /current or previous song is protected/);
 });
 test('selection publishes immediate protection before active state and queued local lookup', () => {
   const select = main.slice(main.indexOf('private async void SelectTrack('), main.indexOf('private void TogglePlayback()'));
@@ -120,12 +120,12 @@ test('player resolves complete account-local storage before ephemeral remote str
 
 test('download clicks yield before pin persistence and rendering reads only memory snapshots', () => {
   const source = offline();
-  const download = source.slice(source.indexOf('private async Task DownloadSongs('), source.indexOf('private void AddDownloadMenu('));
+  const download = source.slice(source.indexOf('private async Task SaveToDeviceAsync('), source.indexOf('private async Task RemoveFromDeviceAsync('));
   assert.match(download, /await storageWork.RunAsync\(/);
-  assert.match(download, /storage.Pin\(requested\)/);
+  assert.match(download, /storage.Pin\(tracks, key\)/);
   assert.match(download, /storage != cache/);
-  const badge = source.slice(source.indexOf('private string SongAvailability('), source.indexOf('private void ShutdownOffline('));
-  assert.match(badge, /Snapshot\(\).*TryGetValue/);
+  const badge = source.slice(source.indexOf('private static readonly IReadOnlyDictionary<string, CachedSong> EmptyCache'), source.indexOf('private void ShutdownOffline('));
+  assert.match(badge, /cache\?\.Snapshot\(\)/);
   assert.doesNotMatch(badge, /\.Recent\(|\.Find\(/);
   const usage = source.slice(source.indexOf('private void RefreshStorageUsage('), source.indexOf('private async Task TrimCacheAsync('));
   assert.match(usage, /Snapshot\(\)/);
@@ -139,7 +139,7 @@ test('download worker plans off-thread and completion does not rebuild the queue
   assert.doesNotMatch(schedule, /RenderQueue\(\)/);
   assert.match(schedule, /QueueCacheRefresh\(song.Id\)/);
   assert.match(source, /cacheRefreshTimer.Interval = TimeSpan.FromMilliseconds\(250\)/);
-  assert.match(source, /WeakReference<TextBlock>/);
+  assert.match(source, /WeakReference<Border>/);
 });
 
 test('coalesced cache refresh updates offline list membership without rebuilding existing rows', () => {
@@ -147,7 +147,7 @@ test('coalesced cache refresh updates offline list membership without rebuilding
   const refresh = source.slice(source.indexOf('private void QueueCacheRefresh('), source.indexOf('private void ShutdownOffline('));
   assert.doesNotMatch(refresh, /RenderOfflineBrowse\(\)/);
   assert.match(refresh, /RefreshOfflineRows\(\)/);
-  const update = source.slice(source.indexOf('private void RefreshOfflineRows('), source.indexOf('private async Task DownloadSongs('));
+  const update = source.slice(source.indexOf('private void RefreshOfflineRows('), source.indexOf('private async Task SaveToDeviceAsync('));
   assert.match(update, /Items.RemoveAt\(/);
   assert.match(update, /Items.Add\(SongRow\(/);
   assert.doesNotMatch(update, /Items.Clear\(|AddSongs\(/);
@@ -168,7 +168,7 @@ test('account deletion waits for initialization and purges the explicit account 
   assert.match(purge, /await cacheInitialization/);
   assert.match(purge, /new SongCache\(root, account\)/);
   assert.match(purge, /storage.Purge\(\)/);
-  const remove = source.slice(source.indexOf('private async Task RemoveAccountAsync('), source.indexOf('private string SongAvailability('));
+  const remove = source.slice(source.indexOf('private async Task RemoveAccountAsync('), source.indexOf('private static readonly IReadOnlyDictionary<string, CachedSong> EmptyCache'));
   assert.ok(remove.indexOf('await PurgeAccountCacheAsync(profile)') < remove.indexOf('profiles.Remove(profile)'));
   assert.doesNotMatch(remove, /storage\?\.Purge\(\)/);
 });

@@ -104,7 +104,9 @@ class UpdateScreensTest {
             songs = listOf(played, prefetched), cachedSongs = setOf(played.id), downloadedSongs = setOf(prefetched.id),
             recentSongs = listOf(played, evicted), explicitDownloads = setOf(prefetched.id))))
         compose.onNodeWithText("Only prefetched").assertExists()
-        compose.onNodeWithText("Remove download").assertExists()
+        compose.onNodeWithContentDescription("Device actions for Only prefetched").performClick()
+        compose.onNodeWithText("Remove from Device", substring = false).assertIsDisplayed()
+        compose.onNodeWithText("Remove from Device").performClick()
         compose.onNodeWithText("Recently played").performClick()
         compose.onNodeWithText("Only prefetched").assertDoesNotExist()
         compose.onNodeWithText("Actually played").assertExists()

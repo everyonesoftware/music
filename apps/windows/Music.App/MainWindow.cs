@@ -59,6 +59,10 @@ public sealed partial class MainWindow : Window
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Music.App.Shell.xaml")!;
         using var reader = new StreamReader(stream);
         root = (Grid)XamlReader.Load(reader.ReadToEnd());
+        ConfigureSavedBadge(C<Border>("CollectionDeviceBadge"), 23);
+        var trackBadge = C<Border>("TrackDeviceBadge");
+        ConfigureSavedBadge(trackBadge, 16);
+        trackBadge.Tag = C<TextBlock>("TrackTitle");
         Content = root;
         InitializeRatings();
         Title = "Music";
@@ -129,7 +133,7 @@ public sealed partial class MainWindow : Window
                 playbackInterrupted = true;
                 if (!localPlayback && queueIndex >= 0 && HasSavedSong(queue[queueIndex].Id))
                 { SelectTrack(queueIndex, playIntended, interruptedPosition); return; }
-                ShowError("Playback interrupted. Complete saved songs work offline; reconnect to resume this song. Check the format and output device if it still fails.");
+                ShowError("Playback interrupted. Cached and Saved songs work offline; reconnect to resume this song. Check the format and output device if it still fails.");
             });
         };
         player.CommandManager.PlayReceived += (_, _) => DispatcherQueue.TryEnqueue(() => { playIntended = true; UpdateTaskbarPlayback(); });
@@ -188,6 +192,7 @@ public sealed partial class MainWindow : Window
             var data = await ReadLibraryAsync(startupClient, lease.Token);
             if (!connectGate.IsCurrent(lease) || closed) return;
             albums = data.Albums; playlists = data.Playlists;
+            InvalidateCollectionMembership();
             // A user-owned browse route still needs the newly published catalog.
             // Pending searches render it on completion; Songs pagination is untouched.
             if (navigationRevision != startupRevision && !browsePending && !offlineSettings.Offline &&
@@ -202,7 +207,7 @@ public sealed partial class MainWindow : Window
                 if (client is not null && connection is not null)
                 {
                     await NavigateAsync("offline", remember: false, startupRevision: startupRevision);
-                    ShowError("Server unavailable. Your saved songs and queue are available; incomplete songs need a connection.");
+                    ShowError("Server unavailable. Cached and Saved songs are available offline; incomplete songs need a connection.");
                 }
                 else ShowError("Could not open the saved connection or local session store. Check Windows credentials.");
             }
@@ -559,7 +564,7 @@ public sealed partial class MainWindow : Window
         var art = new Image { Stretch = Stretch.UniformToFill, Width = layout == "grid" ? 156 : 48, Height = layout == "grid" ? 156 : 48 };
         var cover = new Border { Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57)), CornerRadius = new CornerRadius(5), Child = art };
         var copy = new StackPanel { Spacing = 4 };
-        copy.Children.Add(song is null ? Text(card.Title, 14) : SongTitle(song, 14)); copy.Children.Add(Text(card.Subtitle, 12, true));
+        copy.Children.Add(song is null ? CardTitle(card) : SongTitle(song, 14)); copy.Children.Add(Text(card.Subtitle, 12, true));
         if (layout == "grid")
         {
             outer.Width = 164;
@@ -616,7 +621,7 @@ public sealed partial class MainWindow : Window
     private FrameworkElement SongRow(Song song, int index, string layout, CancellationToken token, RequestGate.Lease owner, bool showRatings = false)
     {
         FrameworkElement row;
-        if (layout == "grid") row = CardElement(new Card(song.Title + SongAvailability(song), song.Artist, song.CoverArtId, index), layout, token, song);
+        if (layout == "grid") row = CardElement(new Card(song.Title, song.Artist, song.CoverArtId, index), layout, token, song);
         else
         {
             var grid = SongGrid(showRatings, showRatings ? inline => inline ? CreateInlineRating(song, owner) : CreateCompactRating(song, owner) : null);
@@ -630,9 +635,9 @@ public sealed partial class MainWindow : Window
             var album = Text(song.Album, 12, true); ToolTipService.SetToolTip(album, song.Album); Grid.SetColumn(album, 2); grid.Children.Add(album);
 
             var duration = Text(Clock(song.DurationSeconds), 12, true); duration.HorizontalAlignment = HorizontalAlignment.Right; Grid.SetColumn(duration, showRatings ? 4 : 3); grid.Children.Add(duration);
-            AutomationProperties.SetName(grid, song.Title + SongAvailability(song) + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
+            AutomationProperties.SetName(grid, song.Title + ", " + song.Artist + ", " + Clock(song.DurationSeconds)); row = grid;
         }
-        AddDownloadMenu(row, song, owner);
+        AddSongDeviceActions(row, song, owner);
         return row;
     }
 
@@ -669,6 +674,7 @@ public sealed partial class MainWindow : Window
             };
         }
         grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(44) });
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(32) });
         return grid;
     }
 
@@ -770,6 +776,7 @@ public sealed partial class MainWindow : Window
         C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;
         page = "detail"; detailTitle = title; detailSongs = new(); detailLoading = true; detailError = false;
         detailIdentity = value switch { Album album => ("album", album.Id), Playlist playlist => ("playlist", playlist.Id), _ => default };
+        RememberCollectionMembership(detailIdentity, null);
         C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
         C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
         SetNavigation();
@@ -782,6 +789,7 @@ public sealed partial class MainWindow : Window
             else return;
             if (!browseGate.IsCurrent(lease) || target != client || closed) return;
             detailLoading = false; detailSongs = tracks.ToList();
+            RememberCollectionMembership(detailIdentity, detailSongs);
             RenderDetail();
         }
         catch (OperationCanceledException) { }
@@ -829,6 +837,7 @@ public sealed partial class MainWindow : Window
                 renderedCollectionCover = detailCollection;
             }
             C<TextBlock>("CollectionTitle").Text = detailTitle;
+            UpdateCollectionDeviceBadge();
             ToolTipService.SetToolTip(C<TextBlock>("CollectionTitle"), detailTitle);
             var albumDetails = detailCollection as Album ?? (detailCollection as ArtistAlbumNavigation)?.Album;
             var metadata = new[] { albumDetails?.Artist, albumDetails is { Year: > 0 } ? albumDetails.Year.ToString() : null, count };
@@ -910,6 +919,7 @@ public sealed partial class MainWindow : Window
             playIntended = play; playbackInterrupted = false;
             UpdateTaskbarPlayback();
             C<TextBlock>("TrackTitle").Text = song.Title;
+            UpdateTrackDeviceBadge(song);
             C<TextBlock>("TrackArtist").Text = song.Artist;
             UpdatePlayerRating();
             RenderQueue(); SavePlayback();
@@ -934,7 +944,7 @@ public sealed partial class MainWindow : Window
             {
                 if (offlineSettings.Offline)
                 {
-                    ShowError("This song is not fully saved. Partial or missing songs cannot play offline. Reconnect to finish saving it.");
+                    ShowError("This song has no playable local copy. Reconnect to play it.");
                     UpdateTransport(); return;
                 }
                 mediaSource = MediaSource.CreateFromUri(client.GetStreamUri(song.Id));
@@ -975,7 +985,6 @@ public sealed partial class MainWindow : Window
             };
             player.PlaybackSession.PlaybackStateChanged += startedHandler;
             if (playIntended) player.Play();
-            C<TextBlock>("TrackTitle").Text = song.Title + SongAvailability(song); C<TextBlock>("TrackArtist").Text = song.Artist;
             C<Image>("CurrentArt").Source = null;
             var lease = playingArtGate.Begin(); if (!offlineSettings.Offline) _ = artwork.SetAsync(C<Image>("CurrentArt"), song.CoverArtId, client, lease.Token);
             RenderQueue(); Tick(); SavePlayback();
@@ -1071,7 +1080,7 @@ public sealed partial class MainWindow : Window
     private Grid CreateQueueSong(QueueEntry entry)
     {
         var song = entry.Queue[entry.Index];
-        var title = SongTitle(song, 14); if (entry.Current) title.Foreground = Sage;
+        var title = SongTitle(song, 14, current: entry.Current);
         var copy = new StackPanel { Spacing = 3, VerticalAlignment = VerticalAlignment.Center };
         copy.Children.Add(title); copy.Children.Add(Text(song.Artist, 12, true));
         var row = new Grid { Tag = entry.Index, MinHeight = 60, Padding = new Thickness(8, 10, 8, 10) };
@@ -1086,7 +1095,7 @@ public sealed partial class MainWindow : Window
         tail.Children.Add(CreateCompactRating(song, connectionLease, HorizontalAlignment.Right));
         Grid.SetColumn(tail, 1); row.Children.Add(tail);
         if (entry.Current) row.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57));
-        AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + SongAvailability(song) + ", " + song.Artist);
+        AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + ", " + song.Artist);
         ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
         return row;
     }
@@ -1267,6 +1276,7 @@ public sealed partial class MainWindow : Window
         var storage = cache;
         storage?.SetProtectedSongs([]);
         queue.Clear(); queueIndex = -1; restoredPosition = 0;
+        UpdateTrackDeviceBadge(null);
         C<TextBlock>("TrackTitle").Text = "Nothing playing"; C<TextBlock>("TrackArtist").Text = ""; C<Image>("CurrentArt").Source = null;
         UpdatePlayerRating();
         RenderQueue(); UpdateTransport();

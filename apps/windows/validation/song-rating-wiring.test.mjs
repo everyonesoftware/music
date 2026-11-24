@@ -34,9 +34,9 @@ test('the player rating sits immediately to the right of Repeat in the transport
 
 test('now-playing metadata fills the space up to Previous before trimming', () => {
   assert.match(shell, /x:Name="PlayerTransportRow"[^>]*>\s*<Grid\.ColumnDefinitions>[\s\S]*?<\/Grid\.ColumnDefinitions>\s*<Grid\b[^>]*>\s*<Grid\.ColumnDefinitions>\s*<ColumnDefinition Width="\*"\/>\s*<ColumnDefinition Width="Auto"\/>\s*<\/Grid\.ColumnDefinitions>\s*<Grid x:Name="PlayerMetadata"[\s\S]*?<\/Grid>\s*<Button Grid.Column="1" x:Name="PreviousButton"/);
-  const row = shell.match(/<Grid x:Name="PlayerMetadata"[\s\S]*?<\/Grid>/)?.[0];
+  const row = shell.match(/<Grid x:Name="PlayerMetadata"([\s\S]*?)<Button Grid.Column="1" x:Name="PreviousButton"/)?.[1];
   assert.ok(row, 'missing now-playing artwork and metadata row');
-  const columns = Array.from(row.matchAll(/<ColumnDefinition\b[^>]*\bWidth="([^"]+)"/g), match => match[1]);
+  const columns = Array.from(row.split("</Grid.ColumnDefinitions>")[0].matchAll(/<ColumnDefinition\b[^>]*\bWidth="([^"]+)"/g), match => match[1]);
   assert.deepEqual(columns, ['48', '*'], 'track text must take only the space left after artwork');
   assert.doesNotMatch(row, /MaxWidth=|TextWrapping="Wrap/);
   for (const name of ['TrackTitle', 'TrackArtist']) {

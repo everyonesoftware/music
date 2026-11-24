@@ -10,7 +10,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
-import com.everyonesoftware.audio.data.SongCacheState
+
 
 @Composable
 private fun OfflineCollectionDetails(state: AudioUiState, actions: AudioUiActions,
@@ -22,42 +22,37 @@ private fun OfflineCollectionDetails(state: AudioUiState, actions: AudioUiAction
     Column(Modifier.fillMaxSize().testTag("offline-collection-detail")) {
         TextButton({ actions.showScreen(Screen.OFFLINE) }) { Text("Back to saved music") }
         coil.compose.AsyncImage(model = cover, contentDescription = "${collection.name} artwork", modifier = Modifier.size(140.dp))
-        Text(collection.name, style = MaterialTheme.typography.headlineSmall)
+        SavedTitle(collection.name, state.storage.isSaved(collection), MaterialTheme.typography.headlineSmall)
         Text(listOf(collection.kind.replaceFirstChar { it.uppercase() }, collection.artist, collection.year.takeIf { it > 0 }?.toString().orEmpty()).filter { it.isNotBlank() }.joinToString(" · "))
         Text(if (available) "Complete audio · $count songs offline" else "Partial · $count/${collection.songs.size} songs offline")
         if (collection.coverArtId != null) Text(if (cover != null) "Cover saved offline" else "Cover not saved yet", style = MaterialTheme.typography.labelSmall)
-        if (!available) Text("The full collection is unavailable offline. Connect and finish downloading; tracks are never skipped.")
-        Button({ actions.playOfflineCollection(collection.kind, collection.id) }, enabled = available && !state.loading,
-            modifier = Modifier.testTag("offline-collection-play")) { Text("Play in saved order") }
-        TextButton({ actions.removeOfflineCollection(collection.kind, collection.id) }, Modifier.testTag("offline-collection-remove")) {
-            Text(if (available) "Remove collection download" else "Cancel collection download")
+        if (!available) Text("The full collection is unavailable offline. Connect to finish saving it; tracks are never skipped.")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button({ actions.playOfflineCollection(collection.kind, collection.id) }, enabled = available && !state.loading,
+                modifier = Modifier.testTag("offline-collection-play")) { Text("Play in saved order") }
+            DeviceMenu(state.connection?.id, collection.owner, collection.name, removable = true,
+                canSave = false, canRemove = !state.loading, onSave = {},
+                onRemove = { actions.removeOfflineCollection(collection.kind, collection.id) })
         }
-        Text("Songs needed by another collection or an individual download are kept.", style = MaterialTheme.typography.bodySmall)
+        Text("Songs also saved individually or by another collection are kept.", style = MaterialTheme.typography.bodySmall)
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         state.storage.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         LazyColumn(Modifier.weight(1f)) {
             items(collection.songs.size) { index ->
                 val song = collection.songs[index]
-                Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                    Text("${index + 1}. ${song.title}")
-                    Text(song.artist, style = MaterialTheme.typography.bodySmall)
-                    if (song.id in complete) OfflineBadge(song.id, state.storage)
-                    else Text("Not available offline", style = MaterialTheme.typography.labelSmall)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f).padding(vertical = 8.dp)) {
+                        SavedTitle("${index + 1}. ${song.title}", song.id in state.storage.downloadedSongs, LocalTextStyle.current)
+                        Text(song.artist, style = MaterialTheme.typography.bodySmall)
+                        if (song.id !in complete) Text("Not available offline", style = MaterialTheme.typography.labelSmall)
+                    }
+                    SongDeviceMenu(state, actions, song)
                 }
             }
         }
     }
 }
 
-@Composable
-internal fun OfflineBadge(id: String, storage: SongCacheState) {
-    val label = when (id) {
-        in storage.downloadedSongs -> "Downloaded · offline"
-        in storage.cachedSongs -> "Saved · offline"
-        else -> null
-    }
-    if (label != null) Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-}
 
 @Composable
 internal fun StorageSettings(state: AudioUiState, actions: AudioUiActions) {
@@ -66,9 +61,9 @@ internal fun StorageSettings(state: AudioUiState, actions: AudioUiActions) {
     var custom by rememberSaveable { mutableStateOf("") }
     var confirmClear by rememberSaveable { mutableStateOf(false) }
     Text("Storage & offline", style = MaterialTheme.typography.titleLarge)
-    Text("Automatically saved: ${storage.cacheBytes / 1_000_000} MB · ${storage.cachedSongs.size} complete songs")
-    Text("Downloads: ${storage.downloadBytes / 1_000_000} MB · ${storage.downloadedSongs.size} complete songs")
-    StorageToggle("Save played songs", settings.autoSave, "storage-auto-save") { actions.setOfflineSettings(settings.copy(autoSave = it)) }
+    Text("Cached: ${storage.cacheBytes / 1_000_000} MB · ${storage.cachedSongs.size} complete songs")
+    Text("Saved: ${storage.downloadBytes / 1_000_000} MB · ${storage.downloadedSongs.size} complete songs")
+    StorageToggle("Cache played songs", settings.autoSave, "storage-auto-save") { actions.setOfflineSettings(settings.copy(autoSave = it)) }
     Text("Automatic cache limit (${settings.limitBytes / 1_000_000} MB)")
     val limits = listOf(500L, 1000L, 2000L, 5000L)
     Column {
@@ -94,13 +89,13 @@ internal fun StorageSettings(state: AudioUiState, actions: AudioUiActions) {
     Text("Upcoming songs and interrupted saves use Wi-Fi or an unmetered connection by default. The current song is saved on the connection used for playback.", style = MaterialTheme.typography.bodySmall)
     StorageToggle("Prefetch on mobile data", settings.mobilePrefetch, "storage-mobile") { actions.setOfflineSettings(settings.copy(mobilePrefetch = it)) }
     StorageToggle("Offline mode", settings.offline, "storage-offline") { actions.setOfflineSettings(settings.copy(offline = it)) }
-    Text("Offline mode blocks music-server requests. Only fully saved songs can play. Downloads are pinned and never removed by automatic cache cleanup.", style = MaterialTheme.typography.bodySmall)
+    Text("Offline mode blocks music-server requests. Cached and Saved songs can play offline. Cached copies can be cleared automatically; Saved copies are kept.", style = MaterialTheme.typography.bodySmall)
     OutlinedButton({ actions.showScreen(Screen.OFFLINE) }, Modifier.fillMaxWidth().testTag("storage-songs")) { Text("Saved music · songs, albums & playlists") }
     OutlinedButton({ confirmClear = true }, Modifier.fillMaxWidth().testTag("storage-clear")) { Text("Clear automatic cache") }
     storage.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
     if (confirmClear) AlertDialog(onDismissRequest = { confirmClear = false },
-        title = { Text("Clear automatically saved songs?") },
-        text = { Text("Pinned downloads and the currently playing song are kept. Other songs will need a connection to play again.") },
+        title = { Text("Clear cached songs?") },
+        text = { Text("Saved songs and the currently playing song are kept. Other songs will need a connection to play again.") },
         confirmButton = { TextButton({ confirmClear = false; actions.clearSongCache() }) { Text("Clear cache") } },
         dismissButton = { TextButton({ confirmClear = false }) { Text("Cancel") } })
 }
@@ -137,13 +132,15 @@ internal fun OfflineSongs(state: AudioUiState, actions: AudioUiActions, artworkU
         if (recent) FilterChip(offlineOnly, { offlineOnly = !offlineOnly }, { Text("Offline only") }, modifier = Modifier.testTag("recent-offline-filter"))
         state.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         state.storage.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        if (songs.isEmpty()) Text(if (recent) "No played songs match this filter." else "Play a song online or download music to save it here.")
+        if (songs.isEmpty() && (recent || state.storage.collections.isEmpty() && state.storage.pendingDownloads.isEmpty())) {
+            Text(if (recent) "No played songs match this filter." else "Play music to cache it, or choose Save to Device to keep it here.")
+        }
         LazyColumn(Modifier.weight(1f)) {
             items(state.storage.collections, key = { it.owner }) { collection ->
                 val count = collection.availableCount { it in complete }
                 TextButton({ actions.openOfflineCollection(collection.kind, collection.id) }, Modifier.fillMaxWidth().testTag("offline-${collection.kind}-${collection.id}")) {
                     Column(Modifier.weight(1f)) {
-                        Text(collection.name)
+                        SavedTitle(collection.name, state.storage.isSaved(collection), LocalTextStyle.current)
                         Text("${collection.kind.replaceFirstChar { it.uppercase() }} · " +
                             if (count == collection.songs.size) "Complete audio · $count songs offline" else "Partial · $count/${collection.songs.size} songs offline")
                     }
@@ -151,21 +148,16 @@ internal fun OfflineSongs(state: AudioUiState, actions: AudioUiActions, artworkU
             }
             items(state.storage.pendingDownloads, key = { "pending-${it.id}" }) { song ->
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text("${song.title} · download pending", Modifier.weight(1f))
-                    if (song.id in state.storage.explicitDownloads) TextButton({ actions.removeDownload(song.id) }) { Text("Cancel download") }
-                    else Text("Kept by collection", style = MaterialTheme.typography.labelSmall)
+                    Column(Modifier.weight(1f)) {
+                        Text(song.title)
+                        Text("Save pending", style = MaterialTheme.typography.labelSmall)
+                    }
+                    SongDeviceMenu(state, actions, song)
                 }
             }
             items(songs, key = { it.id }) { song ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton({ actions.playSong(song) }, Modifier.weight(1f), enabled = !state.storage.settings.offline || song.id in complete) {
-                        Column(Modifier.weight(1f)) {
-                            Text(song.title)
-                            Text(song.artist, style = MaterialTheme.typography.bodySmall)
-                            OfflineBadge(song.id, state.storage)
-                        }
-                    }
-                    if (song.id in state.storage.explicitDownloads) TextButton({ actions.removeDownload(song.id) }) { Text("Remove download") }
+                SongRow(song, artworkUrl, state, actions, !state.loading && (!state.storage.settings.offline || song.id in complete)) {
+                    actions.playSong(song)
                 }
             }
         }

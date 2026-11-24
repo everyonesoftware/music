@@ -14,6 +14,9 @@ import com.everyonesoftware.audio.updates.UpdateUiState
 
 enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS, ALL_ALBUMS, ALL_ARTISTS, ARTIST, PLAYLIST, SEARCH, ALBUM, PLAYER, SETTINGS, QUEUE, UPDATES, OFFLINE }
 
+data class DeviceActionPage(val connection: Connection?, val screen: Screen, val item: String?)
+data class DeviceActionFailure(val page: DeviceActionPage, val message: String)
+
 data class AudioUiState(
     val booting: Boolean = true,
     val screen: Screen = Screen.WELCOME,
@@ -55,6 +58,7 @@ data class AudioUiState(
     val playlistError: String? = null,
     val loading: Boolean = false,
     val error: String? = null,
+    val deviceActionFailure: DeviceActionFailure? = null,
     val session: ListeningSession? = null,
     val playing: Boolean = false,
     val positionMs: Long = 0,
@@ -72,6 +76,18 @@ data class AudioUiState(
     val albumReturnScreen: Screen = Screen.PLAYLISTS,
 )
 
+internal val AudioUiState.deviceActionPage: DeviceActionPage
+    get() = DeviceActionPage(connection, screen, when (screen) {
+        Screen.ALBUM -> selectedAlbum?.id
+        Screen.PLAYLIST -> selectedPlaylist?.id
+        Screen.ARTIST -> selectedArtist?.id
+        Screen.OFFLINE -> selectedOfflineCollection?.owner
+        Screen.SEARCH -> searchQuery
+        Screen.PLAYER -> session?.let { it.queue.getOrNull(it.index)?.id }
+        Screen.QUEUE -> session?.queueId
+        else -> null
+    })
+
 fun AudioUiState.withCollectionLayout(kind: CollectionKind, layout: CollectionLayout): AudioUiState = when (kind) {
     CollectionKind.PLAYLISTS -> copy(playlistCollectionLayout = layout)
     CollectionKind.ALBUMS -> copy(albumCollectionLayout = layout)
@@ -84,6 +100,7 @@ fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
         (screen == Screen.UPDATES && updatesReturnScreen == Screen.SETTINGS)
     return copy(
         screen = destination,
+        deviceActionFailure = deviceActionFailure.takeIf { destination == screen },
         settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
         updatesReturnScreen = if (destination == Screen.UPDATES && screen != Screen.UPDATES) screen else updatesReturnScreen,
         playlistReturnScreen = if (destination == Screen.PLAYLIST && screen in origins) screen else playlistReturnScreen,

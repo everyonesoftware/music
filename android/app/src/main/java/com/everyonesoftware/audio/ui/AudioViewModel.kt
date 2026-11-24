@@ -63,6 +63,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private var artistDetailGeneration = 0L
     private var searchOperation: Job? = null
     private var searchGeneration = 0L
+    private var deviceActionGeneration = 0L
     private var playlistDetailOperation: Job? = null
     private var playlistDetailGeneration = 0L
     private var albumDetailOperation: Job? = null
@@ -84,7 +85,12 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             viewModelScope.launch { output.state.collect { routes -> current.update { it.copy(mediaOutput = routes) } } }
         }
         viewModelScope.launch {
-            graph.songCache.state.collect { storage -> current.update { it.copy(storage = storage) } }
+            graph.songCache.state.collect {
+                current.update { state ->
+                    val owner = state.connection.takeIf { it == graph.credentials.value?.connection }
+                    state.copy(storage = graph.songCache.state.value.forConnection(owner))
+                }
+            }
         }
         viewModelScope.launch {
             graph.artworkCache.state.collect { revision -> current.update { it.copy(artworkRevision = revision) } }
@@ -151,6 +157,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val selected = connection?.let { graph.store.selectedLibraries(it.id) }.orEmpty()
         val connections = graph.store.connections()
         current.update { it.copy(connection = connection, connections = connections, selectedOfflineCollection = null, playlists = playlists, albums = emptyList(), albumsError = null, selectedAlbum = null, albumSongs = emptyList(), albumError = null,
+            storage = graph.songCache.state.value.forConnection(connection), deviceActionFailure = null,
             artists = emptyList(), artistsRefreshing = false, artistsError = null, artistCollectionQuery = "",
             selectedArtist = null, artistContents = null, artistLoading = false, artistError = null, artistReturnScreen = Screen.PLAYLISTS,
             selectedPlaylist = null, playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null,
@@ -324,7 +331,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val credentials = graph.credentials.value ?: return
         if (current.value.connection != credentials.connection || current.value.artistsRefreshing) return
         if (graph.networkPolicy.offline) {
-            current.update { it.copy(artistsError = "Artists are unavailable offline. Open Saved music for downloaded albums and songs.") }
+            current.update { it.copy(artistsError = "Artists are unavailable offline. Open Saved music for albums and songs on this device.") }
             return
         }
         artistsOperation?.cancel()
@@ -354,7 +361,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         artistDetailOperation?.cancel()
         current.update { it.navigateTo(Screen.ARTIST).copy(selectedArtist = artist, artistContents = null,
             artistLoading = !graph.networkPolicy.offline, artistError = if (graph.networkPolicy.offline)
-                "Artists are unavailable offline. Open Saved music for downloaded albums and songs." else null) }
+                "Artists are unavailable offline. Open Saved music for albums and songs on this device." else null) }
         if (graph.networkPolicy.offline) return
         artistDetailOperation = viewModelScope.launch {
             try {
@@ -531,42 +538,33 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
     override fun removeDownload(songId: String) {
-        val credentials = graph.credentials.value ?: return
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try { graph.songCache.removeDownload(credentials, songId) }
-            catch (_: Exception) { current.update { it.copy(error = "Cannot remove this download. Retry.") } }
+        deviceAction("Cannot remove this song from the device.") { credentials ->
+            graph.songCache.removeDownload(credentials, songId)
         }
     }
     override fun downloadSongs(songs: List<Song>) {
-        val credentials = graph.credentials.value ?: return
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                graph.songCache.download(credentials, songs)
-            }
-            catch (_: Exception) { current.update { it.copy(error = "Cannot download these songs. Retry.") } }
+        if (songs.isEmpty()) return
+        deviceAction(if (songs.size == 1) "Cannot save this song to the device." else "Cannot save these songs to the device.") { credentials ->
+            graph.songCache.download(credentials, songs)
         }
     }
 
     override fun downloadAlbum() {
         val album = current.value.selectedAlbum ?: return
-        if (current.value.albumLoading || current.value.albumError != null) return
+        if (current.value.albumLoading || current.value.albumError != null || current.value.albumSongs.isEmpty()) return
         saveCollectionDownload(OfflineCollection("album", album.id, album.name, album.artist, album.year,
             album.coverArtId, current.value.albumSongs))
     }
     override fun downloadPlaylist() {
         val playlist = current.value.selectedPlaylist ?: return
-        if (current.value.playlistLoading || current.value.playlistDetailError != null) return
+        if (current.value.playlistLoading || current.value.playlistDetailError != null || current.value.playlistSongs.isEmpty()) return
         saveCollectionDownload(OfflineCollection("playlist", playlist.id, playlist.name,
             coverArtId = playlist.coverArtId, songs = current.value.playlistSongs))
     }
     private fun saveCollectionDownload(collection: OfflineCollection) {
-        val credentials = graph.credentials.value ?: return
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
-            try {
-                graph.songCache.downloadCollection(credentials, collection)
-            } catch (_: Exception) {
-                if (graph.credentials.value == credentials) current.update { it.copy(error = "Cannot save this collection. Previous downloads are kept. Retry.") }
-            }
+        if (graph.networkPolicy.offline) return
+        deviceAction("Cannot save this collection. Previously saved music is kept.") { credentials ->
+            graph.songCache.downloadCollection(credentials, collection)
         }
     }
     override fun openOfflineCollection(kind: String, id: String) {
@@ -578,7 +576,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         if (current.value.loading) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
-            val snapshot = requireNotNull(graph.songCache.collection(credentials, kind, id)) { "This download was removed. Reopen Saved music." }
+            val snapshot = requireNotNull(graph.songCache.collection(credentials, kind, id)) { "This collection was removed from the device. Reopen Saved music." }
             val songs = snapshot.playableSongs { graph.songCache.complete(credentials, it) }
             val previous = graph.session.value
             val session = SessionRules.start(credentials.connection.id, snapshot.id, snapshot.name, songs,
@@ -591,13 +589,31 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
     override fun removeOfflineCollection(kind: String, id: String) {
+        deviceAction("Cannot remove this collection from the device.", onSuccess = {
+            current.update { state ->
+                if (state.selectedOfflineCollection?.let { it.kind == kind && it.id == id } == true)
+                    state.copy(selectedOfflineCollection = null) else state
+            }
+        }) { credentials -> graph.songCache.removeCollection(credentials, kind, id) }
+    }
+
+    private fun deviceAction(message: String, onSuccess: () -> Unit = {}, action: (Credentials) -> Unit) {
         val credentials = graph.credentials.value ?: return
-        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+        val page = current.value.deviceActionPage
+        if (page.connection != credentials.connection || current.value.loading) return
+        val ticket = ++deviceActionGeneration
+        current.update { it.copy(deviceActionFailure = null) }
+        fun stillOnPage() = graph.credentials.value == credentials && current.value.deviceActionPage == page
+        viewModelScope.launch {
             try {
-                graph.songCache.removeCollection(credentials, kind, id)
-                if (graph.credentials.value == credentials) current.update { it.copy(selectedOfflineCollection = null) }
+                withContext(Dispatchers.IO) { action(credentials) }
+                if (stillOnPage()) onSuccess()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
             } catch (_: Exception) {
-                if (graph.credentials.value == credentials) current.update { it.copy(error = "Cannot remove this collection. Retry.") }
+                if (ticket == deviceActionGeneration && stillOnPage()) {
+                    current.update { it.copy(deviceActionFailure = DeviceActionFailure(page, "$message Open Device actions and try again.")) }
+                }
             }
         }
     }
@@ -914,7 +930,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         graph.artworkCache.prefetch(credentials, listOf(id))
         return graph.artworkCache.cachedUri(credentials, id)
     }
-    override fun clearError() { current.update { it.copy(error = null, ratingError = null) } }
+    override fun clearError() { current.update { it.copy(error = null, ratingError = null, deviceActionFailure = null) } }
 
     override fun switchConnection(id: String) {
         if (id == graph.credentials.value?.connection?.id || current.value.loading) return

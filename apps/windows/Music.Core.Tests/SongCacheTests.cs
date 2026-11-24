@@ -7,6 +7,452 @@ public sealed class SongCacheTests : IDisposable
 {
     private readonly string directory = Path.Combine(Path.GetTempPath(), "music-cache-" + Guid.NewGuid().ToString("N"));
     private static readonly Song Track = new("song", "Title", "Artist", "Album", null, 90);
+
+    [Fact]
+    public void Individual_save_after_dropped_unfinished_collection_member_survives_restart()
+    {
+        var other = Track with { Id = "other" };
+        using (var cache = new SongCache(directory, "account"))
+        {
+            cache.Pin([Track, other], "playlist:1");
+            cache.Pin([other], "playlist:1");
+            cache.Pin([Track]);
+        }
+        using var reopened = new SongCache(directory, "account");
+        var pending = Assert.Single(reopened.Recent(), entry => entry.Song.Id == Track.Id);
+        Assert.False(pending.Complete);
+        Assert.True(pending.OwnedBy(""));
+        Assert.True(pending.HasActiveSave());
+    }
+    [Fact]
+    public async Task Collection_saves_survive_restart_and_removal_keeps_other_owners()
+    {
+        var other = Track with { Id = "other" };
+        var only = Track with { Id = "only" };
+        using (var cache = new SongCache(directory, "account"))
+        {
+            await cache.SaveAsync(Track, true, WriteMedia); // Existing/individual save.
+            cache.Pin([Track, other, only], "album:1");
+            cache.Pin([other], "playlist:1");
+            Assert.False(cache.Snapshot()[other.Id].Complete);
+            await cache.SaveAsync(other, false, WriteMedia);
+            await cache.SaveAsync(only, false, WriteMedia);
+        }
+        using var reopened = new SongCache(directory, "account");
+        Assert.True(reopened.Snapshot()[other.Id].OwnedBy("album:1"));
+        Assert.True(reopened.RemoveCollection("album:1"));
+        reopened.ClearAutomatic([]);
+        Assert.NotNull(reopened.Find(Track.Id));
+        Assert.NotNull(reopened.Find(other.Id));
+        Assert.Null(reopened.Find(only.Id));
+        Assert.False(reopened.Snapshot()[other.Id].OwnedBy("album:1"));
+        Assert.True(reopened.Snapshot()[other.Id].OwnedBy("playlist:1"));
+        Assert.True(reopened.RemoveDownload(other.Id)); // Explicit song removal clears every owner.
+        Assert.False(reopened.Snapshot().ContainsKey(other.Id));
+    }
+
+    [Fact]
+    public async Task Remaining_collection_claims_are_removable_after_explicit_song_removal()
+    {
+        using var cache = new SongCache(directory, "account");
+        var other = Track with { Id = "other" };
+        cache.Pin([Track, other], "playlist:1");
+        await cache.SaveAsync(Track, false, WriteMedia);
+        Assert.True(cache.RemoveDownload(other.Id));
+        Assert.False(DeviceAvailability.Collection(cache.Snapshot(), "playlist:1", [Track, other]).Saved);
+        Assert.True(DeviceAvailability.HasCollectionClaims(cache.Snapshot(), "playlist:1"));
+        Assert.True(cache.RemoveCollection("playlist:1"));
+        Assert.False(DeviceAvailability.HasCollectionClaims(cache.Snapshot(), "playlist:1"));
+        Assert.Null(cache.Find(Track.Id));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Failed_song_removal_index_write_preserves_bytes_and_claims_across_restart(bool complete)
+    {
+        using (var cache = new SongCache(directory, "account"))
+        {
+            cache.Pin([Track]);
+            cache.Pin([Track, Track], "playlist:1");
+            if (complete) await cache.SaveAsync(Track, false, WriteMedia);
+            else await Assert.ThrowsAsync<IOException>(() => cache.SaveAsync(Track, false, async (output, token) =>
+            {
+                await WriteMedia(output, token);
+                throw new IOException("Interrupted transfer");
+            }));
+
+            var account = Directory.GetDirectories(directory).Single();
+            var path = Assert.Single(Directory.GetFiles(account, complete ? "*.media" : "*.partial"));
+            var before = cache.Snapshot();
+            var blocker = Directory.CreateDirectory(Path.Combine(account, "index.json.tmp"));
+            try
+            {
+                Assert.True(Record.Exception(() => cache.RemoveDownload(Track.Id)) is IOException or UnauthorizedAccessException);
+                Assert.True(File.Exists(path), "A rejected song removal must not delete media or partial bytes.");
+                Assert.Equal(new byte[] { 4, 5 }, File.ReadAllBytes(path));
+                Assert.Same(before, cache.Snapshot());
+            }
+            finally { blocker.Delete(); }
+        }
+        using (var reopened = new SongCache(directory, "account"))
+        {
+            var entry = Assert.Single(reopened.Recent());
+            Assert.True(entry.OwnedBy(""));
+            Assert.Equal(2, entry.DeviceOwners!["playlist:1"]);
+            Assert.Equal(complete, entry.Complete);
+            Assert.Equal(2, entry.Bytes);
+            Assert.True(reopened.RemoveDownload(Track.Id));
+        }
+        using var removed = new SongCache(directory, "account");
+        Assert.Empty(removed.Recent());
+    }
+
+    [Fact]
+    public async Task Failed_collection_removal_index_write_leaves_intact_media_and_claims_after_restart()
+    {
+        using (var cache = new SongCache(directory, "account"))
+        {
+            cache.Pin([Track], "playlist:1");
+            await cache.SaveAsync(Track, false, WriteMedia);
+            var path = cache.Find(Track.Id)!;
+            var before = cache.Snapshot();
+            var blocker = Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(path)!, "index.json.tmp"));
+            try
+            {
+                Assert.True(Record.Exception(() => cache.RemoveCollection("playlist:1")) is IOException or UnauthorizedAccessException);
+                Assert.Same(before, cache.Snapshot());
+                Assert.Equal(new byte[] { 4, 5 }, File.ReadAllBytes(path));
+            }
+            finally { blocker.Delete(); }
+        }
+        using (var reopened = new SongCache(directory, "account"))
+        {
+            Assert.True(reopened.Snapshot()[Track.Id].OwnedBy("playlist:1"));
+            Assert.NotNull(reopened.Find(Track.Id));
+            Assert.True(reopened.RemoveCollection("playlist:1"));
+        }
+        using var removed = new SongCache(directory, "account");
+        Assert.Empty(removed.Recent());
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Committed_device_removal_with_failed_file_cleanup_does_not_restart_transfers(bool collection)
+    {
+        const string key = "playlist:1";
+        var other = Track with { Id = "other" };
+        var last = Track with { Id = "last" };
+        var active = Track with { Id = "active" };
+        var upcoming = Track with { Id = "upcoming" };
+        var interrupted = Track with { Id = "interrupted" };
+
+        async Task VerifyPlan(SongCache cache)
+        {
+            var recent = cache.Recent();
+            var explicitSaves = recent.Where(x => x.HasActiveSave() && !x.Complete).Select(x => x.Song);
+            var plan = OfflinePolicy.Plan([active, upcoming], 0, recent, new() { SavePlayed = false }, true, [upcoming])
+                .Concat(explicitSaves).DistinctBy(x => x.Id).ToArray();
+            Assert.DoesNotContain(plan, song => song.Id == Track.Id || song.Id == other.Id || song.Id == last.Id);
+            Assert.Contains(plan, song => song.Id == upcoming.Id);
+            foreach (var song in plan)
+                await cache.SaveAsync(song, false, WriteMedia);
+        }
+
+        DirectoryInfo? blocker = null;
+        string? lastPath = null;
+        try
+        {
+            using (var cache = new SongCache(directory, "account"))
+            {
+                cache.Pin(collection ? [Track, other, last] : [other], key);
+                if (!collection) cache.Pin([other]);
+                if (collection) await cache.SaveAsync(Track, false, WriteMedia);
+                await cache.SaveAsync(other, false, WriteMedia);
+                if (collection)
+                {
+                    await cache.SaveAsync(last, false, WriteMedia);
+                    lastPath = cache.Find(last.Id)!;
+                }
+                await Assert.ThrowsAsync<IOException>(() => cache.SaveAsync(interrupted, false, async (output, token) =>
+                {
+                    await WriteMedia(output, token);
+                    throw new IOException("Interrupted transfer");
+                }));
+                var firstPath = cache.Find(Track.Id);
+                var otherPath = cache.Find(other.Id)!;
+                blocker = Directory.CreateDirectory(Path.ChangeExtension(otherPath, ".partial"));
+                Assert.True(Record.Exception(() => collection ? cache.RemoveCollection(key) : cache.RemoveDownload(other.Id))
+                    is IOException or UnauthorizedAccessException);
+                if (collection) Assert.False(File.Exists(firstPath));
+                Assert.False(File.Exists(otherPath));
+                await VerifyPlan(cache);
+                Assert.NotNull(cache.Find(interrupted.Id));
+                Assert.False(DeviceAvailability.HasCollectionClaims(cache.Snapshot(), key));
+                if (collection)
+                {
+                    Assert.True(File.Exists(lastPath)); // The earlier error stopped this cleanup.
+                    Assert.Null(cache.Find(last.Id));
+                }
+            }
+            using var reopened = new SongCache(directory, "account");
+            await VerifyPlan(reopened);
+            Assert.DoesNotContain(reopened.Recent(), entry => entry.HasActiveSave());
+            Assert.Null(reopened.Find(other.Id));
+            if (collection) Assert.False(File.Exists(lastPath)); // Reopen retries committed cleanup.
+            // A fresh request cannot discard cleanup tracking while deletion is still blocked.
+            Assert.True(Record.Exception(() => reopened.Pin([other])) is IOException or UnauthorizedAccessException);
+            Assert.True(await Record.ExceptionAsync(() => reopened.SaveAsync(other, false, WriteMedia))
+                is IOException or UnauthorizedAccessException);
+            Assert.False(reopened.Snapshot().ContainsKey(other.Id));
+            blocker.Delete();
+            if (collection) reopened.ClearAutomatic([]); // Also retry the marker in-session.
+            reopened.Pin([other]); // A new explicit request supersedes pending cleanup.
+            await reopened.SaveAsync(other, false, WriteMedia);
+            reopened.ClearAutomatic([]);
+            Assert.Equal(DeviceSongState.Saved, DeviceAvailability.Song(reopened.Snapshot(), other.Id));
+            Assert.Equal(other.Id, Assert.Single(reopened.Recent()).Song.Id);
+        }
+        finally { if (blocker is not null && Directory.Exists(blocker.FullName)) blocker.Delete(); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Rejected_replacement_transfer_cannot_requeue_removed_media(bool collection)
+    {
+        const string owner = "playlist:1";
+        var active = Track with { Id = "active" };
+        var upcoming = Track with { Id = "upcoming" };
+        string mediaPath;
+        using (var cache = new SongCache(directory, "account"))
+        {
+            cache.Pin([Track], collection ? owner : "");
+            await cache.SaveAsync(Track, false, WriteMedia);
+            mediaPath = cache.Find(Track.Id)!;
+            var partialBlocker = Directory.CreateDirectory(Path.ChangeExtension(mediaPath, ".partial"));
+            try
+            {
+                Assert.True(Record.Exception(() => collection ? cache.RemoveCollection(owner) : cache.RemoveDownload(Track.Id))
+                    is IOException or UnauthorizedAccessException);
+                using var reopened = new SongCache(directory, "account");
+                Assert.Equal(new[] { Track }, Plan(reopened, Track)); // Legitimate queue-based prefetch.
+                partialBlocker.Delete();
+                var indexBlocker = Directory.CreateDirectory(Path.Combine(Path.GetDirectoryName(mediaPath)!, "index.json.tmp"));
+                try
+                {
+                    Assert.True(await Record.ExceptionAsync(() => reopened.SaveAsync(Track, false,
+                        (_, _) => throw new InvalidOperationException("Transfer must not start before its intent is committed.")))
+                        is IOException or UnauthorizedAccessException);
+                    Assert.False(reopened.Snapshot().ContainsKey(Track.Id));
+                    Assert.Equal(new[] { upcoming }, Plan(reopened, upcoming));
+                }
+                finally { indexBlocker.Delete(); }
+                foreach (var song in Plan(reopened, upcoming))
+                    await reopened.SaveAsync(song, false, WriteMedia);
+            }
+            finally { if (Directory.Exists(partialBlocker.FullName)) partialBlocker.Delete(); }
+        }
+        using var restored = new SongCache(directory, "account");
+        Assert.Null(restored.Find(Track.Id));
+        Assert.False(File.Exists(mediaPath));
+        Assert.DoesNotContain(Plan(restored, upcoming), song => song.Id == Track.Id);
+        restored.Pin([Track], collection ? owner : "");
+        await restored.SaveAsync(Track, false, WriteMedia);
+        Assert.Equal(new byte[] { 4, 5 }, File.ReadAllBytes(restored.Find(Track.Id)!));
+        Assert.True(restored.Snapshot()[Track.Id].OwnedBy(collection ? owner : ""));
+
+        Song[] Plan(SongCache cache, Song next)
+        {
+            var recent = cache.Recent();
+            return OfflinePolicy.Plan([active, next], 0, recent, new() { SavePlayed = false }, true, [next])
+                .Concat(recent.Where(x => x.HasActiveSave() && !x.Complete).Select(x => x.Song))
+                .DistinctBy(song => song.Id).ToArray();
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Blocked_device_cleanup_does_not_stop_other_automatic_evictions(bool clear)
+    {
+        var evictable = Track with { Id = "evictable" };
+        var live = Track with { Id = "live" };
+        var captured = Track with { Id = "captured" };
+        var saved = Track with { Id = "saved" };
+        string path;
+        using (var cache = new SongCache(directory, "account"))
+        {
+            await cache.SaveAsync(Track, false, WriteMedia);
+            path = cache.Find(Track.Id)!;
+        }
+        var blocker = Directory.CreateDirectory(Path.ChangeExtension(path, ".partial"));
+        try
+        {
+            using (var cache = new SongCache(directory, "account"))
+            {
+                Assert.True(Record.Exception(() => cache.RemoveDownload(Track.Id)) is IOException or UnauthorizedAccessException);
+                await cache.SaveAsync(evictable, false, WriteMedia);
+                await cache.SaveAsync(live, false, WriteMedia);
+                await cache.SaveAsync(captured, false, WriteMedia);
+                await cache.SaveAsync(saved, true, WriteMedia);
+                var evictablePath = cache.Find(evictable.Id)!;
+                cache.SetProtectedSongs([live.Id]);
+
+                Assert.True(Record.Exception(() => Evict(cache)) is IOException or UnauthorizedAccessException);
+                Assert.False(File.Exists(evictablePath));
+                Assert.False(cache.Snapshot().ContainsKey(evictable.Id));
+                Assert.False(cache.Snapshot().ContainsKey(Track.Id));
+                Assert.NotNull(cache.Find(live.Id));
+                Assert.NotNull(cache.Find(captured.Id));
+                Assert.True(cache.Snapshot()[saved.Id].HasActiveSave());
+            }
+            using var reopened = new SongCache(directory, "account");
+            Assert.False(reopened.Snapshot().ContainsKey(evictable.Id));
+            Assert.DoesNotContain(reopened.Recent(), item => item.Song.Id == Track.Id);
+            // Reopen must retain the failed cleanup so automatic maintenance can retry it.
+            Assert.True(Record.Exception(() => Evict(reopened)) is IOException or UnauthorizedAccessException);
+            blocker.Delete();
+            Evict(reopened);
+            Evict(reopened);
+            Assert.True(reopened.Snapshot()[saved.Id].HasActiveSave());
+        }
+        finally { if (Directory.Exists(blocker.FullName)) blocker.Delete(); }
+
+        void Evict(SongCache cache)
+        {
+            if (clear) cache.ClearAutomatic([captured.Id]);
+            else cache.Trim(0, [captured.Id]);
+        }
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("partial")]
+    [InlineData("complete")]
+    public async Task Rejected_save_admission_preserves_the_prior_record_and_bytes(string state)
+    {
+        using var cache = new SongCache(directory, "account");
+        if (state == "complete") await cache.SaveAsync(Track, false, WriteMedia);
+        if (state == "partial")
+            await Assert.ThrowsAsync<IOException>(() => cache.SaveAsync(Track, false, async (output, token) =>
+            {
+                await WriteMedia(output, token);
+                throw new IOException("Interrupted transfer");
+            }));
+
+        var account = Directory.GetDirectories(directory).Single();
+        var path = state == "missing" ? null : Assert.Single(Directory.GetFiles(account, state == "complete" ? "*.media" : "*.partial"));
+        var prior = cache.Snapshot();
+        var indexBlocker = Directory.CreateDirectory(Path.Combine(account, "index.json.tmp"));
+        try
+        {
+            Assert.True(await Record.ExceptionAsync(() => cache.SaveAsync(Track, true,
+                (_, _) => throw new InvalidOperationException("Rejected intent must not start a transfer.")))
+                is IOException or UnauthorizedAccessException);
+            Assert.Same(prior, cache.Snapshot());
+            var recent = cache.Recent();
+            if (path is null) Assert.Empty(recent);
+            else
+            {
+                Assert.Equal(prior[Track.Id], Assert.Single(recent));
+                Assert.Equal(new byte[] { 4, 5 }, File.ReadAllBytes(path));
+            }
+        }
+        finally { indexBlocker.Delete(); }
+    }
+
+    [Fact]
+    public async Task Collection_removal_refuses_the_entire_request_if_a_last_copy_is_protected()
+    {
+        using var cache = new SongCache(directory, "account");
+        var other = Track with { Id = "other" };
+        cache.Pin([other, Track], "album:1");
+        await cache.SaveAsync(Track, false, WriteMedia);
+        cache.SetProtectedSongs([Track.Id]);
+        Assert.False(cache.RemoveCollection("album:1"));
+        Assert.True(cache.Snapshot()[other.Id].OwnedBy("album:1"));
+        cache.Pin([Track]);
+        Assert.True(cache.RemoveCollection("album:1"));
+        Assert.False(cache.Snapshot().ContainsKey(other.Id));
+        Assert.NotNull(cache.Find(Track.Id));
+    }
+
+    [Fact]
+    public async Task State_is_saved_only_for_playable_pinned_files_and_collection_requires_its_own_complete_membership()
+    {
+        using var cache = new SongCache(directory, "account");
+        var other = Track with { Id = "other" };
+        Assert.Equal(DeviceSongState.Streamed, DeviceAvailability.Song(cache.Snapshot(), Track.Id));
+        await cache.SaveAsync(Track, false, WriteMedia);
+        Assert.Equal(DeviceSongState.Cached, DeviceAvailability.Song(cache.Snapshot(), Track.Id));
+        cache.Pin([Track, other, Track], "playlist:1");
+        Assert.False(DeviceAvailability.SavedCard(cache.Snapshot(), "playlist:1", 3, [Track, other, Track]));
+        Assert.Equal(DeviceSongState.Saved, DeviceAvailability.Song(cache.Snapshot(), Track.Id));
+        Assert.Equal(DeviceSongState.Streamed, DeviceAvailability.Song(cache.Snapshot(), other.Id));
+        Assert.Equal((true, false), DeviceAvailability.Collection(cache.Snapshot(), "playlist:1", [Track, other, Track]));
+        await cache.SaveAsync(other, false, WriteMedia);
+        Assert.Equal((true, true), DeviceAvailability.Collection(cache.Snapshot(), "playlist:1", [Track, other, Track]));
+        Assert.True(DeviceAvailability.SavedCard(cache.Snapshot(), "playlist:1", 3, [Track, other, Track]));
+        Assert.False(DeviceAvailability.SavedCard(cache.Snapshot(), "playlist:1", 4, [Track, other, Track]));
+        Assert.Equal((false, false), DeviceAvailability.Collection(cache.Snapshot(), "album:1", [Track, other]));
+        Assert.Equal((false, false), DeviceAvailability.Collection(cache.Snapshot(), "playlist:1", []));
+    }
+
+    [Fact]
+    public async Task Resaving_changed_collection_updates_card_membership_without_deleting_older_copies()
+    {
+        using var cache = new SongCache(directory, "account");
+        var old = Track with { Id = "old" };
+        var pending = Track with { Id = "pending" };
+        cache.Pin([Track, old, pending], "playlist:1");
+        await cache.SaveAsync(Track, false, WriteMedia);
+        await cache.SaveAsync(old, false, WriteMedia);
+        cache.Pin([Track], "playlist:1");
+        Assert.True(DeviceAvailability.SavedCard(cache.Snapshot(), "playlist:1", 1, [Track]));
+        Assert.False(DeviceAvailability.SavedCard(cache.Snapshot(), "playlist:1", 2, [Track, old]));
+        Assert.Equal((false, false), DeviceAvailability.Collection(cache.Snapshot(), "playlist:1", [old]));
+        Assert.NotNull(cache.Find(old.Id));
+        Assert.False(cache.Snapshot()[pending.Id].Pinned);
+        Assert.True(cache.RemoveCollection("playlist:1"));
+        cache.ClearAutomatic([]);
+        Assert.Empty(cache.Snapshot());
+    }
+
+    [Fact]
+    public async Task Failed_pin_write_does_not_publish_a_saved_badge_or_leave_an_intent()
+    {
+        using var cache = new SongCache(directory, "account");
+        await cache.SaveAsync(Track, false, WriteMedia);
+        Directory.CreateDirectory(Path.Combine(Directory.GetDirectories(directory).Single(), "index.json.tmp"));
+        Assert.True(Record.Exception(() => cache.Pin([Track], "playlist:1")) is IOException or UnauthorizedAccessException);
+        Assert.Equal(DeviceSongState.Cached, DeviceAvailability.Song(cache.Snapshot(), Track.Id));
+        Assert.False(cache.Snapshot()[Track.Id].OwnedBy("playlist:1"));
+    }
+
+    private static Task WriteMedia(Stream output, CancellationToken token) => output.WriteAsync(new byte[] { 4, 5 }, token).AsTask();
+
+    [Fact]
+    public async Task Collection_badge_requires_the_exact_saved_song_occurrences()
+    {
+        using var cache = new SongCache(directory, "account");
+        var other = Track with { Id = "other" };
+        const string key = "playlist:1";
+        cache.Pin([Track, Track, other], key);
+        await cache.SaveAsync(Track, false, WriteMedia);
+        await cache.SaveAsync(other, false, WriteMedia);
+        var snapshot = cache.Snapshot();
+        Assert.False(DeviceAvailability.Collection(snapshot, key, [Track, other, other]).Saved);
+        Assert.False(DeviceAvailability.Collection(snapshot, key, [Track, other]).Saved);
+        Assert.False(DeviceAvailability.Collection(snapshot, key, [Track, Track, Track, other]).Saved);
+        Assert.False(DeviceAvailability.Collection(snapshot, key, [Track, other, Track with { Id = "replacement" }]).Saved);
+        Assert.True(DeviceAvailability.Collection(snapshot, key, [other, Track, Track]).Saved);
+        Assert.False(DeviceAvailability.SavedCard(snapshot, key, 3, null));
+        Assert.False(DeviceAvailability.SavedCard(snapshot, key, 3, [Track, Track, Track with { Id = "replacement" }]));
+        Assert.True(DeviceAvailability.SavedCard(snapshot, key, 3, [Track, Track, other]));
+    }
+
     [Fact]
     public async Task Complete_song_reopens_without_network_and_is_account_scoped()
     {
@@ -384,7 +830,7 @@ public sealed class SongCacheTests : IDisposable
     }
 
     [Fact]
-    public async Task Snapshot_publishes_mutations_even_when_metadata_persistence_fails()
+    public async Task Snapshot_publishes_file_mutations_but_not_uncommitted_pin_when_metadata_persistence_fails()
     {
         using var cache = new SongCache(directory, "account");
         var blocker = Path.Combine(Directory.GetDirectories(directory).Single(), "index.json.tmp");
@@ -397,9 +843,11 @@ public sealed class SongCacheTests : IDisposable
         Assert.NotNull(cache.Find(Track.Id)); // Recency persistence is best-effort.
         Assert.NotSame(before, cache.Snapshot());
         Assert.True(Record.Exception(() => cache.Pin([Track])) is IOException or UnauthorizedAccessException);
-        Assert.True(cache.Snapshot()[Track.Id].Pinned);
+        Assert.False(cache.Snapshot()[Track.Id].Pinned);
+        before = cache.Snapshot();
         Assert.True(Record.Exception(() => cache.RemoveDownload(Track.Id)) is IOException or UnauthorizedAccessException);
-        Assert.Empty(cache.Snapshot());
+        Assert.Same(before, cache.Snapshot());
+        Assert.NotNull(cache.Find(Track.Id));
     }
 
     [Theory]

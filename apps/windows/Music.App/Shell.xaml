@@ -289,7 +289,11 @@
             <Grid Grid.Column="1" RowSpacing="5">
               <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
               <StackPanel Spacing="4" VerticalAlignment="Top">
-                <TextBlock x:Name="CollectionTitle" FontSize="28" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" AutomationProperties.HeadingLevel="Level1"/>
+                <Grid HorizontalAlignment="Left">
+                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                  <TextBlock x:Name="CollectionTitle" FontSize="28" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" AutomationProperties.HeadingLevel="Level1"/>
+                  <Border Grid.Column="1" x:Name="CollectionDeviceBadge" Visibility="Collapsed" Margin="6,0,0,0"/>
+                </Grid>
                 <TextBlock x:Name="CollectionSummary" FontSize="13" Foreground="{StaticResource Muted}" TextTrimming="CharacterEllipsis"/>
               </StackPanel>
               <Border Grid.Row="1" x:Name="CollectionActions"/>
@@ -322,7 +326,11 @@
             <Grid.ColumnDefinitions><ColumnDefinition Width="48"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Border Width="44" Height="44" Background="#354239" CornerRadius="4"><Image x:Name="CurrentArt" Stretch="UniformToFill"/></Border>
             <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center">
-              <TextBlock x:Name="TrackTitle" Text="Nothing playing" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+              <Grid HorizontalAlignment="Left">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <TextBlock x:Name="TrackTitle" Text="Nothing playing" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                <Border Grid.Column="1" x:Name="TrackDeviceBadge" Visibility="Collapsed" Margin="6,0,0,0"/>
+              </Grid>
               <TextBlock x:Name="TrackArtist" Foreground="{StaticResource Muted}" FontSize="12" TextTrimming="CharacterEllipsis"/>
             </StackPanel>
           </Grid>

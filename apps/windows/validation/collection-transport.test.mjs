@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 const source = readFileSync(new URL('../Music.App/MainWindow.cs', import.meta.url), 'utf8').replaceAll('\r\n', '\n');
 const uiPath = new URL('../Music.App/MainWindow.CollectionTransport.cs', import.meta.url);
 const ui = () => readFileSync(uiPath, 'utf8').replaceAll('\r\n', '\n');
-test('album and playlist detail group Play, Shuffle, icon-only Download on the left', () => {
+test('album and playlist detail group Play, Shuffle, the device menu on the left', () => {
   assert.match(source, /CreateCollectionTransport\(\)/);
   const controls = ui();
   assert.match(controls, /new Grid/);
@@ -16,12 +16,10 @@ test('album and playlist detail group Play, Shuffle, icon-only Download on the l
   assert.match(controls, /var play = new Button[^;]*MinWidth = 0/s);
   assert.match(controls, /Background = Sage/);
   assert.match(controls, /var group = new StackPanel \{ Orientation = Orientation.Horizontal, Spacing = 8, HorizontalAlignment = HorizontalAlignment.Left \}/);
-  assert.match(controls, /group.Children.Add\(play\);\s*group.Children.Add\(shuffle\);\s*group.Children.Add\(download\)/);
+  assert.match(controls, /group.Children.Add\(play\);\s*group.Children.Add\(shuffle\);\s*group.Children.Add\(device\)/);
   assert.match(controls, /transport.Children.Add\(group\)/);
   assert.doesNotMatch(controls, /Grid.SetColumn|GridUnitType.Star|var right/);
-  assert.match(controls, /var download = new Button \{ Content = new SymbolIcon\(Symbol.Download\)/);
-  assert.match(controls, /SetName\(download, "Download " \+ detailTitle\)/);
-  assert.match(controls, /SetToolTip\(download, AutomationProperties.GetName\(download\)\)/);
+  assert.match(controls, /var device = CreateDeviceActions\(detailTitle, 48, deviceAvailable, hasClaims/);
   assert.doesNotMatch(controls, /Text\("Download"|Content = "Download"/);
   assert.match(controls, /SetName\(play, "Play " \+ identity.Kind \+ " in order"\)/);
   assert.match(controls, /SetName\(shuffle, "Play " \+ identity.Kind \+ " shuffled"\)/);
@@ -53,12 +51,9 @@ test('Play uses an explicitly dark filled triangle rather than an outlined font 
   assert.match(controls, /var play = new Button \{ Content = playIcon/);
   assert.doesNotMatch(controls, /Symbol.Play/);
 });
-test('Download has no button background or border while retaining a native focusable hit target', () => {
-  const controls = ui();
-  assert.match(controls, /var download = new Button[^;]*Background = new SolidColorBrush\(Colors.Transparent\)/s);
-  assert.match(controls, /var download = new Button[^;]*BorderThickness = new Thickness\(0\)/s);
-  for (const state of ['', 'PointerOver', 'Pressed', 'Disabled']) {
-    assert.ok(controls.includes(`download.Resources["ButtonBackground${state}"] = new SolidColorBrush(Colors.Transparent)`));
-    assert.ok(controls.includes(`download.Resources["ButtonBorderBrush${state}"] = new SolidColorBrush(Colors.Transparent)`));
-  }
+test('device icon keeps a native focusable hit target and normal interaction feedback', () => {
+  const offline = readFileSync(new URL('../Music.App/MainWindow.Offline.cs', import.meta.url), 'utf8');
+  assert.match(offline, /var button = new Button[^;]*Symbol.More[^;]*Width = size, Height = size[^;]*BorderThickness = new Thickness\(0\)[^;]*Background = new SolidColorBrush\(Microsoft.UI.Colors.Transparent\)/s);
+  assert.match(offline, /ToolTipService.SetToolTip\(button, name\)/);
+  assert.match(offline, /button.Flyout = menu/);
 });

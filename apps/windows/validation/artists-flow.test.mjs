@@ -45,6 +45,7 @@ List<Song> detailSongs=[]; IReadOnlyList<Album> artistAlbums=[]; bool artistSong
 OfflineSettings offlineSettings=new(); Dictionary<string,object> controls=new(); int renders;
 T C<T>(string n) where T:new() {if(!controls.ContainsKey(n))controls[n]=new T(); return (T)controls[n];}
 void SetNavigation(){} void RenderDetail(){renders++;} void RenderOfflineBrowse(){} void ClearDetail(){} void ShowError(string s){}
+void RememberCollectionMembership((string Kind, string Id) identity, IReadOnlyList<Song>? tracks){}
 Task NavigateAsync(string p,bool remember=true,NavigationView? restore=null){browseGate.Cancel();page=p;return Task.CompletedTask;}
 static void Check(bool b,string s){if(!b)throw new Exception(s);}
 public static async Task Run(){

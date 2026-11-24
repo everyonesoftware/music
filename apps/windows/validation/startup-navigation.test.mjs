@@ -91,6 +91,8 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
     void ClearDetail() { detailLoading = false; }
     void SetNavigation() { }
     void RenderDetail() { }
+    void InvalidateCollectionMembership() { }
+    void RememberCollectionMembership((string Kind, string Id) identity, IReadOnlyList<Song>? tracks) { }
     void RenderOfflineBrowse() { }
     void ShowError(string _) { }
     async Task<(IReadOnlyList<Album> Albums, IReadOnlyList<Playlist> Playlists)> ReadLibraryAsync(NavidromeClient target, CancellationToken token)
