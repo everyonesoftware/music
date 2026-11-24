@@ -13,6 +13,7 @@ import './navigation-contracts.test.mjs';
 import './song-rating-wiring.test.mjs';
 import './song-rating-view.test.mjs';
 import './collection-artwork.test.mjs';
+import './playlist-edit.test.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, existsSync } from 'node:fs';

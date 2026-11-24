@@ -23,6 +23,7 @@ import com.everyonesoftware.audio.data.Song
 import com.everyonesoftware.audio.data.Credentials
 import com.everyonesoftware.audio.data.NavidromeClient
 import com.everyonesoftware.audio.data.NavidromeException
+import com.everyonesoftware.audio.data.PlaylistWriteUnconfirmed
 import com.everyonesoftware.audio.playback.PlaybackService
 import com.everyonesoftware.audio.playback.CarLibrary
 import com.everyonesoftware.audio.playback.CarMediaIds
@@ -66,6 +67,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     private var deviceActionGeneration = 0L
     private var playlistDetailOperation: Job? = null
     private var playlistDetailGeneration = 0L
+    private var playlistEditTicket = 0L
+    private var playlistWriteRunning = false
+    private val playlistEdits = mutableMapOf<String, Long>()
+    private val pendingCreatedPlaylists = mutableMapOf<String, List<String>>()
     private var albumDetailOperation: Job? = null
     private var albumDetailGeneration = 0L
     private val initialization: Job
@@ -146,6 +151,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         artistDetailOperation?.cancel()
         ++playlistDetailGeneration
         playlistDetailOperation?.cancel()
+        playlistEdits.clear()
+        pendingCreatedPlaylists.clear()
         ++searchGeneration
         searchOperation?.cancel()
         albumsOperation?.cancel()
@@ -161,6 +168,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             artists = emptyList(), artistsRefreshing = false, artistsError = null, artistCollectionQuery = "",
             selectedArtist = null, artistContents = null, artistLoading = false, artistError = null, artistReturnScreen = Screen.PLAYLISTS,
             selectedPlaylist = null, playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null,
+            playlistEditor = null, playlistNotice = null,
             searchQuery = "", searchSongs = emptyList(), searchLoading = false, searchError = null,
             playlistCollectionQuery = "", albumCollectionQuery = "",
             settingsReturnScreen = null, playlistReturnScreen = Screen.PLAYLISTS, albumReturnScreen = Screen.PLAYLISTS,
@@ -695,12 +703,14 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val credentials = graph.credentials.value ?: return
         if (credentials.connection != current.value.connection || graph.networkPolicy.offline) return
         val session = current.value.collectionSongSession(selection) ?: return
+        val playlistEdit = playlistEdits[selection.id].takeIf { selection.kind == "playlist" }
         val previous = graph.session.value
         work {
             // Await the real controller before any destructive session replacement.
             val controller = controller()
             val page = current.value.copy(loading = false)
-            require(graph.credentials.value == credentials && !graph.networkPolicy.offline && page.collectionSongSession(selection) != null) {
+            require(graph.credentials.value == credentials && !graph.networkPolicy.offline && page.collectionSongSession(selection) != null &&
+                (selection.kind != "playlist" || playlistEdit == playlistEdits[selection.id])) {
                 "This collection changed. Reopen it and choose the song again."
             }
             graph.setSession(session, credentials, previous)
@@ -763,6 +773,169 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         }
     }
 
+    override fun newPlaylist() {
+        val state = current.value
+        if (state.screen !in setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS) || !playlistEditingAllowed(state)) return
+        if (state.playlistEditor != null || playlistWriteRunning) return
+        current.update { it.copy(playlistEditor = PlaylistEditor(++playlistEditTicket, state.deviceActionPage, creating = true, songs = emptyList())) }
+    }
+
+    private fun playlistEditingAllowed(state: AudioUiState) = state.canEditPlaylists &&
+        !graph.networkPolicy.offline && state.connection == graph.credentials.value?.connection
+
+    override fun choosePlaylist(page: DeviceActionPage, source: PlaylistSource) {
+        val state = current.value
+        val credentials = graph.credentials.value ?: return
+        if (!playlistEditingAllowed(state) || state.deviceActionPage != page || !state.containsPlaylistSource(source) ||
+            state.playlistEditor != null || playlistWriteRunning) return
+        val editor = PlaylistEditor(++playlistEditTicket, page, source, busy = true)
+        current.update { it.copy(playlistEditor = editor) }
+        viewModelScope.launch {
+            var songs: List<Song>? = null
+            try {
+                val client = graph.clientFor(credentials)
+                songs = client.resolvePlaylistSource(source)
+                if (!ownsPlaylistEditor(editor, credentials)) return@launch
+                val destinations = client.writablePlaylists()
+                if (ownsPlaylistEditor(editor, credentials)) {
+                    current.update { it.copy(playlistEditor = editor.copy(songs = songs, destinations = destinations, busy = false)) }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                if (ownsPlaylistEditor(editor, credentials)) {
+                    current.update { it.copy(playlistEditor = editor.copy(songs = songs, busy = false, error = safeMessage(error))) }
+                }
+            }
+        }
+    }
+
+    private suspend fun NavidromeClient.resolvePlaylistSource(source: PlaylistSource): List<Song> = when (source.kind) {
+        PlaylistSourceKind.SONG -> listOf(verifiedSong(source.id))
+        PlaylistSourceKind.PLAYLIST -> verifiedPlaylist(source.id).second
+        PlaylistSourceKind.ALBUM -> verifiedAlbum(source.id).songs
+        PlaylistSourceKind.ARTIST -> artist(source.id).let {
+            require(it.complete) { "Some artist tracks could not be verified. Refresh the artist and try again." }
+            it.songs
+        }
+    }.also { require(it.isNotEmpty()) { "There are no songs to add from this item." } }
+
+    private fun ownsPlaylistEditor(editor: PlaylistEditor, credentials: Credentials) =
+        current.value.playlistEditor?.ticket == editor.ticket && graph.credentials.value == credentials
+
+    override fun dismissPlaylistEditor() {
+        if (playlistWriteRunning && current.value.playlistEditor?.busy == true) return
+        current.update { it.copy(playlistEditor = null) }
+    }
+
+    override fun clearPlaylistNotice() { current.update { it.copy(playlistNotice = null) } }
+
+    override fun createPlaylist(name: String) = writePlaylist(name = name)
+    override fun appendToPlaylist(id: String) = writePlaylist(destinationId = id)
+
+    private fun writePlaylist(name: String? = null, destinationId: String? = null) {
+        val state = current.value
+        val editor = state.playlistEditor ?: return
+        val credentials = graph.credentials.value ?: return
+        val preview = editor.songs ?: return
+        val destination = editor.destinations.firstOrNull { it.id == destinationId }
+        if (!playlistEditingAllowed(state) || editor.busy || editor.unconfirmed || playlistWriteRunning ||
+            (destinationId != null && (destination == null || preview.isEmpty()))) return
+        playlistWriteRunning = true
+        current.update { it.copy(playlistEditor = editor.copy(busy = true, creating = name != null, error = null)) }
+        viewModelScope.launch {
+            try {
+                fun ensureCurrent() {
+                    require(ownsPlaylistEditor(editor, credentials) && playlistEditingAllowed(current.value) &&
+                        current.value.deviceActionPage == editor.page &&
+                        (editor.source == null || current.value.containsPlaylistSource(editor.source))) {
+                        "This selection is no longer available. Close and reopen Add to Playlist."
+                    }
+                }
+                val client = graph.clientFor(credentials)
+                ensureCurrent()
+                val songIds = preview.map { it.id }
+                if (editor.source != null) {
+                    require(client.resolvePlaylistSource(editor.source).map { it.id } == songIds) {
+                        "The source songs changed. Close and reopen Add to Playlist."
+                    }
+                }
+                if (name != null) {
+                    ensureCurrent()
+                    val created = client.createPlaylist(name, songIds)
+                    if (graph.credentials.value == credentials) {
+                        playlistEdits[created.id] = editor.ticket
+                        pendingCreatedPlaylists[created.id] = songIds
+                    }
+                    if (ownsPlaylistEditor(editor, credentials)) {
+                        val origin = current.value.screen
+                        current.update { it.navigateTo(Screen.PLAYLIST).copy(playlistEditor = null,
+                            playlistReturnScreen = if (origin == Screen.PLAYLIST) it.playlistReturnScreen else origin,
+                            selectedPlaylist = created, playlistSongs = emptyList(), playlistLoading = true, playlistDetailError = null) }
+                        loadPlaylistDetail(created)
+                    }
+                    if (!graph.networkPolicy.offline) graph.playlists.playlistWritten(credentials, created.id)
+                } else if (destination != null) {
+                    val (target, original) = client.verifiedPlaylist(destination.id)
+                    require(client.writablePlaylists().any { it.id == target.id }) { "This playlist is no longer writable." }
+                    ensureCurrent()
+                    client.appendToPlaylist(target.id, songIds)
+                    if (graph.credentials.value != credentials) return@launch
+                    val confirmed = reconcileEditedPlaylist(credentials, target.id, editor.ticket)
+                    if (graph.credentials.value != credentials) return@launch
+                    val verified = confirmed?.second?.map { it.id }?.let { actual ->
+                        actual.take(original.size) == original.map { it.id } &&
+                            actual.drop(original.size).take(songIds.size) == songIds
+                    } == true
+                    if (ownsPlaylistEditor(editor, credentials)) {
+                        current.update { it.copy(playlistEditor = null, playlistNotice = if (verified) "Added to ${target.name}."
+                            else "The server accepted the add, but the updated songs couldn’t be verified. Check the playlist before adding again.") }
+                    }
+                }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) {
+                val unconfirmed = error is PlaylistWriteUnconfirmed
+                if (ownsPlaylistEditor(editor, credentials)) current.update { state ->
+                    state.copy(playlistEditor = state.playlistEditor?.copy(busy = false, unconfirmed = unconfirmed,
+                        error = if (unconfirmed) error.message else safeMessage(error)))
+                }
+                if (unconfirmed && graph.credentials.value == credentials) {
+                    if (destinationId != null) reconcileEditedPlaylist(credentials, destinationId, editor.ticket)
+                    else if (!graph.networkPolicy.offline) graph.playlists.playlistWritten(credentials)
+                }
+            } finally { playlistWriteRunning = false }
+        }
+    }
+
+    /** Invalidate the live detail before suspending, but keep the intentionally offline snapshot. */
+    private suspend fun reconcileEditedPlaylist(credentials: Credentials, id: String, edit: Long): Pair<Playlist, List<Song>>? {
+        playlistEdits[id] = edit
+        val detailTicket = if (current.value.selectedPlaylist?.id == id) {
+            val ticket = ++playlistDetailGeneration
+            playlistDetailOperation?.cancel()
+            current.update { it.copy(playlistSongs = emptyList(), playlistLoading = true, playlistDetailError = null) }
+            ticket
+        } else null
+        val confirmed = try {
+            if (graph.networkPolicy.offline) null else graph.clientFor(credentials).verifiedPlaylist(id)
+        } catch (_: NavidromeException) { null }
+        if (graph.credentials.value != credentials) return null
+        val usable = confirmed.takeUnless { graph.networkPolicy.offline }
+        if (detailTicket != null && detailTicket == playlistDetailGeneration && current.value.selectedPlaylist?.id == id) {
+            current.update { state -> state.copy(selectedPlaylist = usable?.first ?: state.selectedPlaylist,
+                playlistSongs = usable?.second.orEmpty(), playlistLoading = false,
+                playlistDetailError = if (usable == null) "The updated songs couldn’t be verified. Retry to load the playlist." else null) }
+        }
+        if (!graph.networkPolicy.offline) graph.playlists.playlistWritten(credentials, id)
+        return usable
+    }
+
+    override fun retryPlaylistDetail() {
+        val state = current.value
+        if (state.screen == Screen.PLAYLIST && playlistEditingAllowed(state)) {
+            state.selectedPlaylist?.let { loadPlaylistDetail(it, verify = true) }
+        }
+    }
+
     override fun openPlaylist(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("playlist", id); return }
         if (graph.credentials.value == null) return
@@ -771,56 +944,83 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             ?: saved?.let { Playlist(it.id, it.name, it.songs.size, it.coverArtId) } ?: return
         current.update { it.navigateTo(Screen.PLAYLIST).copy(selectedPlaylist = playlist, playlistSongs = emptyList(),
             playlistLoading = true, playlistDetailError = null) }
-        loadPlaylistDetail(playlist, preferSaved = true)
+        val changed = !canUsePlaylistSnapshot(playlist, saved)
+        loadPlaylistDetail(playlist, preferSaved = !changed, verify = changed)
     }
 
-    private fun loadPlaylistDetail(playlist: Playlist, preferSaved: Boolean = false) {
+    private fun canUsePlaylistSnapshot(playlist: Playlist, saved: OfflineCollection?) = playlist.id !in playlistEdits &&
+        (saved == null || playlist.id in current.value.stalePlaylistIds || playlist.songCount == saved.songs.size)
+
+    private fun loadPlaylistDetail(playlist: Playlist, preferSaved: Boolean = false, verify: Boolean = false) {
         val credentials = graph.credentials.value ?: return
         val id = playlist.id
+        val expectedSongIds = pendingCreatedPlaylists[id]
+        val verifyContents = verify || id in playlistEdits || expectedSongIds != null
         val ticket = ++playlistDetailGeneration
         playlistDetailOperation?.cancel()
         current.update { it.copy(playlistLoading = true, playlistDetailError = null) }
         playlistDetailOperation = viewModelScope.launch {
             try {
-                val saved = if (preferSaved) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
-                val songs = saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
+                val saved = if (preferSaved && !verifyContents) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
+                val confirmed = if (verifyContents) graph.clientFor(credentials).verifiedPlaylist(id) else null
+                val songs = confirmed?.second ?: saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
                 if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
-                    current.update { it.copy(selectedPlaylist = playlist.copy(songCount = songs.size),
-                        playlistSongs = songs, playlistLoading = false) }
+                    if (expectedSongIds != null) pendingCreatedPlaylists.remove(id)
+                    val notice = expectedSongIds?.let {
+                        if (it == songs.map(Song::id)) "Created ${(confirmed?.first ?: playlist).name}."
+                        else "Playlist created, but the server returned different songs. Showing the current playlist."
+                    }
+                    current.update { it.copy(selectedPlaylist = (confirmed?.first ?: playlist).copy(songCount = songs.size),
+                        playlistSongs = songs, playlistLoading = false,
+                        playlistNotice = if (it.screen == Screen.PLAYLIST) notice ?: it.playlistNotice else it.playlistNotice) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
                 if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
-                    current.update { it.copy(playlistLoading = false, playlistDetailError = safeMessage(error)) }
+                    current.update { it.copy(playlistLoading = false, playlistDetailError = if (expectedSongIds == null) safeMessage(error)
+                        else "Playlist created, but songs couldn’t be loaded. Retry to open the same playlist.") }
                 }
             }
         }
     }
 
-    override fun startPlaylist(id: String) = startPlaylistQueue(id, shuffle = true)
+    override fun startPlaylist(id: String, requireLiveContents: Boolean) =
+        startPlaylistQueue(id, shuffle = true, requireLiveContents = requireLiveContents)
 
     override fun playPlaylist(id: String, shuffle: Boolean) {
         val detail = current.value
-        if (detail.selectedPlaylist?.id != id || detail.playlistLoading || detail.playlistDetailError != null ||
+        if (detail.screen != Screen.PLAYLIST || detail.selectedPlaylist?.id != id || detail.playlistLoading || detail.playlistDetailError != null ||
             detail.playlistSongs.isEmpty() || graph.networkPolicy.offline) return
         startPlaylistQueue(id, shuffle, detail.playlistSongs)
     }
 
-    private fun startPlaylistQueue(id: String, shuffle: Boolean, loadedSongs: List<Song>? = null) {
+    private fun startPlaylistQueue(id: String, shuffle: Boolean, loadedSongs: List<Song>? = null, requireLiveContents: Boolean = false) {
         if (graph.networkPolicy.offline) { playOfflineCollection("playlist", id); return }
         if (current.value.loading) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
             val connection = credentials.connection
             val previous = graph.session.value
-            val saved = if (loadedSongs == null) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
+            val saved = if (loadedSongs == null && !requireLiveContents) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
             val playlist = current.value.playlists.firstOrNull { it.id == id }
                 ?: current.value.selectedPlaylist?.takeIf { it.id == id }
                 ?: saved?.let { Playlist(it.id, it.name, it.songs.size, it.coverArtId) }
                 ?: error("Refresh playlists and retry.")
-            val songs = loadedSongs ?: saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
+            val edit = playlistEdits[id]
+            val songs = loadedSongs ?: when {
+                // Equal counts or cached catalog data cannot verify the pinned membership.
+                requireLiveContents || !canUsePlaylistSnapshot(playlist, saved) -> graph.clientFor(credentials).verifiedPlaylist(id).second
+                saved != null -> saved.songs
+                else -> graph.playlists.fetchContents(credentials, id).songs
+            }
             val session = SessionRules.start(connection.id, playlist.id, playlist.name, songs, shuffle = shuffle)
             val controller = controller()
+            val detail = current.value
+            require(!graph.networkPolicy.offline && graph.credentials.value == credentials && playlistEdits[id] == edit &&
+                (loadedSongs == null || (detail.screen == Screen.PLAYLIST && detail.selectedPlaylist?.id == id &&
+                    !detail.playlistLoading && detail.playlistDetailError == null && detail.playlistSongs == loadedSongs))) {
+                "This playlist changed. Reopen it and try again."
+            }
             graph.setSession(session, credentials, previous)
             controller.play()
             current.update { it.copy(screen = Screen.PLAYER, ratingError = null) }

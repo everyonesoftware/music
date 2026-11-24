@@ -1002,6 +1002,33 @@ class AudioViewModelTest {
         }
     }
 
+    @Test fun searchShuffleRejectsUnverifiedLiveContentsWithoutChangingTheSavedQueueOrPin() = runBlocking {
+        withBrowseFixture { model, graph, server ->
+            until { !model.state.value.albumsRefreshing }
+            val credentials = requireNotNull(graph.credentials.value)
+            val song = Song("saved", "Saved", "Artist")
+            cacheSong(graph, credentials, song)
+            val pin = OfflineCollection("playlist", "p", "Saved", songs = listOf(song))
+            graph.songCache.downloadCollection(credentials, pin)
+            val before = server.requestCount
+            val previous = graph.session.value
+            server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+                override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse =
+                    if (request.requestUrl?.encodedPath?.endsWith("/getPlaylist.view") == true &&
+                        request.requestUrl?.queryParameter("id") == "p")
+                        ok(""", "playlist":{"id":"p","name":"Browse","songCount":2,"entry":[{"id":"remote","title":"Remote song"}]}""")
+                    else MockResponse().setResponseCode(404)
+            }
+            onMain { model.startPlaylist("p", requireLiveContents = true) }
+            until { !model.state.value.loading && model.state.value.error != null }
+            assertEquals("The music server returned an invalid response. Check compatibility and retry.", model.state.value.error)
+            assertEquals(before + 1, server.requestCount)
+            assertEquals(previous, graph.session.value)
+            assertEquals(previous, graph.store.session(credentials.connection.id))
+            assertEquals(pin, graph.songCache.collection(credentials, "playlist", "p"))
+        }
+    }
+
     @Test fun detailPlaylistPlayRequiresAControllerBeforeReplacingTheSession() = runBlocking {
         withBrowseFixture { model, graph, _ ->
             onMain { model.openPlaylist("p") }

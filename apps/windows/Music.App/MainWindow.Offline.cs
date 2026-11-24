@@ -272,6 +272,12 @@ public sealed partial class MainWindow
             () => !closed && !accountChangePending && connectionGate.IsCurrent(owner),
             snapshot => snapshot.TryGetValue(song.Id, out var entry) && entry.Pinned,
             () => SaveToDeviceAsync([song], "", owner), () => RemoveFromDeviceAsync(song.Id, null, owner));
+        if (page != "offline" && !offlineSettings.Offline)
+        {
+            AddSongPlaylistAction(row, song, owner, (MenuFlyout)actions.Flyout);
+            AutomationProperties.SetName(actions, "Actions for " + song.Title);
+            ToolTipService.SetToolTip(actions, "Actions for " + song.Title);
+        }
         if (grid.ColumnDefinitions.Count == 0) // Song tile: keep the whole title width below the artwork.
         {
             actions.VerticalAlignment = VerticalAlignment.Top;
@@ -336,9 +342,11 @@ public sealed partial class MainWindow
             await target.PingAsync(owner.Token);
             if (closed || offlineSettings.Offline || client != target || !connectionGate.IsCurrent(owner)) return;
             if (playbackInterrupted && playIntended && queueIndex >= 0) SelectTrack(queueIndex, true, interruptedPosition);
+            long catalogRevision = playlistCatalogRevision;
             var data = await ReadLibraryAsync(target, owner.Token);
             if (closed || offlineSettings.Offline || client != target || !connectionGate.IsCurrent(owner)) return;
-            albums = data.Albums; playlists = data.Playlists;
+            albums = data.Albums;
+            playlists = MergePlaylistCatalog(data.Playlists, catalogRevision);
             InvalidateCollectionMembership();
             if (page is not "offline" and not "settings" and not "detail") await LoadBrowseAsync();
         }
@@ -370,6 +378,8 @@ public sealed partial class MainWindow
             ResetRatings(null);
             navigationHistory.Clear(); detailCollection = null;
             albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
+            playlistEdits.Clear();
+            unverifiedPlaylistIds.Clear();
             InvalidateCollectionMembership();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
             C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";

@@ -67,6 +67,18 @@ class PlaylistCatalog(
     /** Coalesce phone/car refreshes. Network work is independent of playback/UI operation jobs. */
     suspend fun refresh(): Job = lock.withLock { startRefreshLocked() }
 
+    /** A write must not coalesce into a summary/count read started before the server changed. */
+    suspend fun playlistWritten(credentials: Credentials, id: String? = null) = lock.withLock {
+        if (active != credentials) return@withLock
+        refreshJob?.cancel()
+        refreshJob = null
+        saveJob?.cancel()
+        lastSummariesAt = null
+        if (id != null) versions[id] = (versions[id] ?: 0L) + 1
+        startRefreshLocked()
+        Unit
+    }
+
     /** Car browse/search awaits only the summaries, never unrelated detail requests. */
     suspend fun listing(credentials: Credentials, reconcileCounts: Boolean = true): PlaylistCatalogState {
         while (true) {

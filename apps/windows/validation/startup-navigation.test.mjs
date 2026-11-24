@@ -10,6 +10,7 @@ const read = name => readFileSync(new URL(name, app), 'utf8').replaceAll('\r\n',
 const main = read('MainWindow.cs');
 const navigation = read('MainWindow.Navigation.cs');
 const artistsSource = read('MainWindow.Artists.cs');
+const playlistSource = read('MainWindow.Playlists.cs');
 const method = (source, start, end) => source.slice(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
 
 test('delayed real startup/navigation methods preserve user destination and Back history without cancelling catalog load', () => {
@@ -23,12 +24,16 @@ test('delayed real startup/navigation methods preserve user destination and Back
       `<Compile Include="${fileURLToPath(new URL(name, app))}" Link="${name}"/>`).join('');
     writeFileSync(join(dir, 'StartupChecks.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NoWarn>CS0649;CS0414</NoWarn></PropertyGroup><ItemGroup>${linked}</ItemGroup></Project>`);
     const revisionField = navigation.split('\n').filter(line => /^\s*private long navigationRevision\b/.test(line)).join('\n');
+    const playlistFields = playlistSource.split('\n').filter(line => /^\s*private .+\b(?:playlistCatalogRevision;|playlistEdits =|unverifiedPlaylistIds =)/.test(line)).join('\n');
     writeFileSync(join(dir, 'Program.cs'), `
 using Music.App;
 await MainWindow.Run();
 class MainWindow
 {
 ${revisionField}
+${playlistFields}
+${method(playlistSource, '    private IReadOnlyList<Playlist> MergePlaylistCatalog(', '\n}')}
+${method(playlistSource, '    private void InvalidatePlaylistDestination(', '    private void RenderUnverifiedPlaylistAction(')}
 ${method(main, '    private async Task InitializeAsync()', '    private static async Task<(IReadOnlyList<Album>')}
 ${method(main, '    private async Task NavigateAsync(', '    private void SetNavigation()')}
 ${method(main, '    private async Task LoadBrowseAsync(', '    private StackPanel NewSection(')}
@@ -92,7 +97,13 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
     void SetNavigation() { }
     void RenderDetail() { }
     void InvalidateCollectionMembership() { }
-    void RememberCollectionMembership((string Kind, string Id) identity, IReadOnlyList<Song>? tracks) { }
+    readonly Dictionary<(string, string), IReadOnlyList<Song>> membership = new();
+    readonly List<(string Key, WeakReference<Border> Badge)> collectionBadges = [];
+    void RememberCollectionMembership((string Kind, string Id) identity, IReadOnlyList<Song>? tracks)
+    {
+        if (tracks is null) membership.Remove(identity);
+        else membership[identity] = tracks;
+    }
     void RenderOfflineBrowse() { }
     void ShowError(string _) { }
     async Task<(IReadOnlyList<Album> Albums, IReadOnlyList<Playlist> Playlists)> ReadLibraryAsync(NavidromeClient target, CancellationToken token)
@@ -105,6 +116,47 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
     public static async Task Run()
     {
+        {
+            var window = new MainWindow(); await window.InitializeAsync();
+            var playlist = new Playlist("checking", "Before edit");
+            var delayed = new TaskCompletionSource<IReadOnlyList<Song>>();
+            window.client!.PlaylistSongs = (_, _) => delayed.Task;
+            var original = window.OpenCollectionAsync(playlist);
+            window.detailSongs = [new Song("stale")];
+            window.RememberCollectionMembership(("playlist", playlist.Id), window.detailSongs);
+            var badge = new Border(); window.collectionBadges.Add(("playlist:" + playlist.Id, new(badge)));
+            window.InvalidatePlaylistDestination(playlist.Id);
+            delayed.SetResult([new Song("stale")]); await original;
+            Check(window.detailError && !window.detailLoading && window.detailSongs.Count == 0 &&
+                !window.membership.ContainsKey(("playlist", playlist.Id)) && badge.Visibility == Visibility.Collapsed,
+                "ambiguous append clears stale playable detail and saved badge even if an old load finishes");
+            int strictReads = 0;
+            window.client.PlaylistSongs = (_, _) => throw new Exception("must not use a loose playlist read");
+            window.client.PlaylistDetails = (id, _) =>
+            {
+                Check(id == playlist.Id, "reopen must read the exact destination");
+                if (++strictReads == 1) throw new IOException("read failed");
+                return Task.FromResult(new PlaylistContents(new Playlist(id, "Server title"), [new Song("new"), new Song("new")]));
+            };
+            await window.OpenCollectionAsync(playlist, remember: false);
+            Check(window.detailError && window.detailSongs.Count == 0 && window.unverifiedPlaylistIds.Contains(playlist.Id), "failed exact read leaves details unavailable");
+            await window.OpenCollectionAsync(playlist, remember: false);
+            Check(!window.detailError && window.detailTitle == "Server title" && strictReads == 2 &&
+                window.detailSongs.Select(song => song.Id).SequenceEqual(new[] { "new", "new" }) &&
+                !window.unverifiedPlaylistIds.Contains(playlist.Id), "successful exact read restores only authoritative ordered songs");
+        }
+        {
+            var window = new MainWindow { delay = "catalog" };
+            var start = window.InitializeAsync();
+            Check(window.catalogRead, "catalog request is held before the edit");
+            await window.NavigateAsync("playlists");
+            window.playlistEdits["loaded"] = (++window.playlistCatalogRevision, new Playlist("loaded", "Edited playlist"));
+            window.playlistEdits["new"] = (++window.playlistCatalogRevision, new Playlist("new", "New playlist"));
+            window.catalog.SetResult(); await start;
+            Check(window.Rendered.Contains("Edited playlist") && window.Rendered.Contains("New playlist") &&
+                window.Rendered.Contains("Other playlist") && !window.Rendered.Contains("Loaded playlist"),
+                "late catalog renders both confirmed edits and unaffected server playlists");
+        }
         {
             var window = new MainWindow(); await window.InitializeAsync();
             window.artists = new[] { new Artist("a", "Same"), new Artist("b", "Same"), new Artist("c", "Other") };
@@ -304,6 +356,7 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
 }
 record Album(string Id, string Name, string Artist = "", int Year = 2026, string? CoverArtId = null);
 record Playlist(string Id, string Name, int SongCount = 0, string? CoverArtId = null);
+record PlaylistContents(Playlist Playlist, IReadOnlyList<Song> Songs);
 record Song(string Id);
 record Artist(string Id, string Name, int AlbumCount = 0, string? CoverArtId = null);
 record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs, bool IsComplete = true);
@@ -324,7 +377,10 @@ class NavidromeClient : IDisposable
     public Func<string, int, CancellationToken, Task<IReadOnlyList<Song>>> Search = (_, _, _) => Task.FromResult<IReadOnlyList<Song>>([]);
     public Task<IReadOnlyList<Song>> SearchSongsAsync(string query, int offset, int count, CancellationToken token) => Search(query, offset, token);
     public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken token, bool validateCount = false) => Task.FromResult<IReadOnlyList<Song>>([]);
-    public Task<IReadOnlyList<Song>> GetPlaylistSongsAsync(string id, CancellationToken token) => Task.FromResult<IReadOnlyList<Song>>([]);
+    public Func<string, CancellationToken, Task<IReadOnlyList<Song>>> PlaylistSongs = (_, _) => Task.FromResult<IReadOnlyList<Song>>([]);
+    public Func<string, CancellationToken, Task<PlaylistContents>> PlaylistDetails = (_, _) => throw new Exception("Unexpected strict playlist read");
+    public Task<IReadOnlyList<Song>> GetPlaylistSongsAsync(string id, CancellationToken token) => PlaylistSongs(id, token);
+    public Task<PlaylistContents> GetPlaylistContentsAsync(string id, CancellationToken token) => PlaylistDetails(id, token);
     public void Dispose() { }
 }
 enum Visibility { Visible, Collapsed }

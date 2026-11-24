@@ -1,5 +1,41 @@
 # Windows implementation checkpoint — validation
 
+## Playlist creation and Add to Playlist
+
+Use an isolated Navidrome library for acceptance. On native Windows:
+
+- [ ] Create an empty playlist from **Playlists → New playlist**. Check name
+  validation, exact detail navigation, **Browse Library**, and Back.
+- [ ] Open **Add to Playlist** with right-click and Shift+F10 on playlist, album,
+  artist, and song entries in shelves, lists, grids, search and collection
+  details. Verify both **New playlist** and existing writable destinations.
+  Check the song ellipsis still offers the device action.
+- [ ] Repeat on a single current Queue song and on Played and Up next entries.
+  Verify adding does not start playback or change queue order, current song,
+  playback position or play/pause state. Check focus after dismissing.
+- [ ] Append a collection containing repeated tracks. Verify order and duplicate
+  occurrences, that matching detail and catalog metadata update, and that the
+  active page stays put. Verify incomplete sources and read-only destinations
+  cannot result in a partial write.
+- [ ] Change a source after the picker loads. Submitting must re-read the source
+  and refuse to post if its ordered occurrences changed or cannot be verified.
+  Reload the selection before trying again. Navidrome does not make this read
+  and the write atomic; a track can still disappear between them.
+- [ ] Insert another client's append between Music's preflight and its write.
+  Readback should show both edits and keep duplicate occurrences in order. If
+  the requested batch cannot be verified, don't report success or replay it.
+- [ ] Test a lost write response and a failed readback after acknowledgment:
+  an unknown outcome must warn against blind retry; **Check again** checks only
+  the acknowledged identity and does not resubmit. An open destination stops
+  offering playback and device actions based on stale contents; **Retry playlist**
+  reloads the destination without resubmitting the write. Check Offline mode,
+  account switching, window close and stale recycled rows.
+
+The Core tests exercise authenticated form encoding, response validation and
+read-only retry with injected HTTP responses. The source and navigation contracts
+check native wiring and delayed catalog publication; a cross-build is not proof
+of native gesture routing, focus or layout.
+
 ## Taskbar thumbnail playback
 
 On Windows, hover over the running Music taskbar icon and check **Previous**,

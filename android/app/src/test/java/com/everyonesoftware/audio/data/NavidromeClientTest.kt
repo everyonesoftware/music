@@ -22,6 +22,67 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class NavidromeClientTest {
+    @Test fun playlistWritesUseOneOrderedFormPostAndReturnTheCreatedIdentity() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlist\":{\"id\":\"empty-id\",\"name\":\"Empty & 雪\",\"songCount\":0}"))
+            server.enqueue(ok(",\"playlist\":{\"id\":\"seeded-id\",\"name\":\"Seeded\",\"songCount\":3}"))
+            server.enqueue(ok())
+            val client = client(server)
+            assertEquals("empty-id", client.createPlaylist("  Empty & 雪  ", emptyList()).id)
+            assertEquals("seeded-id", client.createPlaylist("Seeded", listOf("1", "2+&", "1")).id)
+            client.appendToPlaylist("target", listOf("1", "2+&", "1"))
+            fun fields(method: String, expected: String) {
+                val request = requireNotNull(server.takeRequest(2, TimeUnit.SECONDS))
+                assertEquals("POST", request.method)
+                assertEquals("/music/rest/$method.view", request.requestUrl!!.encodedPath)
+                assertNotNull(request.requestUrl!!.queryParameter("t"))
+                assertEquals(expected, request.body.readUtf8())
+            }
+            fields("createPlaylist", "name=Empty%20%26%20%E9%9B%AA")
+            fields("createPlaylist", "name=Seeded&songId=1&songId=2%2B%26&songId=1")
+            fields("updatePlaylist", "playlistId=target&songIdToAdd=1&songIdToAdd=2%2B%26&songIdToAdd=1")
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun playlistWriteWithLostAcknowledgementIsNotReplayed() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
+            server.enqueue(ok())
+            val error = rejects<PlaylistWriteUnconfirmed> { client(server).appendToPlaylist("target", listOf("song")) }
+            assertTrue(error.message!!.contains("avoid duplicates"))
+            assertEquals(1, server.requestCount)
+        }
+    }
+
+    @Test fun playlistWritesFailClosedOnMissingIdentityAndIncompleteContents() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlist\":{\"name\":\"No identity\"}"))
+            server.enqueue(ok(",\"playlist\":{\"id\":\"target\",\"name\":\"Incomplete\",\"songCount\":1}"))
+            val client = client(server)
+            rejects<PlaylistWriteUnconfirmed> { client.createPlaylist("New", emptyList()) }
+            rejects<NavidromeException> { client.verifiedPlaylist("target") }
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun playlistDestinationsExcludeOtherOwnersAndReadOnlyEntries() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlists\":{\"playlist\":[" +
+                """{"id":"mine","name":"Mine","owner":"A+B &雪"},{"id":"shared","name":"Shared","owner":"another"},{"id":"smart","name":"Smart","owner":"A+B &雪","readonly":true},{"id":"readonly-alias","name":"Read only","owner":"A+B &雪","readonly":false,"readOnly":true},{"id":"old","name":"Legacy"}]}"""))
+            assertEquals(listOf("mine", "old"), client(server).writablePlaylists().map { it.id })
+        }
+    }
+
+    @Test fun playlistOwnerMatchingDoesNotFoldDistinctUnicodeUsernames() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlists\":{\"playlist\":[{\"id\":\"other\",\"name\":\"Other\",\"owner\":\"K\"}]}"))
+            val client = NavidromeClient(Credentials(Connection("id", "Music", server.url("/").toString(), "K"), "password"),
+                OkHttpClient(), allowLocalHttp = true)
+            assertTrue(client.writablePlaylists().isEmpty())
+        }
+    }
+
     private fun credentials(url: String) = Credentials(Connection("connection", "Music", url, "a+b &雪"), "secret &雪")
     private fun client(server: MockWebServer) = NavidromeClient(credentials(server.url("/music/").toString()), OkHttpClient(), allowLocalHttp = true)
     private fun ok(fields: String = "") = MockResponse().setBody("""{"subsonic-response":{"status":"ok","version":"1.16.1"$fields}}""")

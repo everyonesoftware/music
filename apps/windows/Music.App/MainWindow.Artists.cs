@@ -99,10 +99,11 @@ public sealed partial class MainWindow
         view.ContainerContentChanging += (_, args) =>
         {
             if (args.ItemContainer.ContentTemplateRoot is not Grid host) return;
-            host.Children.Clear(); AutomationProperties.SetName(args.ItemContainer, "");
+            host.Children.Clear(); args.ItemContainer.ContextFlyout = null; AutomationProperties.SetName(args.ItemContainer, "");
             if (args.InRecycleQueue || closed || page != "detail" || detailIdentity.Kind != "artist" || args.Item is not Album album) return;
             var card = CardElement(new Card(album.Name, album.Artist, album.CoverArtId, album), "grid", connectionLease.Token);
-            host.Children.Add(card); AutomationProperties.SetName(args.ItemContainer, album.Name); args.Handled = true;
+            host.Children.Add(card);
+            args.ItemContainer.ContextFlyout = card.ContextFlyout; AutomationProperties.SetName(args.ItemContainer, album.Name); args.Handled = true;
         };
         view.ItemClick += async (_, args) =>
         {
@@ -121,6 +122,7 @@ public sealed partial class MainWindow
         var copy = new StackPanel { Spacing = 4, VerticalAlignment = VerticalAlignment.Center };
         copy.Children.Add(Text(artist.Name, 14)); copy.Children.Add(Text($"{artist.AlbumCount} albums", 12, true));
         panel.Children.Add(copy); AutomationProperties.SetName(panel, artist.Name + ", artist");
+        AddCollectionPlaylistAction(panel, artist);
         return panel;
     }
 

@@ -51,10 +51,16 @@ public sealed class NavidromeClient : IDisposable
     {
         if (parameters.Any(parameter => parameter.Key == "id" && string.IsNullOrWhiteSpace(parameter.Value)))
             throw new ArgumentException("A music item identifier is required.");
+        return new Uri(ApiUri(name), "?" + string.Join('&', parameters.Concat(Authentication()).Select(x => Uri.EscapeDataString(x.Item1) + "=" + Uri.EscapeDataString(x.Item2))));
+    }
+
+    private Uri ApiUri(string name) => new(server, "rest/" + name + ".view");
+
+    private (string Key, string Value)[] Authentication()
+    {
         var salt = Convert.ToHexStringLower(RandomNumberGenerator.GetBytes(16));
         var token = Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(password + salt)));
-        var query = parameters.Concat(new[] { ("u", connection.Username), ("t", token), ("s", salt), ("v", "1.16.1"), ("c", "EveryoneMusic"), ("f", "json") });
-        return new Uri(new Uri(server, "rest/" + name + ".view"), "?" + string.Join('&', query.Select(x => Uri.EscapeDataString(x.Item1) + "=" + Uri.EscapeDataString(x.Item2))));
+        return [("u", connection.Username), ("t", token), ("s", salt), ("v", "1.16.1"), ("c", "EveryoneMusic"), ("f", "json")];
     }
 
     public async Task<IReadOnlyList<Artist>> GetArtistsAsync(CancellationToken cancellationToken = default)
@@ -64,13 +70,13 @@ public sealed class NavidromeClient : IDisposable
     }
 
     /// <summary>Returns ID3 library albums and confirmed tracks in server order, with explicit completeness for playback.</summary>
-    public async Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken cancellationToken = default)
+    public async Task<ArtistLibrary> GetArtistAsync(string id, CancellationToken cancellationToken = default, bool requireCounts = false)
     {
         var root = Object(await Api("getArtist", cancellationToken, ("id", id)).ConfigureAwait(false), "artist");
         var artist = new Artist(Required(root, "id"), Required(root, "name"), Text(root, "coverArt", ignoreInvalid: true), 0);
         if (artist.Id != id) throw InvalidResponse();
         var summaries = ArrayItems(root, "album");
-        bool complete = CountMatches(root, "albumCount", summaries.Length);
+        bool complete = requireCounts ? ReadCount(root, "albumCount") == summaries.Length : CountMatches(root, "albumCount", summaries.Length);
         var seen = new HashSet<string>(StringComparer.Ordinal);
         var artistAlbums = new List<Album>();
         var tracks = new List<Song>();
@@ -84,7 +90,9 @@ public sealed class NavidromeClient : IDisposable
                     Text(summary, "coverArt", ignoreInvalid: true), ReadCount(summary, "songCount") ?? 0, ReadCount(summary, "year") ?? 0);
                 if (!seen.Add(album.Id)) { complete = false; continue; }
                 artistAlbums.Add(album);
-                var albumTracks = await LoadAlbumSongsAsync(album.Id, cancellationToken, validateCount: true).ConfigureAwait(false);
+                var albumTracks = await LoadAlbumSongsAsync(album.Id, cancellationToken, validateCount: true,
+                    requireCount: requireCounts && ReadCount(summary, "songCount") is null,
+                    verifyTracks: requireCounts).ConfigureAwait(false);
                 if (!CountMatches(summary, "songCount", albumTracks.Count)) throw InvalidResponse();
                 tracks.AddRange(albumTracks);
             }
@@ -102,7 +110,64 @@ public sealed class NavidromeClient : IDisposable
     public async Task<IReadOnlyList<Playlist>> GetPlaylistsAsync(CancellationToken cancellationToken = default)
     {
         var root = await Api("getPlaylists", cancellationToken).ConfigureAwait(false);
-        return Items(Object(root, "playlists"), "playlist").Select(x => new Playlist(Required(x, "id"), Required(x, "name"), Text(x, "coverArt"), Number(x, "songCount"))).ToArray();
+        return Items(Object(root, "playlists"), "playlist").Select(ParsePlaylist).ToArray();
+    }
+
+    private Playlist ParsePlaylist(JsonElement value)
+    {
+        var owner = Text(value, "owner", ignoreInvalid: true);
+        bool writable = !HasDuplicateProperties(value) &&
+            (!value.TryGetProperty("owner", out var ownerField) || ownerField.ValueKind == JsonValueKind.Null ||
+            owner is not null && (owner.Length == 0 || string.Equals(owner, connection.Username, StringComparison.OrdinalIgnoreCase))) &&
+            (!value.TryGetProperty("readonly", out var readOnly) || readOnly.ValueKind == JsonValueKind.False) &&
+            (!value.TryGetProperty("readOnly", out var camelReadOnly) || camelReadOnly.ValueKind == JsonValueKind.False);
+        return new Playlist(Required(value, "id"), Required(value, "name"), Text(value, "coverArt"), Number(value, "songCount"))
+            { CanAppend = writable };
+    }
+
+    public async Task<PlaylistContents> GetPlaylistContentsAsync(string id, CancellationToken cancellationToken = default)
+    {
+        var root = Object(await Api("getPlaylist", cancellationToken, ("id", id)).ConfigureAwait(false), "playlist");
+        if (HasDuplicateProperties(root)) throw InvalidResponse();
+        var playlist = ParsePlaylist(root);
+        var entries = Items(root, "entry");
+        if (playlist.Id != id || ReadCount(root, "songCount") != entries.Length) throw InvalidResponse();
+        return new(playlist, entries.Select(x => ParseSong(x, verifyObject: true)).ToArray());
+    }
+
+    internal Task<string> CreatePlaylistAsync(string name, IReadOnlyList<string> songs, CancellationToken cancellationToken) =>
+        WritePlaylistAsync("createPlaylist", ("name", name), "songId", songs, cancellationToken);
+
+    internal Task<string> AppendPlaylistAsync(string id, IReadOnlyList<string> songs, CancellationToken cancellationToken) =>
+        WritePlaylistAsync("updatePlaylist", ("playlistId", id), "songIdToAdd", songs, cancellationToken);
+
+    private async Task<string> WritePlaylistAsync(string endpoint, (string Key, string Value) target, string songKey,
+        IReadOnlyList<string> songs, CancellationToken cancellationToken)
+    {
+        RequireOnline();
+        cancellationToken.ThrowIfCancellationRequested();
+        using var request = new HttpRequestMessage(HttpMethod.Post, ApiUri(endpoint))
+        {
+            Content = new FormUrlEncodedContent(songs.Select(id => (songKey, id)).Prepend(target).Concat(Authentication())
+                .Select(parameter => KeyValuePair.Create(parameter.Item1, parameter.Item2)))
+        };
+        if (request.Content.Headers.ContentLength > 1024 * 1024)
+            throw new NavidromeException("This selection is too large to send as one playlist edit.");
+        JsonElement root;
+        try { root = ParseResponse(await Download(request, endpoint, 8 * 1024 * 1024, cancellationToken).ConfigureAwait(false), strict: true); }
+        catch (NavidromeException) { throw new PlaylistWriteUncertainException(); }
+
+        if (Text(root, "status", ignoreInvalid: true) == "failed" && root.TryGetProperty("error", out var error) &&
+            error.ValueKind == JsonValueKind.Object && !HasDuplicateProperties(error) &&
+            ReadCount(error, "code") is (10 or 20 or 30 or >= 40 and <= 44 or 50) and var code)
+            throw ResponseError(code);
+        if (Text(root, "status", ignoreInvalid: true) != "ok" || root.TryGetProperty("error", out _))
+            throw new PlaylistWriteUncertainException();
+        if (endpoint == "updatePlaylist") return target.Value;
+        if (root.TryGetProperty("playlist", out var created) && created.ValueKind == JsonValueKind.Object &&
+            created.EnumerateObject().Count(property => property.NameEquals("id")) == 1 &&
+            Text(created, "id", ignoreInvalid: true) is { } id && !string.IsNullOrWhiteSpace(id)) return id;
+        throw new PlaylistWriteUncertainException();
     }
 
     public async Task<IReadOnlyList<Album>> GetAlbumsAsync(int offset = 0, int size = 100, CancellationToken cancellationToken = default)
@@ -122,13 +187,25 @@ public sealed class NavidromeClient : IDisposable
     public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id, CancellationToken cancellationToken = default, bool validateCount = false) =>
         LoadAlbumSongsAsync(id, cancellationToken, validateCount);
 
-    private async Task<IReadOnlyList<Song>> LoadAlbumSongsAsync(string id, CancellationToken cancellationToken, bool validateCount)
+    public Task<IReadOnlyList<Song>> GetPlaylistSourceAlbumSongsAsync(string id, CancellationToken cancellationToken = default) =>
+        LoadAlbumSongsAsync(id, cancellationToken, validateCount: true, requireCount: true, verifyTracks: true);
+
+    internal async Task<Song> GetPlaylistSourceSongAsync(string id, CancellationToken cancellationToken)
+    {
+        var song = ParseSong(Object(await Api("getSong", cancellationToken, ("id", id)).ConfigureAwait(false), "song"), verifyObject: true);
+        if (song.Id != id) throw InvalidResponse();
+        return song;
+    }
+
+    private async Task<IReadOnlyList<Song>> LoadAlbumSongsAsync(string id, CancellationToken cancellationToken,
+        bool validateCount, bool requireCount = false, bool verifyTracks = false)
     {
         var root = Object(await Api("getAlbum", cancellationToken, ("id", id)).ConfigureAwait(false), "album");
         if (Required(root, "id") != id) throw InvalidResponse();
         var songs = Items(root, "song");
-        if (validateCount && !CountMatches(root, "songCount", songs.Length)) throw InvalidResponse();
-        return songs.Select(x => ParseSong(x, Text(root, "artist"), Required(root, "name"), Text(root, "coverArt"))).ToArray();
+        if (validateCount && (requireCount ? ReadCount(root, "songCount") != songs.Length : !CountMatches(root, "songCount", songs.Length))) throw InvalidResponse();
+        return songs.Select(x => ParseSong(x, Text(root, "artist"), Required(root, "name"), Text(root, "coverArt"),
+            verifyObject: verifyTracks)).ToArray();
     }
 
     public async Task<IReadOnlyList<Song>> SearchSongsAsync(string query, int offset = 0, int count = 100, CancellationToken cancellationToken = default)
@@ -197,8 +274,17 @@ public sealed class NavidromeClient : IDisposable
     public Task<byte[]> GetCoverArtAsync(string id, CancellationToken cancellationToken = default) =>
         Download("getCoverArt", 2 * 1024 * 1024, cancellationToken, ("id", id), ("size", "1024"));
 
-    private static Song ParseSong(JsonElement x, string? artist = null, string? album = null, string? coverArt = null) =>
-        new(Required(x, "id"), Required(x, "title"), Text(x, "artist") ?? artist ?? "Unknown artist", Text(x, "album") ?? album ?? "", Text(x, "coverArt") ?? coverArt, Number(x, "duration"), Number(x, "userRating"));
+    private static Song ParseSong(JsonElement x, string? artist = null, string? album = null, string? coverArt = null, bool verifyObject = false)
+    {
+        if (verifyObject)
+        {
+            // A lookup accepts the last spelling of a duplicate key. Verify each
+            // object independently so repeated song IDs in separate entries remain valid.
+            try { if (HasDuplicateProperties(x)) throw InvalidResponse(); }
+            catch (InvalidOperationException) { throw InvalidResponse(); } // Undecodable property name.
+        }
+        return new(Required(x, "id"), Required(x, "title"), Text(x, "artist") ?? artist ?? "Unknown artist", Text(x, "album") ?? album ?? "", Text(x, "coverArt") ?? coverArt, Number(x, "duration"), Number(x, "userRating"));
+    }
 
     private static JsonElement Object(JsonElement root, string key) =>
         root.ValueKind == JsonValueKind.Object && root.TryGetProperty(key, out var item) && item.ValueKind == JsonValueKind.Object ? item : throw InvalidResponse();
@@ -242,7 +328,20 @@ public sealed class NavidromeClient : IDisposable
 
     private static NavidromeException InvalidResponse() => new("The music server returned an invalid response. Check compatibility and retry.");
 
+    private static bool HasDuplicateProperties(JsonElement value)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        return value.EnumerateObject().Any(property => !keys.Add(property.Name));
+    }
+
     private async Task<byte[]> Download(string name, int limit, CancellationToken cancellationToken, params (string Key, string Value)[] parameters)
+    {
+        RequireOnline();
+        using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint(name, parameters));
+        return await Download(request, name, limit, cancellationToken).ConfigureAwait(false);
+    }
+
+    private async Task<byte[]> Download(HttpRequestMessage request, string name, int limit, CancellationToken cancellationToken)
     {
         RequireOnline();
         var callerCancellation = cancellationToken;
@@ -252,7 +351,6 @@ public sealed class NavidromeClient : IDisposable
         cancellationToken = deadline.Token;
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, Endpoint(name, parameters));
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(name == "getCoverArt" ? "image/*" : "application/json"));
             request.Headers.CacheControl = new CacheControlHeaderValue { NoStore = true };
             using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken).ConfigureAwait(false);
@@ -286,27 +384,34 @@ public sealed class NavidromeClient : IDisposable
     private async Task<JsonElement> Api(string name, CancellationToken cancellationToken, params (string Key, string Value)[] parameters)
     {
         var bytes = await Download(name, 8 * 1024 * 1024, cancellationToken, parameters).ConfigureAwait(false);
+        var root = ParseResponse(bytes);
+        if (Text(root, "status") != "ok" || root.TryGetProperty("error", out _))
+            throw ResponseError(root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object ? ReadCount(error, "code") ?? 0 : 0);
+        return root;
+    }
+
+    private static JsonElement ParseResponse(byte[] bytes, bool strict = false)
+    {
         try
         {
             using var document = JsonDocument.Parse(bytes);
-            var root = document.RootElement.GetProperty("subsonic-response");
-            if (root.GetProperty("status").GetString() != "ok" || root.TryGetProperty("error", out _))
-            {
-                var code = root.TryGetProperty("error", out var error) && error.TryGetProperty("code", out var value) && value.TryGetInt32(out var number) ? number : 0;
-                throw new NavidromeException(code switch
-                {
-                    >= 40 and <= 44 => "Authentication failed. Check your username and password.",
-                    50 => "Your account cannot access this music. Check server permissions.",
-                    70 => "This item is no longer available. Refresh the playlist.",
-                    _ => "The server rejected this request. Check server compatibility and retry."
-                });
-            }
+            var root = Object(document.RootElement, "subsonic-response");
+            if (Text(root, "status") is null || (strict && (HasDuplicateProperties(document.RootElement) || HasDuplicateProperties(root))))
+                throw InvalidResponse();
             return root.Clone();
         }
         catch (NavidromeException) { throw; }
         catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
         { throw InvalidResponse(); }
     }
+
+    private static NavidromeException ResponseError(int code) => new(code switch
+    {
+        >= 40 and <= 44 => "Authentication failed. Check your username and password.",
+        50 => "Your account cannot edit or access this music. Check server permissions.",
+        70 => "This item is no longer available. Refresh the playlist.",
+        _ => "The server rejected this request. Check server compatibility and retry."
+    });
 
     public void Dispose() { if (ownsHttp) http.Dispose(); }
 }

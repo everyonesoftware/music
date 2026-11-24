@@ -1136,7 +1136,7 @@ class AudioScreensTest {
         override fun loadAlbums() = Unit
         override fun openAlbum(id: String) { openedAlbums += id }
         override fun playAlbum(id: String, shuffle: Boolean) { playedAlbums += id to shuffle }
-        override fun startPlaylist(id: String) { startedPlaylists += id }
+        override fun startPlaylist(id: String, requireLiveContents: Boolean) { startedPlaylists += id }
         override fun openPlaylist(id: String) { openedPlaylists += id }
         override fun playSong(song: Song) { playedSongs += song.id }
         override fun togglePlay() { playToggles++ }

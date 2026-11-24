@@ -45,15 +45,20 @@ internal fun DeviceMenu(
     accountId: String?, itemKey: String, title: String, removable: Boolean,
     canSave: Boolean, canRemove: Boolean, onSave: () -> Unit, onRemove: () -> Unit,
     modifier: Modifier = Modifier,
+    onAddToPlaylist: (() -> Unit)? = null,
 ) {
     var expanded by remember(accountId, itemKey, removable) { mutableStateOf(false) }
-    val enabled = accountId != null && (canSave || (removable && canRemove))
+    val enabled = accountId != null && (canSave || (removable && canRemove) || onAddToPlaylist != null)
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
     Box {
         IconButton({ expanded = true }, modifier.size(48.dp), enabled = enabled) {
             Icon(Icons.Default.MoreHoriz, "Device actions for $title")
         }
         DropdownMenu(expanded && enabled, onDismissRequest = { expanded = false }) {
+            if (onAddToPlaylist != null) DropdownMenuItem(text = { Text("Add to Playlist") }, onClick = {
+                expanded = false
+                onAddToPlaylist()
+            })
             if (canSave) DropdownMenuItem(text = { Text("Save to Device") }, onClick = {
                 expanded = false
                 onSave()
@@ -74,7 +79,8 @@ internal fun SongDeviceMenu(state: AudioUiState, actions: AudioUiActions, song: 
     DeviceMenu(state.connection?.id, song.id, song.title, explicit,
         canSave = !explicit && !state.loading && (!storage.settings.offline || storage.hasLocalAudio(song.id)),
         canRemove = !state.loading, onSave = { actions.downloadSongs(listOf(song)) },
-        onRemove = { actions.removeDownload(song.id) }, modifier = modifier)
+        onRemove = { actions.removeDownload(song.id) }, modifier = modifier,
+        onAddToPlaylist = playlistAction(state, actions, PlaylistSourceKind.SONG, song.id, song.title))
 }
 
 @Composable
@@ -85,7 +91,31 @@ internal fun CollectionDeviceMenu(
     val retained = state.storage.collections.firstOrNull { it.kind == kind && it.id == id }
     val canSaveRevision = canSave && confirmedSongs != null && retained?.matchesOccurrences(confirmedSongs) != true
     DeviceMenu(state.connection?.id, "$kind:$id", name, retained != null, canSaveRevision, !state.loading,
-        onSave, { actions.removeOfflineCollection(kind, id) }, modifier)
+        onSave, { actions.removeOfflineCollection(kind, id) }, modifier,
+        playlistAction(state, actions, if (kind == "playlist") PlaylistSourceKind.PLAYLIST else PlaylistSourceKind.ALBUM, id, name))
+}
+
+private fun playlistAction(state: AudioUiState, actions: AudioUiActions, kind: PlaylistSourceKind, id: String, title: String): (() -> Unit)? {
+    val source = PlaylistSource(kind, id, title)
+    return if (state.canEditPlaylists && state.containsPlaylistSource(source)) {
+        { actions.choosePlaylist(state.deviceActionPage, source) }
+    } else null
+}
+
+@Composable
+internal fun CollectionPlaylistMenu(state: AudioUiState, actions: AudioUiActions, kind: PlaylistSourceKind,
+    id: String, title: String, modifier: Modifier = Modifier, overArtwork: Boolean = false) {
+    val action = playlistAction(state, actions, kind, id, title) ?: return
+    var expanded by remember(state.deviceActionPage, kind, id) { mutableStateOf(false) }
+    Box(modifier) {
+        IconButton({ expanded = true }, Modifier.size(48.dp).then(
+            if (overArtwork) Modifier.padding(4.dp).background(MaterialTheme.colorScheme.surface, CircleShape) else Modifier)) {
+            Icon(Icons.Default.MoreHoriz, "More actions for $title")
+        }
+        DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
+            DropdownMenuItem(text = { Text("Add to Playlist") }, onClick = { expanded = false; action() })
+        }
+    }
 }
 
 internal fun SongCacheState.isSaved(kind: String, id: String) =

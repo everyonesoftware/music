@@ -17,6 +17,21 @@ enum class Screen { WELCOME, CONNECT, LIBRARIES, READY, PLAYLISTS, ALL_PLAYLISTS
 data class DeviceActionPage(val connection: Connection?, val screen: Screen, val item: String?)
 data class DeviceActionFailure(val page: DeviceActionPage, val message: String)
 
+enum class PlaylistSourceKind { SONG, PLAYLIST, ALBUM, ARTIST }
+data class PlaylistSource(val kind: PlaylistSourceKind, val id: String, val title: String)
+
+data class PlaylistEditor(
+    val ticket: Long,
+    val page: DeviceActionPage,
+    val source: PlaylistSource? = null,
+    val creating: Boolean = false,
+    val songs: List<Song>? = null,
+    val destinations: List<Playlist> = emptyList(),
+    val busy: Boolean = false,
+    val error: String? = null,
+    val unconfirmed: Boolean = false,
+)
+
 data class AudioUiState(
     val booting: Boolean = true,
     val screen: Screen = Screen.WELCOME,
@@ -59,6 +74,8 @@ data class AudioUiState(
     val loading: Boolean = false,
     val error: String? = null,
     val deviceActionFailure: DeviceActionFailure? = null,
+    val playlistEditor: PlaylistEditor? = null,
+    val playlistNotice: String? = null,
     val session: ListeningSession? = null,
     val playing: Boolean = false,
     val positionMs: Long = 0,
@@ -88,6 +105,44 @@ internal val AudioUiState.deviceActionPage: DeviceActionPage
         else -> null
     })
 
+internal val AudioUiState.canEditPlaylists: Boolean
+    get() = connection != null && !booting && !loading && !storage.settings.offline
+
+internal fun AudioUiState.containsPlaylistSource(source: PlaylistSource): Boolean {
+    val id = source.id
+    return when (source.kind) {
+        PlaylistSourceKind.PLAYLIST -> when (screen) {
+            Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.SEARCH -> playlists.any { it.id == id }
+            Screen.PLAYLIST -> selectedPlaylist?.id == id
+            else -> false
+        }
+        PlaylistSourceKind.ALBUM -> when (screen) {
+            Screen.PLAYLISTS, Screen.ALL_ALBUMS, Screen.SEARCH -> albums.any { it.id == id }
+            Screen.ARTIST -> artistContents?.albums?.any { it.album.id == id } == true
+            Screen.ALBUM -> selectedAlbum?.id == id
+            else -> false
+        }
+        PlaylistSourceKind.ARTIST -> when (screen) {
+            Screen.PLAYLISTS, Screen.ALL_ARTISTS, Screen.SEARCH -> artists.any { it.id == id }
+            Screen.ARTIST -> selectedArtist?.id == id
+            else -> false
+        }
+        PlaylistSourceKind.SONG -> when (screen) {
+            Screen.SEARCH -> searchSongs.any { it.id == id }
+            Screen.PLAYLIST -> !playlistLoading && playlistDetailError == null && playlistSongs.any { it.id == id }
+            Screen.ALBUM -> !albumLoading && albumError == null && albumSongs.any { it.id == id }
+            Screen.ARTIST -> !artistLoading && artistError == null && artistContents?.songs?.any { it.id == id } == true
+            Screen.PLAYER, Screen.QUEUE -> session?.takeIf { it.connectionId == connection?.id }?.let {
+                if (screen == Screen.PLAYER) it.queue.getOrNull(it.index)?.id == id
+                else it.queue.drop(it.index).any { song -> song.id == id } || it.playedIndices.any { index -> it.queue[index].id == id }
+            } == true
+            Screen.OFFLINE -> selectedOfflineCollection?.songs?.any { it.id == id } == true ||
+                (selectedOfflineCollection == null && (id in storage.downloadedSongs || id in storage.cachedSongs))
+            else -> false
+        }
+    }
+}
+
 fun AudioUiState.withCollectionLayout(kind: CollectionKind, layout: CollectionLayout): AudioUiState = when (kind) {
     CollectionKind.PLAYLISTS -> copy(playlistCollectionLayout = layout)
     CollectionKind.ALBUMS -> copy(albumCollectionLayout = layout)
@@ -101,6 +156,8 @@ fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
     return copy(
         screen = destination,
         deviceActionFailure = deviceActionFailure.takeIf { destination == screen },
+        playlistEditor = playlistEditor.takeIf { destination == screen },
+        playlistNotice = playlistNotice.takeIf { destination == screen },
         settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
         updatesReturnScreen = if (destination == Screen.UPDATES && screen != Screen.UPDATES) screen else updatesReturnScreen,
         playlistReturnScreen = if (destination == Screen.PLAYLIST && screen in origins) screen else playlistReturnScreen,
@@ -149,6 +206,13 @@ fun AudioUiState.collectionSongSession(request: CollectionSongSelection): Listen
 }
 
 interface AudioUiActions {
+    fun newPlaylist() = Unit
+    fun choosePlaylist(page: DeviceActionPage, source: PlaylistSource) = Unit
+    fun dismissPlaylistEditor() = Unit
+    fun createPlaylist(name: String) = Unit
+    fun appendToPlaylist(id: String) = Unit
+    fun clearPlaylistNotice() = Unit
+    fun retryPlaylistDetail() = Unit
     fun loadArtists() = Unit
     fun openArtist(id: String) = Unit
     fun playArtist(id: String, shuffle: Boolean = false) = Unit
@@ -187,7 +251,7 @@ interface AudioUiActions {
     fun playSong(song: Song) = Unit
     fun search(query: String) = Unit
     fun openPlaylist(id: String) = Unit
-    fun startPlaylist(id: String)
+    fun startPlaylist(id: String, requireLiveContents: Boolean = false)
     /** Fresh playlist queue; independent of the current session's transport. */
     fun playPlaylist(id: String, shuffle: Boolean = false)
     fun togglePlay()

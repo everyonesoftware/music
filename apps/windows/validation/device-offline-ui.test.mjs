@@ -32,8 +32,9 @@ test('browse cards use fetched membership and discard it when the catalog refres
   const main = app('MainWindow.cs');
   const offline = app('MainWindow.Offline.cs');
   assert.match(main, /detailSongs = tracks.ToList\(\);\s*RememberCollectionMembership\(/);
-  assert.match(main, /albums = data.Albums; playlists = data.Playlists;\s*InvalidateCollectionMembership\(\)/);
-  assert.match(offline, /albums = data.Albums; playlists = data.Playlists;\s*InvalidateCollectionMembership\(\)/);
+  for (const source of [main, offline]) {
+    assert.match(source, /albums = data.Albums;\s*playlists = MergePlaylistCatalog\(data.Playlists, catalogRevision\);\s*InvalidateCollectionMembership\(\)/);
+  }
   assert.match(offline, /DeviceAvailability\.SavedCard\(snapshot, key, count, verifiedCollectionMembership.GetValueOrDefault\(key\)\)/);
 });
 

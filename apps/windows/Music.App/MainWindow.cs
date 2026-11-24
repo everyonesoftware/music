@@ -118,6 +118,7 @@ public sealed partial class MainWindow : Window
         InitializeDetailList();
         InitializeArtistAlbums();
         InitializeNavigation();
+        InitializePlaylistActions();
         player.PlaybackSession.PlaybackStateChanged += (_, _) => DispatcherQueue.TryEnqueue(UpdateTransport);
         player.MediaEnded += (_, _) =>
         {
@@ -189,9 +190,11 @@ public sealed partial class MainWindow : Window
             var startupClient = client!;
             if (client is null) return;
             await client.PingAsync(lease.Token);
+            long catalogRevision = playlistCatalogRevision;
             var data = await ReadLibraryAsync(startupClient, lease.Token);
             if (!connectGate.IsCurrent(lease) || closed) return;
-            albums = data.Albums; playlists = data.Playlists;
+            albums = data.Albums;
+            playlists = MergePlaylistCatalog(data.Playlists, catalogRevision);
             InvalidateCollectionMembership();
             // A user-owned browse route still needs the newly published catalog.
             // Pending searches render it on completion; Songs pagination is untouched.
@@ -311,6 +314,7 @@ public sealed partial class MainWindow : Window
 
     private void SetConnecting(bool value)
     {
+        RefreshPlaylistActionAvailability();
         C<Button>("ConnectButton").IsEnabled = !value && !offlineSettings.Offline && !accountChangePending;
         C<Button>("CancelConnectButton").Visibility = value ? Visibility.Visible : Visibility.Collapsed;
         C<Button>("CancelConnectButton").IsEnabled = !accountChangePending;
@@ -328,6 +332,8 @@ public sealed partial class MainWindow : Window
         StopPlayback();
         client?.Dispose();
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
+        playlistEdits.Clear();
+        unverifiedPlaylistIds.Clear();
         ResetRatings(target);
         artists = []; artistsLoaded = false;
         client.Offline = offlineSettings.Offline;
@@ -387,6 +393,7 @@ public sealed partial class MainWindow : Window
 
     private void SetNavigation()
     {
+        UpdatePlaylistActions();
         foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("ArtistsNav", "artists"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
         {
             var button = C<Button>(entry.Item1);
@@ -548,6 +555,7 @@ public sealed partial class MainWindow : Window
             ScrollViewer.SetHorizontalScrollBarVisibility(view, ScrollBarVisibility.Hidden);
             BindLibraryShelf(section, view);
         }
+        BindPlaylistContext(view);
         foreach (var card in cards) view.Items.Add(CardElement(card, layout == "row" ? "grid" : layout, token));
         view.ItemClick += async (_, e) =>
         {
@@ -577,6 +585,7 @@ public sealed partial class MainWindow : Window
             Grid.SetColumn(copy, 1); copy.VerticalAlignment = VerticalAlignment.Center;
         }
         outer.Children.Add(cover); outer.Children.Add(copy);
+        AddCollectionPlaylistAction(outer, card.Value);
         AutomationProperties.SetName(outer, card.Title + ", " + card.Subtitle);
         if (!offlineSettings.Offline) _ = artwork.SetAsync(art, card.ArtId, client!, token);
         return outer;
@@ -611,6 +620,7 @@ public sealed partial class MainWindow : Window
         ScrollViewer.SetVerticalScrollMode(view, ScrollMode.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(view, ScrollBarVisibility.Disabled);
         var playQueue = playbackTracks ?? tracks.ToList();
+        BindPlaylistContext(view);
         for (int index = 0; index < tracks.Count; index++)
         {
             view.Items.Add(SongRow(tracks[index], index, layout, token, owner, showRatings));
@@ -726,9 +736,11 @@ public sealed partial class MainWindow : Window
         {
             if (args.ItemContainer.ContentTemplateRoot is not Grid host) return;
             host.Children.Clear();
+            args.ItemContainer.ContextFlyout = null;
             AutomationProperties.SetName(args.ItemContainer, "");
             if (args.InRecycleQueue || closed || page != "detail" || args.Item is not DetailSong item) return;
-            var row = SongRow(item.Song, item.Index, "list", CancellationToken.None, connectionLease, showRatings: detailIdentity.Kind == "playlist");
+            var row = SongRow(item.Song, item.Index, "list", CancellationToken.None, item.Owner, showRatings: detailIdentity.Kind == "playlist");
+            args.ItemContainer.ContextFlyout = row.ContextFlyout;
             AutomationProperties.SetName(args.ItemContainer, AutomationProperties.GetName(row));
             host.Children.Add(row);
             args.Handled = true;
@@ -757,7 +769,7 @@ public sealed partial class MainWindow : Window
         C<ScrollViewer>("MainScroll").Visibility = Visibility.Visible;
         detailLoading = false;
     }
-    private async Task OpenCollectionAsync(object? value, bool remember = true)
+    private async Task OpenCollectionAsync(object? value, bool remember = true, IReadOnlyList<Song>? confirmedSongs = null)
     {
         if (value is ArtistNavigation origin) { await OpenArtistAsync(origin.Artist, remember, origin.View); return; }
         if (value is Artist artist) { await OpenArtistAsync(artist, remember); return; }
@@ -784,10 +796,26 @@ public sealed partial class MainWindow : Window
         try
         {
             IReadOnlyList<Song> tracks;
-            if (value is Album album) tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token, validateCount: artistAlbum is not null);
-            else if (value is Playlist playlist) tracks = await target.GetPlaylistSongsAsync(playlist.Id, lease.Token);
+            PlaylistContents? refreshed = null;
+            if (confirmedSongs is not null && value is Playlist) tracks = confirmedSongs;
+            else if (value is Album album) tracks = await target.GetAlbumSongsAsync(album.Id, lease.Token, validateCount: artistAlbum is not null);
+            else if (value is Playlist playlist)
+            {
+                if (unverifiedPlaylistIds.Contains(playlist.Id))
+                {
+                    refreshed = await target.GetPlaylistContentsAsync(playlist.Id, lease.Token);
+                    tracks = refreshed.Songs;
+                }
+                else tracks = await target.GetPlaylistSongsAsync(playlist.Id, lease.Token);
+            }
             else return;
             if (!browseGate.IsCurrent(lease) || target != client || closed) return;
+            if (refreshed is not null)
+            {
+                unverifiedPlaylistIds.Remove(refreshed.Playlist.Id);
+                detailCollection = refreshed.Playlist;
+                detailTitle = refreshed.Playlist.Name;
+            }
             detailLoading = false; detailSongs = tracks.ToList();
             RememberCollectionMembership(detailIdentity, detailSongs);
             RenderDetail();
@@ -798,7 +826,8 @@ public sealed partial class MainWindow : Window
             if (browseGate.IsCurrent(lease) && target == client && !closed)
             {
                 detailLoading = false; detailError = true; RenderDetail();
-                ShowError("Could not open this collection. Return to Library and try again.");
+                if (value is not Playlist failedPlaylist || !unverifiedPlaylistIds.Contains(failedPlaylist.Id))
+                    ShowError("Could not open this collection. Return to Library and try again.");
             }
         }
     }
@@ -812,7 +841,8 @@ public sealed partial class MainWindow : Window
         bool isCollection = detailIdentity.Kind is "album" or "playlist";
         C<Grid>("PageHeader").Visibility = isCollection ? Visibility.Collapsed : Visibility.Visible;
         bool partialArtist = detailIdentity.Kind == "artist" && artistSongsIncomplete;
-        string count = detailLoading ? "Loading songs…" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}";
+        bool unverifiedPlaylist = detailError && detailCollection is Playlist unverified && unverifiedPlaylistIds.Contains(unverified.Id);
+        string count = detailLoading ? "Loading songs…" : unverifiedPlaylist ? "Songs unverified" : $"{detailSongs.Count} songs{(partialArtist ? " loaded" : "")}";
         if (!isCollection)
         {
             ClearCollectionHeader();
@@ -863,6 +893,16 @@ public sealed partial class MainWindow : Window
         bool showAlbums = detailIdentity.Kind == "artist" && artistView == "albums";
         view.Visibility = showAlbums ? Visibility.Collapsed : Visibility.Visible;
         header.Visibility = showAlbums ? Visibility.Collapsed : Visibility.Visible;
+        if (detailIdentity.Kind == "playlist" && !detailLoading && !detailError && detailSongs.Count == 0)
+        {
+            header.Visibility = Visibility.Collapsed;
+            RenderEmptyPlaylistActions(panel);
+        }
+        if (unverifiedPlaylist && detailCollection is Playlist playlistToRetry)
+        {
+            header.Visibility = Visibility.Collapsed;
+            RenderUnverifiedPlaylistAction(panel, playlistToRetry);
+        }
         var albumView = C<GridView>("ArtistAlbumList");
         albumView.Visibility = showAlbums ? Visibility.Visible : Visibility.Collapsed;
         albumView.ItemsSource = showAlbums ? artistAlbums : null;
@@ -1048,6 +1088,7 @@ public sealed partial class MainWindow : Window
         {
             if (args.ItemContainer.ContentTemplateRoot is not Grid host) return;
             host.Children.Clear();
+            args.ItemContainer.ContextFlyout = null;
             AutomationProperties.SetName(args.ItemContainer, "");
             if (args.InRecycleQueue || closed || args.Item is not QueueEntry entry || !ReferenceEquals(entry.Queue, queue)) return;
             if (entry.Heading == "Played") host.Children.Add(CreatePlayedExpander());
@@ -1061,6 +1102,7 @@ public sealed partial class MainWindow : Window
             else
             {
                 var row = CreateQueueSong(entry);
+                args.ItemContainer.ContextFlyout = row.ContextFlyout;
                 AutomationProperties.SetName(args.ItemContainer, AutomationProperties.GetName(row));
                 host.Children.Add(row);
             }
@@ -1097,6 +1139,8 @@ public sealed partial class MainWindow : Window
         if (entry.Current) row.Background = new SolidColorBrush(ColorHelper.FromArgb(255, 53, 66, 57));
         AutomationProperties.SetName(row, (entry.Current ? "Current song: " : "") + song.Title + ", " + song.Artist);
         ToolTipService.SetToolTip(row, song.Title + "\n" + song.Artist);
+        AddSongPlaylistAction(row, song, connectionLease, valid: () => ReferenceEquals(entry.Queue, queue) &&
+            entry.Index < queue.Count && ReferenceEquals(queue[entry.Index], song) && C<Border>("QueuePane").Visibility == Visibility.Visible);
         return row;
     }
     private Grid CreateUpNextHeading()

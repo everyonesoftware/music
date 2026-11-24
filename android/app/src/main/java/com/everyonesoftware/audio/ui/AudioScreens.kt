@@ -61,6 +61,10 @@ import com.everyonesoftware.audio.playback.output.OutputDeviceKind
 @Composable
 fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val home = if (state.connection != null) Screen.PLAYLISTS else Screen.WELCOME
+    val playlistSnackbar = remember { SnackbarHostState() }
+    LaunchedEffect(state.playlistNotice) {
+        state.playlistNotice?.let { playlistSnackbar.showSnackbar(it); actions.clearPlaylistNotice() }
+    }
     BackHandler(enabled = state.screen != Screen.WELCOME && state.screen != Screen.PLAYLISTS) {
         actions.showScreen(state.backDestination)
     }
@@ -101,6 +105,8 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                 if (state.session?.queue?.getOrNull(state.session.index) != null && state.screen in listOf(Screen.SETTINGS, Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.ALL_ALBUMS, Screen.ALL_ARTISTS, Screen.ARTIST, Screen.PLAYLIST, Screen.SEARCH, Screen.ALBUM, Screen.QUEUE, Screen.UPDATES, Screen.OFFLINE)) {
                     MiniPlayer(state, actions, artworkUrl)
                 }
+                if (state.playlistNotice != null) SnackbarHost(playlistSnackbar, Modifier.fillMaxWidth())
+                state.playlistEditor?.let { PlaylistEditorDialog(it, state.canEditPlaylists, actions) }
             }
         }
     }
@@ -320,10 +326,11 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                     Text("Playlists", style = MaterialTheme.typography.titleLarge)
                     TextButton({ actions.showScreen(Screen.ALL_PLAYLISTS) }, Modifier.testTag("view-all-playlists").semantics { contentDescription = "View all playlists" }) { Text("View all"); Icon(Icons.Default.ChevronRight, null) }
                 }
+                NewPlaylistButton(state, actions)
                 if (state.playlists.isEmpty() && !state.playlistsRefreshing) Hint("No playlists available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.playlists, key = { "playlist-${it.id}" }) { playlist ->
-                        PlaylistTile(playlist, playlist.id in state.stalePlaylistIds, state.storage.isSaved("playlist", playlist.id), artworkUrl, enabled = !state.loading,
+                        PlaylistTile(playlist, state, actions, artworkUrl,
                             onOpen = { actions.openPlaylist(playlist.id) })
                     }
                 }
@@ -335,7 +342,7 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                 }
                 if (state.albums.isEmpty() && !state.albumsRefreshing && state.albumsError == null) Hint("No albums available on this server.")
                 LazyRow(contentPadding = PaddingValues(end = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    items(state.albums, key = { "album-${it.id}" }) { album -> AlbumTile(album, state.storage.isSaved("album", album.id), artworkUrl) { actions.openAlbum(album.id) } }
+                    items(state.albums, key = { "album-${it.id}" }) { album -> AlbumTile(album, state, actions, artworkUrl) { actions.openAlbum(album.id) } }
                 }
             }
             item {
@@ -347,7 +354,10 @@ private fun Playlists(state: AudioUiState, actions: AudioUiActions, artworkUrl: 
                 LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     items(state.artists, key = { it.id }) { artist ->
                         Column(Modifier.width(132.dp).testTag("artist-card-${artist.id}").clickable { actions.openArtist(artist.id) }, horizontalAlignment = Alignment.CenterHorizontally) {
-                            ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(132.dp))
+                            Box {
+                                ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(132.dp))
+                                CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ARTIST, artist.id, artist.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
+                            }
                             Text(artist.name, Modifier.padding(top = 6.dp), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
                     }
@@ -367,11 +377,12 @@ private fun ArtistArtwork(id: String?, artworkUrl: (String?) -> String?, modifie
 }
 
 @Composable
-private fun ArtistRow(artist: com.everyonesoftware.audio.data.Artist, artworkUrl: (String?) -> String?, modifier: Modifier = Modifier, onClick: () -> Unit) {
+private fun ArtistRow(artist: com.everyonesoftware.audio.data.Artist, state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Row(modifier.fillMaxWidth().heightIn(min = 76.dp).clickable(role = Role.Button, onClick = onClick).padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         ArtistArtwork(artist.coverArtId, artworkUrl, Modifier.size(56.dp))
         Text(artist.name, Modifier.weight(1f), style = MaterialTheme.typography.titleMedium)
+        CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ARTIST, artist.id, artist.name)
         Icon(Icons.Default.ChevronRight, null)
     }
 }
@@ -398,7 +409,7 @@ private fun Artists(state: AudioUiState, actions: AudioUiActions, artworkUrl: (S
         LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("artists-list"), contentPadding = PaddingValues(bottom = 16.dp)) {
             if (entries.isEmpty() && state.artistCollectionQuery.isNotBlank()) item { Hint("No artists match “${state.artistCollectionQuery.trim()}”.") }
             items(entries, key = { it.id }) { artist ->
-                ArtistRow(artist, artworkUrl, Modifier.testTag("artist-card-${artist.id}")) { actions.openArtist(artist.id) }
+                ArtistRow(artist, state, actions, artworkUrl, Modifier.testTag("artist-card-${artist.id}")) { actions.openArtist(artist.id) }
             }
         }
     }
@@ -430,6 +441,7 @@ private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkU
                             Icon(Icons.Default.Shuffle, "Shuffle artist", Modifier.size(24.dp))
                         }
                     }
+                    CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ARTIST, artist.id, artist.name)
                 }
             }
             item {
@@ -468,6 +480,7 @@ private fun ArtistDetails(state: AudioUiState, actions: AudioUiActions, artworkU
                             SavedTitle(album.album.name, state.storage.isSaved("album", album.album.id), MaterialTheme.typography.titleMedium)
                             Hint(if (count == null) "Tracks unavailable" else "$count ${if (count == 1) "song" else "songs"}")
                         }
+                        CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ALBUM, album.album.id, album.album.name)
                         if (count != null) Icon(Icons.Default.ChevronRight, null)
                     }
                 }
@@ -496,8 +509,10 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
     }
     val open: (String) -> Unit = { if (playlists) actions.openPlaylist(it) else actions.openAlbum(it) }
     val deviceKind = if (playlists) "playlist" else "album"
+    val sourceKind = if (playlists) PlaylistSourceKind.PLAYLIST else PlaylistSourceKind.ALBUM
     Column(Modifier.fillMaxSize()) {
         Header(if (playlists) "Playlists" else "Albums", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        if (playlists) NewPlaylistButton(state, actions)
         OutlinedTextField(query, { actions.setCollectionQuery(kind, it) },
             Modifier.fillMaxWidth().testTag("collection-search"), singleLine = true,
             label = { Text(if (playlists) "Search playlists" else "Search albums or artists") },
@@ -539,7 +554,10 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                 gridItems(entries, key = { it.id }) { entry ->
                     Column(Modifier.fillMaxWidth().clickable(role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}")) {
-                        Artwork(entry.coverArtId, artworkUrl, Modifier.fillMaxWidth().aspectRatio(1f))
+                        Box {
+                            Artwork(entry.coverArtId, artworkUrl, Modifier.fillMaxWidth().aspectRatio(1f))
+                            CollectionPlaylistMenu(state, actions, sourceKind, entry.id, entry.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
+                        }
                         SavedTitle(entry.name, state.storage.isSaved(deviceKind, entry.id), MaterialTheme.typography.titleSmall, Modifier.padding(top = 6.dp), maxLines = 2)
                         Text(entry.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                     }
@@ -555,6 +573,7 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
                             SavedTitle(entry.name, state.storage.isSaved(deviceKind, entry.id), MaterialTheme.typography.titleMedium, maxLines = 2)
                             Text(entry.subtitle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
                         }
+                        CollectionPlaylistMenu(state, actions, sourceKind, entry.id, entry.name)
                         Icon(Icons.Default.ChevronRight, null)
                     }
                     HorizontalDivider()
@@ -565,19 +584,25 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
 }
 
 @Composable
-private fun PlaylistTile(playlist: Playlist, stale: Boolean, saved: Boolean, artworkUrl: (String?) -> String?, enabled: Boolean, onOpen: () -> Unit) {
-    Column(Modifier.width(132.dp).clickable(enabled = enabled, onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
-        Artwork(playlist.coverArtId, artworkUrl, Modifier.size(132.dp))
-        SavedTitle(playlist.name, saved, MaterialTheme.typography.titleSmall, Modifier.padding(top = 6.dp), maxLines = 1)
-        Hint("${playlist.songCount} songs" + if (stale) " · last known" else "")
+private fun PlaylistTile(playlist: Playlist, state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?, onOpen: () -> Unit) {
+    Column(Modifier.width(132.dp).clickable(enabled = !state.loading, onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
+        Box {
+            Artwork(playlist.coverArtId, artworkUrl, Modifier.size(132.dp))
+            CollectionPlaylistMenu(state, actions, PlaylistSourceKind.PLAYLIST, playlist.id, playlist.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
+        }
+        SavedTitle(playlist.name, state.storage.isSaved("playlist", playlist.id), MaterialTheme.typography.titleSmall, Modifier.padding(top = 6.dp), maxLines = 1)
+        Hint("${playlist.songCount} songs" + if (playlist.id in state.stalePlaylistIds) " · last known" else "")
     }
 }
 
 @Composable
-private fun AlbumTile(album: Album, saved: Boolean, artworkUrl: (String?) -> String?, onClick: () -> Unit) {
+private fun AlbumTile(album: Album, state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?, onClick: () -> Unit) {
     Column(Modifier.width(132.dp).clickable(onClick = onClick).testTag("album-card-${album.id}")) {
-        Artwork(album.coverArtId, artworkUrl, Modifier.size(132.dp))
-        SavedTitle(album.name, saved, MaterialTheme.typography.titleSmall, Modifier.padding(top = 6.dp), maxLines = 1)
+        Box {
+            Artwork(album.coverArtId, artworkUrl, Modifier.size(132.dp))
+            CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ALBUM, album.id, album.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
+        }
+        SavedTitle(album.name, state.storage.isSaved("album", album.id), MaterialTheme.typography.titleSmall, Modifier.padding(top = 6.dp), maxLines = 1)
         Hint(album.artist + if (album.year > 0) " · ${album.year}" else "")
     }
 }
@@ -602,14 +627,15 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
             if (term.isBlank()) item { Hint("Search your playlists, albums, artists, and songs by name or artist.") }
             if (artists.isNotEmpty()) item { Text("Artists", style = MaterialTheme.typography.titleLarge) }
             items(artists, key = { "search-artist-${it.id}" }) { artist ->
-                ArtistRow(artist, artworkUrl, Modifier.testTag("search-artist-${artist.id}")) { actions.openArtist(artist.id) }
+                ArtistRow(artist, state, actions, artworkUrl, Modifier.testTag("search-artist-${artist.id}")) { actions.openArtist(artist.id) }
             }
             if (playlists.isNotEmpty()) item { Text("Playlists", style = MaterialTheme.typography.titleLarge) }
             items(playlists, key = { "search-playlist-${it.id}" }) { playlist ->
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clickable { actions.openPlaylist(playlist.id) }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Artwork(playlist.coverArtId, artworkUrl, Modifier.size(52.dp))
                     Column(Modifier.weight(1f)) { SavedTitle(playlist.name, state.storage.isSaved("playlist", playlist.id), MaterialTheme.typography.titleMedium); Hint("${playlist.songCount} songs") }
-                    AudioIcon(Icons.Default.Shuffle, "Shuffle and play ${playlist.name}") { actions.startPlaylist(playlist.id) }
+                    AudioIcon(Icons.Default.Shuffle, "Shuffle and play ${playlist.name}") { actions.startPlaylist(playlist.id, requireLiveContents = true) }
+                    CollectionPlaylistMenu(state, actions, PlaylistSourceKind.PLAYLIST, playlist.id, playlist.name)
                 }
                 HorizontalDivider()
             }
@@ -618,6 +644,7 @@ private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (St
                 Row(Modifier.fillMaxWidth().heightIn(min = 72.dp).clickable { actions.openAlbum(album.id) }, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     Artwork(album.coverArtId, artworkUrl, Modifier.size(52.dp))
                     Column(Modifier.weight(1f)) { SavedTitle(album.name, state.storage.isSaved("album", album.id), MaterialTheme.typography.titleMedium); Hint(album.artist) }
+                    CollectionPlaylistMenu(state, actions, PlaylistSourceKind.ALBUM, album.id, album.name)
                     Icon(Icons.Default.ChevronRight, "Open ${album.name}")
                 }
                 HorizontalDivider()
@@ -679,8 +706,11 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
             if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             item {
                 ErrorMessage(state.playlistDetailError)
-                if (state.playlistDetailError != null && playlist != null) TextButton({ actions.openPlaylist(playlist.id) }) { Text("Retry") }
-                if (!state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isEmpty()) Hint("This playlist has no songs.")
+                if (state.playlistDetailError != null && playlist != null) TextButton(actions::retryPlaylistDetail, enabled = state.canEditPlaylists) { Text("Retry") }
+                if (!state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isEmpty()) {
+                    Hint("This playlist has no songs.")
+                    TextButton({ actions.showScreen(Screen.PLAYLISTS) }) { Text("Browse Library") }
+                }
             }
             // Playlists may contain the same song more than once; retain the server's order.
             items(state.playlistSongs.size) { index ->

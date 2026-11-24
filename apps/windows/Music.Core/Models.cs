@@ -22,4 +22,10 @@ public sealed record PlaybackSnapshot(string ConnectionId, IReadOnlyList<Song> Q
 }
 public sealed record Artist(string Id, string Name, string? CoverArtId, int AlbumCount);
 public sealed record ArtistLibrary(Artist Artist, IReadOnlyList<Album> Albums, IReadOnlyList<Song> Songs, bool IsComplete);
-public sealed record Playlist(string Id, string Name, string? CoverArtId, int SongCount);
+public sealed record Playlist(string Id, string Name, string? CoverArtId, int SongCount)
+{
+    // Older servers may omit both owner and readonly; authority remains with the server.
+    public bool CanAppend { get; init; } = true;
+}
+
+public sealed record PlaylistContents(Playlist Playlist, IReadOnlyList<Song> Songs);

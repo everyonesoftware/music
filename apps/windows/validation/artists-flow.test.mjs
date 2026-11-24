@@ -21,6 +21,7 @@ await MainWindow.Run();
 record Artist(string Id,string Name,string? CoverArtId=null,int AlbumCount=0);
 record Album(string Id,string Name);
 record Playlist(string Id,string Name);
+record PlaylistContents(Playlist Playlist,IReadOnlyList<Song> Songs);
 record Song(string Id);
 record ArtistLibrary(Artist Artist,IReadOnlyList<Album> Albums,IReadOnlyList<Song> Songs,bool IsComplete=true);
 record ArtistNavigation(Artist Artist,string View);
@@ -34,7 +35,9 @@ ${method(artists,'    private Grid CreateArtistTransport()', '\n}')}
 ${method(nav,'    private async Task GoBackAsync()', '\n}')}
 ${method(nav,'    private NavigationView CaptureNavigation()', '    private void InitializeNavigation()')}
 readonly NavigationHistory navigationHistory=new(); readonly RequestGate browseGate=new(), connectionGate=new(), artworkGate=new();
+readonly HashSet<string> unverifiedPlaylistIds=new();
 Root root=new(); void BindLibraryShelf(StackPanel s,ListViewBase v){} record Card(string Title,string Subtitle,string? ArtId,object Value);
+void BindPlaylistContext(ListViewBase view){}
 readonly CollectionTransport collectionTransport=new(); static object Sage=new(),Muted=new();
 IReadOnlyList<Song> queue=[]; int starts; void StartQueue(IReadOnlyList<Song> tracks,int index){queue=tracks;starts++;}
 FrameworkElement CardElement(Card c,string l,CancellationToken t)=>new(){Tag=c.Value};
@@ -133,6 +136,7 @@ public Task<ArtistLibrary> GetArtistAsync(string id,CancellationToken token)=>Ar
 public Func<string,bool,Task<IReadOnlyList<Song>>> CollectionSongs=(_,_)=>Task.FromResult<IReadOnlyList<Song>>([new Song("s")]);
 public Task<IReadOnlyList<Song>> GetAlbumSongsAsync(string id,CancellationToken t,bool validateCount=false)=>CollectionSongs(id,validateCount);
 public Task<IReadOnlyList<Song>> GetPlaylistSongsAsync(string id,CancellationToken t)=>GetAlbumSongsAsync(id,t);
+public Task<PlaylistContents> GetPlaylistContentsAsync(string id,CancellationToken t)=>throw new Exception("Unexpected strict playlist read");
 }
 class OfflineSettings{public bool Offline;}
 enum Visibility{Visible,Collapsed}
