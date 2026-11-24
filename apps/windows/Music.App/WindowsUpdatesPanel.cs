@@ -1,59 +1,61 @@
+using EveryoneSoftware.WindowsCommon;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Music.Core;
+using SharedUpdatesPanel = EveryoneSoftware.WindowsCommon.WindowsUpdatesPanel;
 
 namespace Music.App;
 
 /// <summary>Bind once after Shell.xaml is loaded; dispose when its window closes.</summary>
-public sealed partial class WindowsUpdatesPanel : IDisposable
+internal sealed partial class WindowsUpdatesPanel : IDisposable
 {
     private readonly WindowsUpdateController controller;
     private readonly DispatcherQueue dispatcher;
-    private readonly Button check, download, restart;
-    private readonly TextBlock title, status;
-    private readonly StackPanel actions;
-    private readonly ProgressBar progress;
-    private readonly TextBlock offeredVersion, notesStatus;
+    private readonly SharedUpdatesPanel panel;
+    private readonly TextBlock notesStatus;
     private readonly Expander changelog;
     private readonly StackPanel notesContent;
-    private readonly Button retryNotes;
+    private readonly Button retryNotes, recheck;
     private readonly WindowsChangelogController notes;
+    private Version? shownOffer;
     private bool disposed;
 
-    public WindowsUpdatesPanel(FrameworkElement root, DispatcherQueue dispatcher, Func<Task> preserveSession)
+    public WindowsUpdatesPanel(FrameworkElement root, DispatcherQueue dispatcher, string installedVersion, Func<Task> preserveSession)
     {
         this.dispatcher = dispatcher;
-        check = (Button)root.FindName("CheckUpdatesButton");
-        download = (Button)root.FindName("DownloadUpdateButton");
-        restart = (Button)root.FindName("RestartUpdateButton");
-        title = (TextBlock)root.FindName("UpdateTitle");
-        status = (TextBlock)root.FindName("UpdateStatus");
-        actions = (StackPanel)root.FindName("UpdateActions");
-        progress = (ProgressBar)root.FindName("UpdateProgress");
         var backend = new WindowsUpdateBackend();
         controller = new WindowsUpdateController(backend, preserveSession);
-        offeredVersion = (TextBlock)root.FindName("UpdateOfferedVersion");
+        panel = new SharedUpdatesPanel("Music", installedVersion,
+            cardBackground: (Brush)root.Resources["SettingsCardBackground"],
+            cardBorder: (Brush)root.Resources["SettingsCardBorder"]);
         changelog = (Expander)root.FindName("UpdateChangelog");
         notesStatus = (TextBlock)root.FindName("ChangelogStatus");
         notesContent = (StackPanel)root.FindName("ChangelogContent");
         retryNotes = (Button)root.FindName("RetryChangelogButton");
+        recheck = (Button)root.FindName("RecheckUpdateButton");
+        // Resolve names before moving the notes subtree into the shared panel's details slot.
+        ((ContentControl)root.FindName("ChangelogParkingHost")).Content = null;
+        ((ContentControl)root.FindName("UpdatesPanelHost")).Content = panel.View;
         notes = new WindowsChangelogController();
         retryNotes.Click += RetryNotesClicked;
+        recheck.Click += RecheckClicked;
         notes.Changed += NotesChanged;
-        check.Click += CheckClicked;
-        download.Click += DownloadClicked;
-        restart.Click += RestartClicked;
+        panel.CheckRequested += CheckRequested;
+        panel.DownloadRequested += DownloadRequested;
+        panel.RestartRequested += RestartRequested;
         controller.Changed += OnChanged;
         Render(controller.Status);
     }
 
     internal Task CheckOnStartupAsync() => controller.CheckOnStartupAsync();
 
-    private async void CheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
-    private async void DownloadClicked(object sender, RoutedEventArgs e) => await controller.DownloadAsync();
-    private async void RestartClicked(object sender, RoutedEventArgs e) => await controller.RestartAsync();
+    private async void CheckRequested(object? sender, EventArgs e) => await controller.CheckAsync();
+    private async void DownloadRequested(object? sender, EventArgs e) => await controller.DownloadAsync();
+    private async void RestartRequested(object? sender, EventArgs e) => await controller.RestartAsync();
     private async void RetryNotesClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
+    private async void RecheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
 
     private void NotesChanged()
     {
@@ -129,52 +131,43 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
 
     private void Render(WindowsUpdateStatus state)
     {
-        title.Text = state.Phase switch
-        {
-            WindowsUpdatePhase.Idle => "Not checked yet",
-            WindowsUpdatePhase.Checking => "Checking for updates",
-            WindowsUpdatePhase.Current => "Up to date",
-            WindowsUpdatePhase.Available => "Update available",
-            WindowsUpdatePhase.Downloading => "Downloading update",
-            WindowsUpdatePhase.Ready => "Ready to install",
-            WindowsUpdatePhase.Restarting => "Restarting",
-            WindowsUpdatePhase.Error => "Update failed",
-            WindowsUpdatePhase.StartupDeferred => "Automatic check deferred",
-            WindowsUpdatePhase.NotInstalled => "Updates unavailable",
-            _ => "Updates"
-        };
-        status.Text = state.Phase == WindowsUpdatePhase.Downloading ? $"{state.Message} {state.Progress}%" : state.Message;
-        bool changedOffer = offeredVersion.Text != (state.Version is { } version ? $"Music {version}" : "");
-        offeredVersion.Text = state.Version is { } offer ? $"Music {offer}" : "";
-        offeredVersion.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
+        if (shownOffer != state.Version) changelog.IsExpanded = false;
+        shownOffer = state.Version;
         notes.SetOffer(state.Version, state.Changelog);
         retryNotes.IsEnabled = state.Phase == WindowsUpdatePhase.Available;
-        changelog.Visibility = state.Version is null ? Visibility.Collapsed : Visibility.Visible;
-        if (changedOffer) changelog.IsExpanded = false;
-        // The product/version already lives in the offer header, not in a duplicate status row.
-        if (state.Phase == WindowsUpdatePhase.Available) status.Visibility = Visibility.Collapsed;
-        else status.Visibility = Visibility.Visible;
-        bool busy = state.Phase is WindowsUpdatePhase.Checking or WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Restarting;
-        check.Content = state.Phase == WindowsUpdatePhase.Checking ? "Checking…" : "Check for updates";
-        check.IsEnabled = state.Phase != WindowsUpdatePhase.Checking;
-        actions.Visibility = state.Phase is WindowsUpdatePhase.Available or WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
-        download.Visibility = state.Phase == WindowsUpdatePhase.Available ? Visibility.Visible : Visibility.Collapsed;
-        download.IsEnabled = !busy;
-        restart.Visibility = state.Phase == WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
-        restart.IsEnabled = !busy;
-        progress.Visibility = busy || state.Phase == WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
-        progress.IsIndeterminate = state.Phase is WindowsUpdatePhase.Checking or WindowsUpdatePhase.Restarting;
-        progress.Value = state.Progress;
+        // The pinned shared panel disables its Check button in these phases. Music supports
+        // checking for a replacement of a staged offer, queued behind an in-flight download.
+        recheck.Visibility = state.Phase is WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Ready
+            ? Visibility.Visible : Visibility.Collapsed;
+        panel.Render(new UpdateSnapshot(ToSharedPhase(state.Phase), state.Message, state.Version, state.Progress),
+            restartAllowed: true, changelog: changelog);
     }
+
+    private static UpdatePhase ToSharedPhase(WindowsUpdatePhase phase) => phase switch
+    {
+        WindowsUpdatePhase.Idle => UpdatePhase.Idle,
+        WindowsUpdatePhase.Checking => UpdatePhase.Checking,
+        WindowsUpdatePhase.Current => UpdatePhase.Current,
+        WindowsUpdatePhase.Available => UpdatePhase.Available,
+        WindowsUpdatePhase.Downloading => UpdatePhase.Downloading,
+        WindowsUpdatePhase.Ready => UpdatePhase.Ready,
+        WindowsUpdatePhase.Restarting => UpdatePhase.Restarting,
+        WindowsUpdatePhase.Error => UpdatePhase.Error,
+        WindowsUpdatePhase.NotInstalled => UpdatePhase.NotInstalled,
+        WindowsUpdatePhase.StartupDeferred => UpdatePhase.StartupDeferred,
+        _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, null)
+    };
 
     public void Dispose()
     {
         if (disposed) return;
         disposed = true;
-        check.Click -= CheckClicked;
-        download.Click -= DownloadClicked;
-        restart.Click -= RestartClicked;
+        panel.CheckRequested -= CheckRequested;
+        panel.DownloadRequested -= DownloadRequested;
+        panel.RestartRequested -= RestartRequested;
+        panel.Dispose();
         retryNotes.Click -= RetryNotesClicked;
+        recheck.Click -= RecheckClicked;
         notes.Changed -= NotesChanged;
         notes.Dispose();
         controller.Changed -= OnChanged;

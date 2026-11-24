@@ -7,6 +7,8 @@
       <Grid/>
     </DataTemplate>
     <SolidColorBrush x:Key="Sage" Color="#c0d7ae"/>
+    <SolidColorBrush x:Key="SettingsCardBackground" Color="#2a332d"/>
+    <SolidColorBrush x:Key="SettingsCardBorder" Color="#39453d"/>
     <SolidColorBrush x:Key="Muted" Color="#acb8ae"/>
     <!-- Override the native Slider template resources, not only Foreground. -->
     <SolidColorBrush x:Key="SliderThumbBackground" Color="#c0d7ae"/>
@@ -165,7 +167,7 @@
         <InfoBar x:Name="PlaylistNotice" IsOpen="False" IsClosable="True" Severity="Success" Margin="0,0,0,12"/>
       </StackPanel>
       <ProgressBar Grid.Row="2" x:Name="BusyBar" IsIndeterminate="True" Visibility="Collapsed" Margin="0,0,0,12"/>
-      <ScrollViewer Grid.Row="3" x:Name="MainScroll" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <ScrollViewer Grid.Row="3" x:Name="MainScroll" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
         <StackPanel Spacing="20">
           <StackPanel x:Name="WelcomePanel" Spacing="14" Margin="0,80,0,0" HorizontalAlignment="Center">
             <TextBlock Text="♪" FontSize="48" Foreground="{StaticResource Sage}" HorizontalAlignment="Center"/>
@@ -176,19 +178,10 @@
           <StackPanel x:Name="BrowsePanel" Spacing="24" Visibility="Collapsed"/>
           <StackPanel x:Name="SettingsPanel" Spacing="22" Visibility="Collapsed" MaxWidth="720" HorizontalAlignment="Stretch">
             <StackPanel Spacing="16"><TextBlock Text="Updates" FontSize="21" FontWeight="SemiBold"/>
-              <Grid ColumnSpacing="20">
-                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                <TextBlock x:Name="VersionText" Text="Current Version:" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center" TextWrapping="Wrap"/>
-                <Button Grid.Column="1" x:Name="CheckUpdatesButton" Content="Check for updates" HorizontalAlignment="Right" VerticalAlignment="Center"/>
-              </Grid>
-              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="24,22"><StackPanel Spacing="8">
-                <Grid ColumnSpacing="16">
-                  <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                  <TextBlock x:Name="UpdateTitle" Text="Not checked yet" FontSize="22" FontWeight="SemiBold" TextWrapping="Wrap"/>
-                  <TextBlock Grid.Column="1" x:Name="UpdateOfferedVersion" FontSize="18" VerticalAlignment="Center" TextWrapping="Wrap" Visibility="Collapsed"/>
-                </Grid>
-                <TextBlock x:Name="UpdateStatus" Foreground="{StaticResource Muted}" TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
-                <Expander x:Name="UpdateChangelog" Header="What’s new" IsExpanded="False" Visibility="Collapsed" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+              <ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch"/>
+              <!-- The adapter moves this subtree into the shared panel before Loaded. -->
+              <ContentControl x:Name="ChangelogParkingHost" Visibility="Collapsed">
+                <Expander x:Name="UpdateChangelog" Header="What’s new" IsExpanded="False" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
                   <StackPanel Spacing="12">
                     <TextBlock x:Name="ChangelogStatus" Text="Check for updates to load changes." TextWrapping="Wrap" AutomationProperties.LiveSetting="Polite"/>
                     <Button x:Name="RetryChangelogButton" Content="Check again" Visibility="Collapsed"/>
@@ -262,15 +255,11 @@
                     </StackPanel>
                   </StackPanel>
                 </Expander>
-                <ProgressBar x:Name="UpdateProgress" Minimum="0" Maximum="100" Value="0" Visibility="Collapsed" AutomationProperties.Name="Windows update progress"/>
-                <StackPanel x:Name="UpdateActions" Orientation="Horizontal" Spacing="10" Visibility="Collapsed">
-                  <Button x:Name="DownloadUpdateButton" Content="Download update" Visibility="Collapsed"/>
-                  <Button x:Name="RestartUpdateButton" Content="Restart and install" Visibility="Collapsed"/>
-                </StackPanel>
-              </StackPanel></Border>
+              </ContentControl>
+              <Button x:Name="RecheckUpdateButton" Content="Check for a newer update" Visibility="Collapsed"/>
             </StackPanel>
             <StackPanel Spacing="12"><TextBlock Text="Connection" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Connect to your Navidrome server over HTTPS. Your password is stored in Windows Credential Locker, never in the profile file." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
-              <Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
+              <Border Background="{StaticResource SettingsCardBackground}" BorderBrush="{StaticResource SettingsCardBorder}" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
                 <TextBox x:Name="ConnectionName" Header="Connection name" PlaceholderText="Name"/>
                 <TextBox x:Name="ServerAddress" Header="Server address" PlaceholderText="https://" InputScope="Url"/>
                 <TextBox x:Name="Username" Header="Username"/>
@@ -279,7 +268,7 @@
                 <TextBlock x:Name="ConnectionStatus" Text="Not connected" TextWrapping="Wrap" Foreground="{StaticResource Muted}"/>
               </StackPanel></Border>
             </StackPanel>
-            <StackPanel Spacing="10"><TextBlock Text="Connection info" FontSize="21" FontWeight="SemiBold"/><Border Background="#2a332d" BorderBrush="#39453d" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="8"><TextBlock x:Name="ConnectionInfo" Text="No saved connection." TextWrapping="Wrap"/><Button x:Name="TestConnectionButton" Content="Test connection" IsEnabled="False" HorizontalAlignment="Left"/></StackPanel></Border></StackPanel>
+            <StackPanel Spacing="10"><TextBlock Text="Connection info" FontSize="21" FontWeight="SemiBold"/><Border Background="{StaticResource SettingsCardBackground}" BorderBrush="{StaticResource SettingsCardBorder}" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="8"><TextBlock x:Name="ConnectionInfo" Text="No saved connection." TextWrapping="Wrap"/><Button x:Name="TestConnectionButton" Content="Test connection" IsEnabled="False" HorizontalAlignment="Left"/></StackPanel></Border></StackPanel>
           </StackPanel>
         </StackPanel>
       </ScrollViewer>

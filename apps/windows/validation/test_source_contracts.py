@@ -60,6 +60,10 @@ class SourceContracts(unittest.TestCase):
         for control_type, name in re.findall(r'C<(\w+)>\("([^"]+)"\)', source):
             with self.subTest(name=name):
                 self.assertEqual(names.get(name), control_type)
+        adapter = (BASE / 'WindowsUpdatesPanel.cs').read_text()
+        for control_type, name in re.findall(r'\((\w+)\)root\.FindName\("([^"]+)"\)', adapter):
+            with self.subTest(name=name):
+                self.assertEqual(names.get(name), control_type)
         named = [element.get(XAML + 'Name') for element in root.iter() if element.get(XAML + 'Name')]
         self.assertEqual(len(named), len(set(named)))
 
@@ -108,9 +112,7 @@ class SourceContracts(unittest.TestCase):
         for forbidden in ['Lavender Haze', 'Taylor Swift', 'demo-listener', 'music.example.com', 'Remember position', 'Your Collection', 'Now Playing']:
             self.assertNotIn(forbidden, xaml)
         self.assertIn('Connect your music server', xaml)
-        self.assertIn('Text="Current Version:"', xaml)
-        self.assertIn('x:Name="CheckUpdatesButton"', xaml)
-        self.assertIn('x:Name="UpdateTitle" Text="Not checked yet"', xaml)
+        self.assertIn('<ContentControl x:Name="UpdatesPanelHost"', xaml)
         self.assertNotIn('Automatic updates are not enabled yet', xaml)
 
 if __name__ == '__main__':

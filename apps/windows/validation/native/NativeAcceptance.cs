@@ -186,6 +186,15 @@ public sealed partial class MainWindow
             await NativeAcceptance.WaitAsync(() => root.IsLoaded && initialized);
             root.UpdateLayout();
             NativeRequire(checks, "renderedShell", root.ActualWidth > 0 && root.ActualHeight > 0 && NativeTree(root).OfType<Button>().Count() >= 10);
+            // Native acceptance mode skips launch discovery, so the shared view must be idle.
+            NativeInvoke("SettingsNav");
+            var updatesHost = C<ContentControl>("UpdatesPanelHost");
+            await NativeAcceptance.WaitAsync(() => page == "settings" && updatesHost.XamlRoot is not null &&
+                NativeTree(updatesHost).OfType<Button>().Any(b => Equals(b.Content, "Check for updates") && b.ActualWidth > 0));
+            var updateLabels = NativeTree(updatesHost).OfType<TextBlock>().Where(t => t.ActualHeight > 0).Select(t => t.Text).ToArray();
+            NativeRequire(checks, "sharedUpdatesPanel", updateLabels.Count(t => t == $"Current Version: {typeof(MainWindow).Assembly.GetName().Version?.ToString(3)}") == 1 &&
+                updateLabels.Contains("Not checked yet") && NativeTree(updatesHost).OfType<Button>().Any(b =>
+                    Equals(b.Content, "Check for updates") && b.IsEnabled && b.ActualWidth > 0));
             category = "profile-vault";
             profiles = new ProfileStore();
             var profile = profiles.ReadProfile();

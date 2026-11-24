@@ -9,6 +9,38 @@ const panel = read('WindowsUpdatesPanel.cs');
 const main = read('MainWindow.cs');
 const controller = read('../Music.Core/WindowsUpdateController.cs');
 
+test('Music mounts the published shared Updates panel without a parallel local status card', () => {
+  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.0-alpha\.1\]"\s*\/>/);
+  const shell = read('Shell.xaml');
+  assert.match(shell, /<ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch"\s*\/>/);
+  assert.doesNotMatch(shell, /x:Name="(?:VersionText|CheckUpdatesButton|UpdateTitle|UpdateStatus|UpdateOfferedVersion|UpdateProgress|UpdateActions|DownloadUpdateButton|RestartUpdateButton)"/);
+  assert.match(panel, /using SharedUpdatesPanel = EveryoneSoftware\.WindowsCommon\.WindowsUpdatesPanel;/);
+  assert.match(panel, /new SharedUpdatesPanel\("Music", installedVersion,/);
+  assert.match(panel, /FindName\("UpdatesPanelHost"\)\)\.Content = panel\.View;/);
+});
+
+test('shared actions drive Music operations and snapshot rendering stays on the dispatcher', () => {
+  for (const [event, method] of [
+    ['CheckRequested', 'CheckAsync'], ['DownloadRequested', 'DownloadAsync'], ['RestartRequested', 'RestartAsync'],
+  ]) {
+    assert.ok(panel.includes(`panel.${event} += ${event};`));
+    assert.ok(panel.includes(`panel.${event} -= ${event};`));
+    assert.match(panel, new RegExp(`${event}\\([^\\n]+=> await controller\\.${method}\\(\\)`));
+  }
+  assert.match(panel, /dispatcher\.TryEnqueue\(\(\) =>[\s\S]*?if \(!disposed\) Render\(controller\.Status\)/);
+  assert.match(panel, /panel\.Render\(new UpdateSnapshot\(ToSharedPhase\(state\.Phase\), state\.Message, state\.Version, state\.Progress\),\s*restartAllowed: true, changelog: changelog\)/);
+  assert.match(panel, /panel\.Dispose\(\)/);
+  assert.match(panel, /controller\.Changed -= OnChanged/);
+});
+
+test('Music retains a manual recheck for a downloaded or downloading offer', () => {
+  assert.match(read('Shell.xaml'), /<Button x:Name="RecheckUpdateButton"[^>]*Content="Check for a newer update"[^>]*Visibility="Collapsed"/);
+  assert.match(panel, /recheck\.Click \+= RecheckClicked/);
+  assert.match(panel, /recheck\.Click -= RecheckClicked/);
+  assert.match(panel, /RecheckClicked[^\n]*await controller\.CheckAsync\(\)/);
+  assert.match(panel, /recheck\.Visibility = state\.Phase is WindowsUpdatePhase\.Downloading or WindowsUpdatePhase\.Ready/);
+});
+
 test('normal Windows activation starts discovery without waiting for account restoration', () => {
   const program = read('Program.cs');
   assert.match(program, /window\.Activate\(\);[\s\S]*?_ = window\.CheckForUpdatesOnStartupAsync\(\);/);
@@ -17,39 +49,22 @@ test('normal Windows activation starts discovery without waiting for account res
   assert.match(program, /SetAutoApplyOnStartup\(false\)/);
 });
 
-test('installed assembly version labels the update header without duplicate product copy', () => {
-  assert.match(main, /C<TextBlock>\("VersionText"\)\.Text = \$"Current Version: \{Assembly\.GetExecutingAssembly\(\)\.GetName\(\)\.Version\?\.ToString\(3\)\}"/);
+test('installed assembly version feeds the shared panel', () => {
+  assert.match(main, /var installedVersion = Assembly\.GetExecutingAssembly\(\)\.GetName\(\)\.Version!\.ToString\(3\);/);
+  assert.match(main, /new WindowsUpdatesPanel\(root, DispatcherQueue, installedVersion,/);
 });
 
-test('up-to-date title is rendered only for a completed current check; other phases stay distinct', () => {
-  assert.match(panel, /title = \(TextBlock\)root.FindName\("UpdateTitle"\)/);
-  assert.match(panel, /title.Text = state.Phase switch/);
-  for (const [phase, title] of [
-    ['Idle', 'Not checked yet'], ['Checking', 'Checking for updates'],
-    ['Current', 'Up to date'], ['Available', 'Update available'],
-    ['Downloading', 'Downloading update'], ['Ready', 'Ready to install'],
-    ['Restarting', 'Restarting'], ['Error', 'Update failed'],
-    ['NotInstalled', 'Updates unavailable'], ['StartupDeferred', 'Automatic check deferred'],
-  ]) assert.ok(panel.includes(`WindowsUpdatePhase.${phase} => "${title}"`), `${phase} needs its own truthful title`);
-  assert.match(panel, /status.Text = state.Phase == WindowsUpdatePhase.Downloading \? .*state.Progress.* : state.Message/);
+test('every Music update phase maps to its distinct shared phase', () => {
+  const phases = controller.match(/enum WindowsUpdatePhase \{([^}]+)\}/)[1].split(',').map(s => s.trim());
+  for (const phase of phases) assert.ok(panel.includes(`WindowsUpdatePhase.${phase} => UpdatePhase.${phase},`), `mapping for ${phase}`);
+  assert.doesNotMatch(panel, /\(UpdatePhase\)\s*\(?\s*(?:phase|state\.Phase)/);
   assert.doesNotMatch(controller, /Windows preview|preview updates|preview releases/);
 });
 
-test('current card collapses the entire action row, preserving explicit download and restart controls', () => {
-  assert.match(panel, /actions = \(StackPanel\)root.FindName\("UpdateActions"\)/);
-  assert.match(panel, /actions.Visibility = state.Phase is WindowsUpdatePhase.Available or WindowsUpdatePhase.Ready \? Visibility.Visible : Visibility.Collapsed/);
-  assert.match(panel, /check.Content = state.Phase == WindowsUpdatePhase.Checking \? "Checking…" : "Check for updates"/);
-  assert.match(panel, /download.Visibility = state.Phase == WindowsUpdatePhase.Available/);
-  assert.match(panel, /restart.Visibility = state.Phase == WindowsUpdatePhase.Ready/);
-  assert.match(panel, /progress.Visibility = busy \|\| state.Phase == WindowsUpdatePhase.Ready/);
-  assert.match(panel, /if \(!disposed\) Render\(controller.Status\)/);
-  assert.match(panel, /await controller.CheckAsync\(\)/);
-  assert.match(panel, /await controller.DownloadAsync\(\)/);
-  assert.match(panel, /await controller.RestartAsync\(\)/);
+test('shared card receives the Music settings palette without probing native parents', () => {
+  assert.match(panel, /cardBackground: .*root.Resources\["SettingsCardBackground"\]/);
+  assert.match(panel, /cardBorder: .*root.Resources\["SettingsCardBorder"\]/);
+  assert.match(read('Shell.xaml'), /x:Key="SettingsCardBackground" Color="#2a332d"/);
+  assert.match(read('Shell.xaml'), /x:Key="SettingsCardBorder" Color="#39453d"/);
   assert.doesNotMatch(panel, /\.Parent\b/);
-  assert.match(main, /new WindowsUpdatesPanel\(root, DispatcherQueue, \(\) =>\s*TrySavePlayback\(\)/);
-});
-
-test('the manual check button is disabled only during discovery', () => {
-  assert.match(panel, /check\.IsEnabled = state\.Phase != WindowsUpdatePhase\.Checking;/);
 });

@@ -8,7 +8,9 @@ const backend = read('../Music.App/WindowsUpdateBackend.cs');
 const client = read('../Music.App/WindowsChangelogClient.cs');
 test('Windows update offer keeps collapsed notes and nested commit details', () => {
   assert.match(shell, /<Expander[^>]*x:Name="UpdateChangelog"[^>]*IsExpanded="False"/);
-  assert.match(shell, /x:Name="UpdateOfferedVersion"/);
+  assert.match(panel, /if \(shownOffer != state.Version\) changelog.IsExpanded = false;/);
+  assert.match(panel, /FindName\("UpdateChangelog"\)[\s\S]+FindName\("RetryChangelogButton"\)[\s\S]+FindName\("ChangelogParkingHost"\)\)\.Content = null;/);
+  assert.match(panel, /panel.Render\([\s\S]*?changelog: changelog\)/);
   assert.match(shell, /x:Name="RetryChangelogButton"/);
   assert.match(panel, /new Expander\s*\{[^}]*Header = "Commit details"/s);
   assert.doesNotMatch(panel, /ReleaseNotesMarkdown|ReleaseNotesHtml/);
@@ -18,6 +20,8 @@ test('notes are delivered with check status; disclosure cannot start network wor
   assert.match(panel, /new WindowsChangelogController\(\)/);
   assert.doesNotMatch(panel, /WindowsChangelogClient|ChangelogExpanding|notes\.LoadAsync|Assembly.GetExecutingAssembly/);
   assert.match(panel, /RetryNotesClicked[^\n]*await controller.CheckAsync\(\)/);
+  assert.match(panel, /retryNotes.IsEnabled = state.Phase == WindowsUpdatePhase.Available/);
+  assert.match(panel, /retryNotes.Visibility = notes.Phase == WindowsChangelogPhase.Unavailable/);
   assert.match(panel, /notes\.Dispose\(\)/);
   assert.match(backend, /var target = update\.TargetFullRelease;/);
   assert.match(backend, /var changelog = source\.GetChangelog\(CurrentVersion, target\);\s*offered = update;\s*Changelog = changelog;/);

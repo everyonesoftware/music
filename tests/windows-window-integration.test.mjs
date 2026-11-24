@@ -8,7 +8,7 @@ const source = readFileSync(new URL('MainWindow.cs', app), 'utf8');
 const shell = readFileSync(new URL('Shell.xaml', app), 'utf8');
 
 test('window binds explicit update actions and requires successful session persistence before restart', () => {
-  assert.match(source, /new WindowsUpdatesPanel\(root, DispatcherQueue,/);
+  assert.match(source, /new WindowsUpdatesPanel\(root, DispatcherQueue, installedVersion,/);
   assert.match(source, /TrySavePlayback\(\)\s*\? Task.CompletedTask\s*: Task.FromException/);
   const shutdown = source.split('private void Shutdown()')[1];
   assert.match(shutdown, /updatesPanel\.Dispose\(\)/);

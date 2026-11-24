@@ -69,7 +69,8 @@ public sealed partial class MainWindow : Window
         AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "Music.ico"));
         C<Image>("AppIcon").Source = new Microsoft.UI.Xaml.Media.Imaging.BitmapImage(
             new Uri(Path.Combine(AppContext.BaseDirectory, "Assets", "Music.png")));
-        updatesPanel = new WindowsUpdatesPanel(root, DispatcherQueue, () =>
+        var installedVersion = Assembly.GetExecutingAssembly().GetName().Version!.ToString(3);
+        updatesPanel = new WindowsUpdatesPanel(root, DispatcherQueue, installedVersion, () =>
             TrySavePlayback()
                 ? Task.CompletedTask
                 : Task.FromException(new IOException("Session could not be saved.")));
@@ -149,7 +150,7 @@ public sealed partial class MainWindow : Window
         timer.Tick += (_, _) => Tick();
         root.Loaded += async (_, _) => { if (!initialized) { initialized = true; await InitializeAsync(); } };
         Closed += (_, _) => Shutdown();
-        C<TextBlock>("VersionText").Text = $"Current Version: {Assembly.GetExecutingAssembly().GetName().Version?.ToString(3)}";
+
         SetNavigation();
         RenderQueue();
         taskbarPlayback = TaskbarPlayback.Attach(

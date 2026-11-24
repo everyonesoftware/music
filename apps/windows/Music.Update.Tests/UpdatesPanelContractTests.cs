@@ -5,65 +5,57 @@ namespace Music.Update.Tests;
 
 public sealed class UpdatesPanelContractTests
 {
+    private static Dictionary<string, XElement> ReadNamedControls() =>
+        XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml")).Descendants()
+            .Where(e => e.Attribute(XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml")) is not null)
+            .ToDictionary(e => e.Attribute(XName.Get("Name", "http://schemas.microsoft.com/winfx/2006/xaml"))!.Value);
+
     [Fact]
-    public void Matched_card_places_version_and_check_above_a_compact_status_card()
+    public void Shared_host_preserves_the_stretched_vertical_settings_layout()
     {
-        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml"));
-        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
-        var named = document.Descendants().Where(e => e.Attribute(x + "Name") is not null).ToDictionary(e => e.Attribute(x + "Name")!.Value);
-        var version = named["VersionText"];
-        var header = version.Parent!;
-        Assert.Equal("Grid", header.Name.LocalName);
-        Assert.Equal(header, named["CheckUpdatesButton"].Parent);
-        Assert.Equal("1", named["CheckUpdatesButton"].Attribute("Grid.Column")?.Value);
-        Assert.Equal("Right", named["CheckUpdatesButton"].Attribute("HorizontalAlignment")?.Value);
-        var card = header.ElementsAfterSelf().Single();
-        Assert.Equal("Border", card.Name.LocalName);
-        Assert.Equal("24,22", card.Attribute("Padding")?.Value);
-        Assert.Null(card.Attribute("MinHeight"));
-        Assert.Null(card.Attribute("Height"));
-        Assert.Contains(named["UpdateStatus"], card.Descendants());
-        Assert.Contains(named["UpdateTitle"], card.Descendants());
-        Assert.Equal("22", named["UpdateTitle"].Attribute("FontSize")?.Value);
-        Assert.DoesNotContain(named["CheckUpdatesButton"], card.Descendants());
-        // One collapsed actions container avoids reserving a StackPanel spacing slot when current.
-        Assert.Equal("Collapsed", named["UpdateActions"].Attribute("Visibility")?.Value);
-        var section = header.Parent!;
-        Assert.DoesNotContain(section.Descendants(), e => (e.Attribute("Text")?.Value ?? "").Contains("preview", StringComparison.OrdinalIgnoreCase));
-        Assert.DoesNotContain(section.Descendants(), e => (e.Attribute("Text")?.Value ?? "").Contains("Automatic updates"));
+        var named = ReadNamedControls();
+        var host = named["UpdatesPanelHost"];
+        var settings = named["SettingsPanel"];
+        var scroll = named["MainScroll"];
+        Assert.Equal("ContentControl", host.Name.LocalName);
+        Assert.Equal("Stretch", host.Attribute("HorizontalContentAlignment")?.Value);
+        Assert.Empty(host.Elements());
+        Assert.Equal(settings, host.Parent!.Parent);
+        Assert.Equal("720", settings.Attribute("MaxWidth")?.Value);
+        Assert.Equal("Stretch", settings.Attribute("HorizontalAlignment")?.Value);
+        Assert.Contains(scroll, settings.Ancestors());
+        Assert.Equal("Disabled", scroll.Attribute("HorizontalScrollMode")?.Value);
+        Assert.Equal("Disabled", scroll.Attribute("HorizontalScrollBarVisibility")?.Value);
+        Assert.Equal("Auto", scroll.Attribute("VerticalScrollBarVisibility")?.Value);
+        Assert.All(new[] { "VersionText", "UpdateTitle", "UpdateStatus", "UpdateOfferedVersion", "UpdateProgress",
+            "CheckUpdatesButton", "DownloadUpdateButton", "RestartUpdateButton", "UpdateActions" }, name => Assert.DoesNotContain(name, named.Keys));
     }
 
     [Fact]
-    public void Changelog_is_on_demand_inside_the_offer_with_named_native_controls()
+    public void Local_changelog_starts_closed_and_preserves_accessible_retry_content()
     {
-        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml"));
-        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
-        var named = document.Descendants().Where(e => e.Attribute(x + "Name") is not null).ToDictionary(e => e.Attribute(x + "Name")!.Value);
+        var named = ReadNamedControls();
         var notes = named["UpdateChangelog"];
+        var parkingHost = named["ChangelogParkingHost"];
+        Assert.Equal("ContentControl", parkingHost.Name.LocalName);
+        Assert.Equal("Collapsed", parkingHost.Attribute("Visibility")?.Value);
+        Assert.Equal(notes, Assert.Single(parkingHost.Elements()));
         Assert.Equal("Expander", notes.Name.LocalName);
         Assert.Equal("False", notes.Attribute("IsExpanded")?.Value);
-        Assert.Equal("Collapsed", notes.Attribute("Visibility")?.Value);
         Assert.Equal("What’s new", notes.Attribute("Header")?.Value);
         Assert.Contains(named["ChangelogContent"], notes.Descendants());
         Assert.Contains(named["RetryChangelogButton"], notes.Descendants());
-        Assert.Equal(named["UpdateTitle"].Parent, named["UpdateOfferedVersion"].Parent);
-        Assert.Equal("1", named["UpdateOfferedVersion"].Attribute("Grid.Column")?.Value);
+        Assert.Equal("Polite", named["ChangelogStatus"].Attribute("AutomationProperties.LiveSetting")?.Value);
+        Assert.Equal("Collapsed", named["RetryChangelogButton"].Attribute("Visibility")?.Value);
     }
 
     [Fact]
-    public void Runtime_xaml_exposes_explicit_actions_progress_and_accessible_status()
+    public void Music_specific_recheck_starts_hidden_beside_the_shared_panel()
     {
-        var document = XDocument.Load(Path.Combine(AppContext.BaseDirectory, "Shell.xaml"));
-        XNamespace x = "http://schemas.microsoft.com/winfx/2006/xaml";
-        var named = document.Descendants().Where(e => e.Attribute(x + "Name") is not null).ToDictionary(e => e.Attribute(x + "Name")!.Value);
-        foreach (string name in new[] { "CheckUpdatesButton", "DownloadUpdateButton", "RestartUpdateButton" })
-        {
-            Assert.True(named.ContainsKey(name), $"Missing explicit action {name}");
-            Assert.Equal("Button", named[name].Name.LocalName);
-        }
-        Assert.Equal("ProgressBar", named["UpdateProgress"].Name.LocalName);
-        Assert.Equal("Polite", named["UpdateStatus"].Attribute("AutomationProperties.LiveSetting")?.Value);
-        Assert.Equal("Collapsed", named["DownloadUpdateButton"].Attribute("Visibility")?.Value);
-        Assert.Equal("Collapsed", named["RestartUpdateButton"].Attribute("Visibility")?.Value);
+        var named = ReadNamedControls();
+        var recheck = named["RecheckUpdateButton"];
+        Assert.Equal("Button", recheck.Name.LocalName);
+        Assert.Equal(named["UpdatesPanelHost"].Parent, recheck.Parent);
+        Assert.Equal("Collapsed", recheck.Attribute("Visibility")?.Value);
     }
 }
