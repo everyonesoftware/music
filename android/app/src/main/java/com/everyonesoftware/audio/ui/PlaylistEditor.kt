@@ -21,7 +21,8 @@ import com.everyonesoftware.audio.data.NavidromeClient
 
 @Composable
 internal fun NewPlaylistButton(state: AudioUiState, actions: AudioUiActions) {
-    FilledTonalButton(actions::newPlaylist, Modifier.heightIn(min = 48.dp).testTag("new-playlist"), enabled = state.canEditPlaylists) {
+    FilledTonalButton(actions::newPlaylist, Modifier.heightIn(min = 48.dp).testTag("new-playlist"),
+        enabled = state.canEditPlaylists && !state.playlistMutationBusy) {
         Icon(Icons.Default.Add, null)
         Spacer(Modifier.width(6.dp))
         Text("New playlist")

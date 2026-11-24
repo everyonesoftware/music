@@ -6,7 +6,7 @@ using System.Text;
 
 namespace Music.Core;
 
-public sealed class NavidromeClient : IDisposable
+public sealed partial class NavidromeClient : IDisposable
 {
     private readonly ConnectionProfile connection;
     private readonly string password;
@@ -122,7 +122,8 @@ public sealed class NavidromeClient : IDisposable
             (!value.TryGetProperty("readonly", out var readOnly) || readOnly.ValueKind == JsonValueKind.False) &&
             (!value.TryGetProperty("readOnly", out var camelReadOnly) || camelReadOnly.ValueKind == JsonValueKind.False);
         return new Playlist(Required(value, "id"), Required(value, "name"), Text(value, "coverArt"), Number(value, "songCount"))
-            { CanAppend = writable };
+            { CanAppend = writable, CanDelete = writable && !string.IsNullOrWhiteSpace(owner) &&
+                SameAsciiUser(owner, connection.Username) };
     }
 
     public async Task<PlaylistContents> GetPlaylistContentsAsync(string id, CancellationToken cancellationToken = default)
@@ -390,11 +391,11 @@ public sealed class NavidromeClient : IDisposable
         return root;
     }
 
-    private static JsonElement ParseResponse(byte[] bytes, bool strict = false)
+    private static JsonElement ParseResponse(byte[] bytes, bool strict = false, bool uniqueThroughout = false)
     {
         try
         {
-            using var document = JsonDocument.Parse(bytes);
+            using var document = JsonDocument.Parse(bytes, new JsonDocumentOptions { AllowDuplicateProperties = !uniqueThroughout });
             var root = Object(document.RootElement, "subsonic-response");
             if (Text(root, "status") is null || (strict && (HasDuplicateProperties(document.RootElement) || HasDuplicateProperties(root))))
                 throw InvalidResponse();

@@ -18,7 +18,8 @@ data class Song(
     val userRating: Int = 0,
 )
 @Serializable
-data class Playlist(val id: String, val name: String, val songCount: Int = 0, val coverArtId: String? = null, val validUntilMs: Long? = null)
+data class Playlist(val id: String, val name: String, val songCount: Int = 0, val coverArtId: String? = null,
+    val validUntilMs: Long? = null, @kotlinx.serialization.Transient val canDelete: Boolean = false)
 data class PlaylistContents(val songs: List<Song>, val validUntilMs: Long? = null)
 @Serializable
 data class Album(val id: String, val name: String, val artist: String = "Unknown artist", val coverArtId: String? = null, val songCount: Int = 0, val year: Int = 0)

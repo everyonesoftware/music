@@ -22,6 +22,81 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 class NavidromeClientTest {
+    @Test fun contradictoryDeleteAcknowledgementAndReadbackDoNotConfirmDeletion() = runBlocking {
+        MockWebServer().use { server ->
+            val playlist = """"playlist":{"id":"target","name":"Target"}"""
+            server.enqueue(ok(",$playlist"))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"failed","error":{"code":70},$playlist}}"""))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"failed","error":{"code":50},$playlist}}"""))
+            server.enqueue(ok())
+            val client = client(server)
+            // Capture both interpretations before asserting so one regression cannot mask the other.
+            val acknowledgement = runCatching { client.deletePlaylist("target") }
+            val readback = runCatching { client.deletionTarget("target") }
+            val denial = runCatching { client.deletePlaylist("target") }
+            assertEquals(listOf(PlaylistDeleteUnconfirmed::class, NavidromeException::class, PlaylistDeleteUnconfirmed::class),
+                listOf(acknowledgement, readback, denial).map { it.exceptionOrNull()?.let { error -> error::class } })
+            assertEquals(listOf("POST", "GET", "POST"), List(3) { server.takeRequest(2, TimeUnit.SECONDS)?.method })
+            assertEquals(3, server.requestCount)
+        }
+    }
+
+    @Test fun deleteUsesExactFormIdAndDoesNotReplayAnAmbiguousResponse() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(503).setHeader("Retry-After", "0"))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"failed","error":{"code":70}}}"""))
+            val client = client(server)
+            val id = "p +&/雪"
+            rejects<PlaylistDeleteUnconfirmed> { client.deletePlaylist(id) }
+            assertNull(client.deletionTarget(id))
+            val post = server.takeRequest(2, TimeUnit.SECONDS)!!
+            assertEquals("POST", post.method)
+            assertEquals("/music/rest/deletePlaylist.view", post.requestUrl!!.encodedPath)
+            assertNull(post.requestUrl!!.queryParameter("id"))
+            assertNotNull(post.requestUrl!!.queryParameter("t"))
+            assertEquals("id=p%20%2B%26%2F%E9%9B%AA", post.body.readUtf8())
+            val get = server.takeRequest(2, TimeUnit.SECONDS)!!
+            assertEquals("GET", get.method)
+            assertEquals(id, get.requestUrl!!.queryParameter("id"))
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun deleteDoesNotFollowRedirectAndDistinguishesDenial() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", server.url("/elsewhere")))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"failed","error":{"code":50,"message":"private URL"}}}"""))
+            val client = client(server)
+            rejects<PlaylistDeleteUnconfirmed> { client.deletePlaylist("target") }
+            val denial = rejects<NavidromeException> { client.deletePlaylist("target") }
+            assertTrue(denial.writeDenied)
+            assertFalse(denial.message!!.contains("private URL"))
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun malformedReadbackCannotConfirmDeletionOrEligibility() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlist\":{\"id\":\"other\",\"name\":\"Target\"}"))
+            server.enqueue(ok(""","playlist":{"id":"target","name":"Target","owner":"other","ow\u006eer":"a+b &雪"}"""))
+            server.enqueue(MockResponse().setResponseCode(404))
+            server.enqueue(MockResponse().setBody("""{"subsonic-response":{"status":"failed","error":{"code":50,"code":70}}}"""))
+            server.enqueue(ok(""","playlist":{"id":"target","name":"Target","owner":"a+b &雪","readonly":"false"}"""))
+            val client = client(server)
+            repeat(4) { rejects<NavidromeException> { client.deletionTarget("target") } }
+            assertFalse(client.deletionTarget("target")!!.canDelete)
+            assertEquals(5, server.requestCount)
+        }
+    }
+
+    @Test fun playlistDeletionOffersOnlyExplicitOwnedWritablePlaylistsIncludingEmpty() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(ok(",\"playlists\":{\"playlist\":[" +
+                """{"id":"mine","name":"Mine","owner":"A+B &雪","songCount":0},{"id":"shared","name":"Shared","owner":"another"},{"id":"smart","name":"Smart","owner":"A+B &雪","readOnly":true},{"id":"unknown","name":"Legacy"}]}"""))
+            assertEquals(listOf("mine"), client(server).playlists().filter { it.canDelete }.map { it.id })
+        }
+    }
+
     @Test fun playlistWritesUseOneOrderedFormPostAndReturnTheCreatedIdentity() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(ok(",\"playlist\":{\"id\":\"empty-id\",\"name\":\"Empty & 雪\",\"songCount\":0}"))

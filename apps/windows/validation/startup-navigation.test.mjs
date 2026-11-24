@@ -25,6 +25,8 @@ test('delayed real startup/navigation methods preserve user destination and Back
     writeFileSync(join(dir, 'StartupChecks.csproj'), `<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net10.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><NoWarn>CS0649;CS0414</NoWarn></PropertyGroup><ItemGroup>${linked}</ItemGroup></Project>`);
     const revisionField = navigation.split('\n').filter(line => /^\s*private long navigationRevision\b/.test(line)).join('\n');
     const playlistFields = playlistSource.split('\n').filter(line => /^\s*private .+\b(?:playlistCatalogRevision;|playlistEdits =|unverifiedPlaylistIds =)/.test(line)).join('\n');
+    const deletionFields = read('MainWindow.PlaylistDeletion.cs').split('\n')
+      .filter(line => /^\s*private .+\b(?:deletedPlaylistIds =|pendingPlaylistDeletions =|playlistDeletionActive;)/.test(line)).join('\n');
     writeFileSync(join(dir, 'Program.cs'), `
 using Music.App;
 await MainWindow.Run();
@@ -32,6 +34,7 @@ class MainWindow
 {
 ${revisionField}
 ${playlistFields}
+${deletionFields}
 ${method(playlistSource, '    private IReadOnlyList<Playlist> MergePlaylistCatalog(', '\n}')}
 ${method(playlistSource, '    private void InvalidatePlaylistDestination(', '    private void RenderUnverifiedPlaylistAction(')}
 ${method(main, '    private async Task InitializeAsync()', '    private static async Task<(IReadOnlyList<Album>')}
@@ -146,6 +149,18 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
                 !window.unverifiedPlaylistIds.Contains(playlist.Id), "successful exact read restores only authoritative ordered songs");
         }
         {
+            var window = new MainWindow(); await window.InitializeAsync();
+            var playlist = new Playlist("pending-delete", "Not in the current catalog");
+            int reads = 0;
+            window.client!.PlaylistSongs = (_, _) => { reads++; throw new IOException(); };
+            window.client.PlaylistDetails = (_, _) => { reads++; throw new IOException(); };
+            window.pendingPlaylistDeletions[playlist.Id] = playlist;
+            window.InvalidatePlaylistDestination(playlist.Id);
+            await window.OpenCollectionAsync(playlist);
+            Check(window.detailError && !window.detailLoading && window.detailSongs.Count == 0 && reads == 0,
+                "reopening pending deletion never consumes its explicit check or restores stale songs");
+        }
+        {
             var window = new MainWindow { delay = "catalog" };
             var start = window.InitializeAsync();
             Check(window.catalogRead, "catalog request is held before the edit");
@@ -156,6 +171,18 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
             Check(window.Rendered.Contains("Edited playlist") && window.Rendered.Contains("New playlist") &&
                 window.Rendered.Contains("Other playlist") && !window.Rendered.Contains("Loaded playlist"),
                 "late catalog renders both confirmed edits and unaffected server playlists");
+        }
+        {
+            var window = new MainWindow { delay = "catalog" };
+            var start = window.InitializeAsync();
+            await window.NavigateAsync("playlists");
+            window.deletedPlaylistIds.Add("loaded");
+            window.playlistCatalogRevision++;
+            window.catalog.SetResult(); await start;
+            Check(window.Rendered.Contains("Other playlist") && !window.Rendered.Contains("Loaded playlist"),
+                "late catalog cannot resurrect a deleted playlist or hide its sibling");
+            await window.OpenCollectionAsync(new Playlist("loaded", "Loaded playlist"));
+            Check(window.page == "playlists", "stale card cannot reopen deleted detail");
         }
         {
             var window = new MainWindow(); await window.InitializeAsync();

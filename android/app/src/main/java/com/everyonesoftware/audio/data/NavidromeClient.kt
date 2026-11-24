@@ -15,10 +15,11 @@ import kotlin.coroutines.resumeWithException
 
 /** No cause: transport exceptions often contain authenticated URLs. */
 class NavidromeException(message: String, internal val retryableTransport: Boolean = false,
-    internal val writeDenied: Boolean = false) : IOException(message)
+    internal val writeDenied: Boolean = false, internal val itemNotFound: Boolean = false) : IOException(message)
 
 internal class PlaylistWriteUnconfirmed : IOException(
     "The server didn’t confirm the change. Check your playlists before trying again to avoid duplicates.")
+internal class PlaylistDeleteUnconfirmed : IOException("The server didn’t confirm the deletion.")
 
 class NavidromeClient(
     private val credentials: Credentials,
@@ -83,7 +84,7 @@ class NavidromeClient(
         MusicLibrary(it.required("id"), it.required("name"))
     }
     suspend fun playlists(): List<Playlist> = api("getPlaylists").obj("playlists").items("playlist").map {
-        Playlist(it.required("id"), it.required("name"), it.number("songCount"), it.text("coverArt"), it.validUntil())
+        Playlist(it.required("id"), it.required("name"), it.number("songCount"), it.text("coverArt"), it.validUntil(), it.canDeletePlaylist())
     }
     suspend fun searchSongs(query: String): List<Song> = api("search3", "query" to query,
         "artistCount" to "0", "albumCount" to "0", "songCount" to "100")
@@ -145,23 +146,47 @@ class NavidromeClient(
     suspend fun playlist(id: String): List<Song> = playlistContents(id).songs
     internal suspend fun writablePlaylists(): List<Playlist> {
         val ids = hashSetOf<String>()
-        val username = credentials.connection.username
         return api("getPlaylists").obj("playlists").items("playlist").mapNotNull {
             val id = it.requiredString("id")
             if (!ids.add(id)) throw invalidResponse()
-            val readOnly = listOfNotNull(it["readonly"], it["readOnly"]).any { flag -> flag != JsonPrimitive(false) }
-            val ownerMatches = it["owner"] == null || (it["owner"] as? JsonPrimitive)?.let { owner ->
-                // Navidrome authenticates usernames with SQLite NOCASE (ASCII only).
-                owner.isString && owner.content.length == username.length && username.indices.all { index ->
-                    asciiLowercase(owner.content[index]) == asciiLowercase(username[index])
-                }
-            } == true
-            if (readOnly || !ownerMatches) null
+            if (it.playlistReadOnly() || !(it["owner"] == null || it.playlistOwnerMatches())) null
             else Playlist(id, it.requiredString("name"), it.number("songCount"))
         }
     }
 
+    private fun JsonObject.playlistReadOnly() = listOfNotNull(this["readonly"], this["readOnly"]).any { it != JsonPrimitive(false) }
+    private fun JsonObject.playlistOwnerMatches(): Boolean {
+        val username = credentials.connection.username
+        val owner = this["owner"] as? JsonPrimitive ?: return false
+        // Navidrome authenticates usernames with SQLite NOCASE (ASCII only).
+        return owner.isString && owner.content.length == username.length && username.indices.all { index ->
+            asciiLowercase(owner.content[index]) == asciiLowercase(username[index])
+        }
+    }
+    private fun JsonObject.canDeletePlaylist() = !playlistReadOnly() && playlistOwnerMatches() &&
+        (this["id"] as? JsonPrimitive)?.isString == true && (this["name"] as? JsonPrimitive)?.isString == true
+
     private fun asciiLowercase(char: Char): Char = if (char in 'A'..'Z') char.lowercaseChar() else char
+
+    internal suspend fun deletionTarget(id: String): Playlist? = try {
+        val result = readWithRecovery { apiOnce("getPlaylist", arrayOf("id" to id), strict = true) }.obj("playlist")
+        if (result.requiredString("id") != id) throw invalidResponse()
+        Playlist(id, result.requiredString("name"), result.number("songCount"), result.text("coverArt"),
+            result.validUntil(), result.canDeletePlaylist())
+    } catch (error: NavidromeException) {
+        if (error.itemNotFound) null else throw error
+    }
+
+    internal suspend fun deletePlaylist(id: String) {
+        require(id.isNotBlank() && id.length <= 1024) { "Invalid playlist. Refresh playlists and retry." }
+        try {
+            val result = apiOnce("deletePlaylist", emptyArray(), oneShot(FormBody.Builder().add("id", id).build()), strict = true)
+            if ("playlist" in result) throw invalidResponse()
+        } catch (error: NavidromeException) {
+            if (error.writeDenied) throw error
+            throw PlaylistDeleteUnconfirmed()
+        }
+    }
 
     internal suspend fun createPlaylist(name: String, songIds: List<String>): Playlist {
         val title = name.trim()
@@ -187,19 +212,20 @@ class NavidromeClient(
             songIds.forEach { add(songField, it) }
         }.build()
         require(form.contentLength() <= 1024L * 1024) { "This selection is too large to save at once." }
-        // OkHttp can follow certain HTTP responses even with connection retries disabled.
-        val once = object : RequestBody() {
-            override fun isOneShot() = true
-            override fun contentType() = form.contentType()
-            override fun contentLength() = form.contentLength()
-            override fun writeTo(sink: okio.BufferedSink) = form.writeTo(sink)
-        }
-        return try { decode(apiOnce(method, emptyArray(), once)) }
+        return try { decode(apiOnce(method, emptyArray(), oneShot(form))) }
         catch (error: NavidromeException) {
             if (error.writeDenied) throw error
             throw PlaylistWriteUnconfirmed()
         }
     }
+    // OkHttp can follow certain HTTP responses even with connection retries disabled.
+    private fun oneShot(form: FormBody) = object : RequestBody() {
+        override fun isOneShot() = true
+        override fun contentType() = form.contentType()
+        override fun contentLength() = form.contentLength()
+        override fun writeTo(sink: okio.BufferedSink) = form.writeTo(sink)
+    }
+
     suspend fun playlistContents(id: String): PlaylistContents {
         val result = api("getPlaylist", "id" to id).obj("playlist")
         return PlaylistContents(playlistSongs(result), result.validUntil())
@@ -315,7 +341,8 @@ class NavidromeClient(
     private suspend fun api(name: String, vararg parameters: Pair<String, String>): JsonObject =
         readWithRecovery(name in READ_APIS) { apiOnce(name, parameters) }
 
-    private suspend fun apiOnce(name: String, parameters: Array<out Pair<String, String>>, body: RequestBody? = null): JsonObject {
+    private suspend fun apiOnce(name: String, parameters: Array<out Pair<String, String>>, body: RequestBody? = null,
+        strict: Boolean = false): JsonObject {
         val builder = endpoint(name)
         parameters.forEach { (key, value) -> builder.addQueryParameter(key, value) }
         val request = Request.Builder().url(authenticated(builder).build()).header("Accept", "application/json")
@@ -329,13 +356,13 @@ class NavidromeClient(
                     if (continuation.isActive) continuation.resumeWithException(transportFailure(e))
                 }
                 override fun onResponse(call: Call, response: Response) {
-                    val result = runCatching { response.use { parse(it) } }
+                    val result = runCatching { response.use { parse(it, strict) } }
                     if (continuation.isActive) continuation.resumeWith(result)
                 }
             })
         }
     }
-    private fun parse(response: Response): JsonObject {
+    private fun parse(response: Response, strict: Boolean): JsonObject {
         if (!response.isSuccessful) throw NavidromeException(when (response.code) {
             401, 403 -> "Authentication failed. Check your username and password."
             in 300..399 -> "The server redirected this request. Check its configured HTTPS address."
@@ -346,21 +373,58 @@ class NavidromeClient(
             if (body.contentLength() > MAX_RESPONSE) throw invalidResponse()
             val source = body.source()
             if (source.request(MAX_RESPONSE + 1)) throw invalidResponse()
-            val root = json.parseToJsonElement(source.readUtf8()).jsonObject["subsonic-response"]?.jsonObject ?: throw invalidResponse()
-            if (root.text("status") != "ok" || root["error"] != null) {
-                val code = root["error"]?.jsonObject?.number("code")
+            val payload = source.readUtf8()
+            if (strict) validateUniqueJsonKeys(payload)
+            val root = json.parseToJsonElement(payload).jsonObject["subsonic-response"]?.jsonObject ?: throw invalidResponse()
+            val status = if (strict) root.requiredString("status") else root.text("status")
+            if (status != "ok" || root["error"] != null) {
+                // A playlist payload contradicts a failure response, including not-found and denial.
+                if (strict && "playlist" in root) throw invalidResponse()
+                val code = if (strict) (root["error"]?.jsonObject?.get("code") as? JsonPrimitive)
+                    ?.takeUnless { it.isString }?.intOrNull else root["error"]?.jsonObject?.number("code")
                 throw NavidromeException(when (code) {
                     40, 41, 42, 43, 44 -> "Authentication failed. Check your username and password."
                     50 -> "Your account cannot access this music. Check server permissions."
                     70 -> "This item is no longer available. Refresh the playlist."
                     else -> "The server rejected this request. Check server compatibility and retry."
-                }, writeDenied = root.text("status") == "failed" && code in setOf(40, 41, 42, 43, 44, 50))
+                }, writeDenied = status == "failed" && (code in setOf(40, 41, 42, 43, 44, 50) ||
+                    strict && code in setOf(10, 20, 30)), itemNotFound = status == "failed" && code == 70)
             }
             return root
         } catch (safe: NavidromeException) { throw safe }
         catch (transport: IOException) { throw transportFailure(transport) }
         catch (_: Exception) { throw invalidResponse() }
     }
+    /** JsonObject is last-key-wins. Reject conflicting keys before interpreting destructive responses. */
+    private fun validateUniqueJsonKeys(payload: String) {
+        val stack = mutableListOf<MutableSet<String>?>()
+        var i = 0
+        while (i < payload.length) {
+            when (val token = payload[i++]) {
+                '{', '[' -> {
+                    if (stack.size >= 64) throw invalidResponse()
+                    stack.add(if (token == '{') mutableSetOf() else null)
+                }
+                '}', ']' -> if (stack.isNotEmpty()) stack.removeAt(stack.lastIndex)
+                '"' -> {
+                    val start = i - 1
+                    while (i < payload.length) {
+                        when (payload[i++]) {
+                            '\\' -> i++
+                            '"' -> break
+                        }
+                    }
+                    var next = i
+                    while (next < payload.length && payload[next].isWhitespace()) next++
+                    if (next < payload.length && payload[next] == ':') {
+                        val key = json.decodeFromString<String>(payload.substring(start, i))
+                        if (stack.lastOrNull()?.add(key) != true) throw invalidResponse()
+                    }
+                }
+            }
+        }
+    }
+
     private fun JsonObject.obj(key: String): JsonObject = this[key]?.let {
         it as? JsonObject ?: throw invalidResponse()
     } ?: throw invalidResponse()

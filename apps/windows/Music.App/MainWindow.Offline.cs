@@ -235,7 +235,7 @@ public sealed partial class MainWindow
         if (offlineEmpty is not null) offlineEmpty.Visibility = found.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
     }
     private Button CreateDeviceActions(string title, double size, Func<bool> current,
-        Func<IReadOnlyDictionary<string, CachedSong>, bool> requested, Func<Task> save, Func<Task> remove)
+        Func<IReadOnlyDictionary<string, CachedSong>, bool> requested, Func<Task> save, Func<Task> remove, Func<bool>? showAction = null)
     {
         var button = new Button { Content = new SymbolIcon(Symbol.More), Width = size, Height = size,
             MinWidth = 0, MinHeight = 0, Padding = new Thickness(0), BorderThickness = new Thickness(0),
@@ -253,6 +253,7 @@ public sealed partial class MainWindow
         {
             removing = requested(CacheSnapshot());
             action.Text = removing ? "Remove from Device" : "Save to Device";
+            action.Visibility = showAction?.Invoke() == false ? Visibility.Collapsed : Visibility.Visible;
             action.IsEnabled = !deviceActionRunning && current() && cache is not null;
         };
         action.Click += async (_, _) =>
@@ -292,7 +293,7 @@ public sealed partial class MainWindow
     private async Task SaveToDeviceAsync(IReadOnlyList<Song> tracks, string key, RequestGate.Lease owner)
     {
         var storage = cache;
-        if (storage is null || !connectionGate.IsCurrent(owner)) return;
+        if (tracks.Count == 0 || storage is null || !connectionGate.IsCurrent(owner)) return;
         if (offlineSettings.Offline && tracks.Any(song => !HasSavedSong(song.Id)))
         { ShowError("Turn off Offline mode to save songs that are not cached yet."); return; }
         try { await storageWork.RunAsync(() => storage.Pin(tracks, key)); }
@@ -348,7 +349,7 @@ public sealed partial class MainWindow
             albums = data.Albums;
             playlists = MergePlaylistCatalog(data.Playlists, catalogRevision);
             InvalidateCollectionMembership();
-            if (page is not "offline" and not "settings" and not "detail") await LoadBrowseAsync();
+            if (!playlistDeletionActive && page is not "offline" and not "settings" and not "detail") await LoadBrowseAsync();
         }
         catch { /* No surprise replay after a failed reconnect. */ }
         finally { reconnecting = false; }
@@ -380,6 +381,9 @@ public sealed partial class MainWindow
             albums = []; playlists = []; artists = []; artistsLoaded = false; songs.Clear(); artwork.Clear();
             playlistEdits.Clear();
             unverifiedPlaylistIds.Clear();
+            deletedPlaylistIds.Clear();
+            pendingPlaylistDeletions.Clear();
+            RenderPlaylistDeletionChecks();
             InvalidateCollectionMembership();
             C<TextBlock>("ConnectionInfo").Text = "No saved connection.";
             C<TextBlock>("ConnectionStatus").Text = "Account and saved songs removed.";

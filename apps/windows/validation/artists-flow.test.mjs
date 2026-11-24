@@ -35,9 +35,11 @@ ${method(artists,'    private Grid CreateArtistTransport()', '\n}')}
 ${method(nav,'    private async Task GoBackAsync()', '\n}')}
 ${method(nav,'    private NavigationView CaptureNavigation()', '    private void InitializeNavigation()')}
 readonly NavigationHistory navigationHistory=new(); readonly RequestGate browseGate=new(), connectionGate=new(), artworkGate=new();
-readonly HashSet<string> unverifiedPlaylistIds=new();
+readonly HashSet<string> unverifiedPlaylistIds=new(), deletedPlaylistIds=new();
+readonly Dictionary<string, Playlist> pendingPlaylistDeletions=new();
 Root root=new(); void BindLibraryShelf(StackPanel s,ListViewBase v){} record Card(string Title,string Subtitle,string? ArtId,object Value);
 void BindPlaylistContext(ListViewBase view){}
+void StretchPlaylistRows(ListViewBase view){}
 readonly CollectionTransport collectionTransport=new(); static object Sage=new(),Muted=new();
 IReadOnlyList<Song> queue=[]; int starts; void StartQueue(IReadOnlyList<Song> tracks,int index){queue=tracks;starts++;}
 FrameworkElement CardElement(Card c,string l,CancellationToken t)=>new(){Tag=c.Value};

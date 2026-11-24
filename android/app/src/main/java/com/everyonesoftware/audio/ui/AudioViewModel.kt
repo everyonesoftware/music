@@ -24,6 +24,7 @@ import com.everyonesoftware.audio.data.Credentials
 import com.everyonesoftware.audio.data.NavidromeClient
 import com.everyonesoftware.audio.data.NavidromeException
 import com.everyonesoftware.audio.data.PlaylistWriteUnconfirmed
+import com.everyonesoftware.audio.data.PlaylistDeleteUnconfirmed
 import com.everyonesoftware.audio.playback.PlaybackService
 import com.everyonesoftware.audio.playback.CarLibrary
 import com.everyonesoftware.audio.playback.CarMediaIds
@@ -132,8 +133,9 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             graph.playlists.state.collect { catalog ->
                 current.update {
                     if (it.connection?.id != catalog.connectionId) it else it.copy(
-                        playlists = catalog.playlists.sortedByDescending { playlist -> playlist.id == graph.session.value?.playlistId },
-                        playlistsRefreshing = catalog.refreshing, stalePlaylistIds = catalog.staleIds, playlistError = catalog.error)
+                        playlists = catalog.playlistsForPhone.sortedByDescending { playlist -> playlist.id == graph.session.value?.playlistId },
+                        playlistsRefreshing = catalog.refreshing, stalePlaylistIds = catalog.staleIds, playlistError = catalog.error,
+                        pendingPlaylistDeletionIds = catalog.pendingDeletionIds)
                 }
             }
         }
@@ -160,7 +162,9 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         ++albumDetailGeneration
         albumDetailOperation?.cancel()
         val connection = graph.credentials.value?.connection
-        val playlists = connection?.let { graph.store.cachedPlaylists(it.id) }.orEmpty()
+        val catalog = graph.playlists.state.value
+        val playlists = if (catalog.connectionId == connection?.id) catalog.playlistsForPhone
+            else connection?.let { graph.store.cachedPlaylists(it.id) }.orEmpty()
         val selected = connection?.let { graph.store.selectedLibraries(it.id) }.orEmpty()
         val connections = graph.store.connections()
         current.update { it.copy(connection = connection, connections = connections, selectedOfflineCollection = null, playlists = playlists, albums = emptyList(), albumsError = null, selectedAlbum = null, albumSongs = emptyList(), albumError = null,
@@ -168,7 +172,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             artists = emptyList(), artistsRefreshing = false, artistsError = null, artistCollectionQuery = "",
             selectedArtist = null, artistContents = null, artistLoading = false, artistError = null, artistReturnScreen = Screen.PLAYLISTS,
             selectedPlaylist = null, playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null,
-            playlistEditor = null, playlistNotice = null,
+            playlistEditor = null, playlistDeletion = null, playlistNotice = null, playlistDeletionFocus = null,
+            pendingPlaylistDeletionIds = catalog.pendingDeletionIds.takeIf { catalog.connectionId == connection?.id }.orEmpty(),
             searchQuery = "", searchSongs = emptyList(), searchLoading = false, searchError = null,
             playlistCollectionQuery = "", albumCollectionQuery = "",
             settingsReturnScreen = null, playlistReturnScreen = Screen.PLAYLISTS, albumReturnScreen = Screen.PLAYLISTS,
@@ -710,7 +715,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             val controller = controller()
             val page = current.value.copy(loading = false)
             require(graph.credentials.value == credentials && !graph.networkPolicy.offline && page.collectionSongSession(selection) != null &&
-                (selection.kind != "playlist" || playlistEdit == playlistEdits[selection.id])) {
+                (selection.kind != "playlist" || (playlistEdit == playlistEdits[selection.id] && !playlistDeletionBlocked(selection.id)))) {
                 "This collection changed. Reopen it and choose the song again."
             }
             graph.setSession(session, credentials, previous)
@@ -776,7 +781,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun newPlaylist() {
         val state = current.value
         if (state.screen !in setOf(Screen.PLAYLISTS, Screen.ALL_PLAYLISTS) || !playlistEditingAllowed(state)) return
-        if (state.playlistEditor != null || playlistWriteRunning) return
+        if (state.playlistEditor != null || state.playlistDeletion != null || playlistWriteRunning) return
         current.update { it.copy(playlistEditor = PlaylistEditor(++playlistEditTicket, state.deviceActionPage, creating = true, songs = emptyList())) }
     }
 
@@ -787,7 +792,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val state = current.value
         val credentials = graph.credentials.value ?: return
         if (!playlistEditingAllowed(state) || state.deviceActionPage != page || !state.containsPlaylistSource(source) ||
-            state.playlistEditor != null || playlistWriteRunning) return
+            state.playlistEditor != null || state.playlistDeletion != null || playlistWriteRunning) return
         val editor = PlaylistEditor(++playlistEditTicket, page, source, busy = true)
         current.update { it.copy(playlistEditor = editor) }
         viewModelScope.launch {
@@ -798,7 +803,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
                 if (!ownsPlaylistEditor(editor, credentials)) return@launch
                 val destinations = client.writablePlaylists()
                 if (ownsPlaylistEditor(editor, credentials)) {
-                    current.update { it.copy(playlistEditor = editor.copy(songs = songs, destinations = destinations, busy = false)) }
+                    current.update { it.copy(playlistEditor = editor.copy(songs = songs,
+                        destinations = destinations.filterNot { target -> playlistDeletionBlocked(target.id) }, busy = false)) }
                 }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) {
@@ -832,6 +838,125 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun createPlaylist(name: String) = writePlaylist(name = name)
     override fun appendToPlaylist(id: String) = writePlaylist(destinationId = id)
 
+    private fun playlistDeletionBlocked(id: String): Boolean = graph.playlists.state.value.let {
+        id in it.pendingDeletionIds || id in it.deletedIds
+    }
+
+    override fun requestPlaylistDeletion(page: DeviceActionPage, id: String) {
+        val state = current.value
+        if (state.deviceActionPage != page || !playlistEditingAllowed(state) || !state.canOfferPlaylistDeletion(id) ||
+            state.playlistEditor != null || state.playlistDeletion != null || playlistWriteRunning) return
+        val target = state.playlists.firstOrNull { it.id == id } ?: return
+        val pending = id in state.pendingPlaylistDeletionIds
+        val name = state.selectedPlaylist?.name?.takeIf { state.screen == Screen.PLAYLIST && !pending } ?: target.name
+        current.update { it.copy(playlistDeletion = PlaylistDeletion(++playlistEditTicket, page, id, name, unconfirmed = pending)) }
+    }
+
+    override fun dismissPlaylistDeletion() {
+        current.update { if (it.playlistDeletion?.busy == true) it else it.copy(playlistDeletion = null) }
+    }
+
+    override fun confirmPlaylistDeletion() {
+        val state = current.value
+        val deletion = state.playlistDeletion ?: return
+        val credentials = graph.credentials.value ?: return
+        val id = deletion.id
+        if (playlistWriteRunning || deletion.busy || state.playlistEditor != null || !playlistEditingAllowed(state) ||
+            state.deviceActionPage != deletion.page || !state.canOfferPlaylistDeletion(id)) return
+        playlistWriteRunning = true
+        current.update { it.copy(playlistMutationBusy = true, playlistDeletion = deletion.copy(busy = true, error = null)) }
+        viewModelScope.launch {
+            fun ownsDialog() = current.value.playlistDeletion?.ticket == deletion.ticket &&
+                current.value.deviceActionPage == deletion.page && graph.credentials.value == credentials
+            var checking = deletion.unconfirmed || id in graph.playlists.state.value.pendingDeletionIds
+            var attemptedTarget: Playlist? = null
+            try {
+                val client = graph.clientFor(credentials)
+                if (!checking) {
+                    val target = client.deletionTarget(id)
+                    if (!ownsDialog() || !playlistEditingAllowed(current.value)) return@launch
+                    if (target == null) {
+                        finishPlaylistDeletion(credentials, deletion, null, "“${deletion.name}” is no longer on the server.")
+                        return@launch
+                    }
+                    val confirmed = current.value.playlists.firstOrNull { it.id == id && it.name == deletion.name && it.canDelete }
+                    require(target.canDelete && target.name == deletion.name && confirmed != null && !playlistDeletionBlocked(id)) {
+                        "This playlist changed or is no longer writable. Close and refresh playlists."
+                    }
+                    try {
+                        attemptedTarget = confirmed
+                        client.deletePlaylist(id)
+                    } catch (_: PlaylistDeleteUnconfirmed) {
+                        checking = true
+                        graph.playlists.deletionPending(credentials, confirmed)
+                        if (graph.credentials.value == credentials) invalidateDeletingDetail(id, deletion.ticket)
+                    }
+                    if (!checking) {
+                        finishPlaylistDeletion(credentials, deletion, null, "Deleted “${deletion.name}”.")
+                        return@launch
+                    }
+                }
+                if (graph.credentials.value != credentials) return@launch
+                require(!graph.networkPolicy.offline)
+                val present = client.deletionTarget(id)
+                finishPlaylistDeletion(credentials, deletion, present, if (present == null)
+                    "“${deletion.name}” is no longer on the music server. The server did not confirm the delete request."
+                    else "“${present.name}” is still on the server. No deletion was confirmed.")
+            } catch (cancelled: CancellationException) {
+                attemptedTarget?.let { target ->
+                    withContext(kotlinx.coroutines.NonCancellable) { graph.playlists.deletionPending(credentials, target) }
+                }
+                throw cancelled
+            } catch (error: Exception) {
+                if (ownsDialog()) current.update { it.copy(playlistDeletion = deletion.copy(unconfirmed = checking,
+                    error = if (checking) "Deletion couldn’t be verified. Check again without sending another delete." else safeMessage(error))) }
+            } finally {
+                playlistWriteRunning = false
+                current.update { ui -> ui.copy(playlistMutationBusy = false,
+                    playlistDeletion = ui.playlistDeletion?.let { if (it.ticket == deletion.ticket) it.copy(busy = false) else it }) }
+            }
+        }
+    }
+
+    private suspend fun finishPlaylistDeletion(credentials: Credentials, deletion: PlaylistDeletion, present: Playlist?, notice: String) {
+        val id = deletion.id
+        graph.playlists.deletionResolved(credentials, id, present, !graph.networkPolicy.offline)
+        if (graph.credentials.value != credentials) return
+        val state = current.value
+        val selected = state.selectedPlaylist?.takeIf { it.id == id }
+        val ownsDialog = state.playlistDeletion?.ticket == deletion.ticket && state.deviceActionPage == deletion.page
+        if (present != null) {
+            if (ownsDialog) current.update { it.copy(playlistDeletion = null, playlistNotice = notice) }
+            if (selected != null && state.screen == Screen.PLAYLIST && !graph.networkPolicy.offline) {
+                current.update { it.copy(selectedPlaylist = present) }
+                loadPlaylistDetail(present, verify = true)
+            }
+            return
+        }
+        if (selected != null) {
+            ++playlistDetailGeneration
+            playlistDetailOperation?.cancel()
+        }
+        current.update { ui ->
+            val remaining = ui.copy(playlists = ui.playlists.filterNot { it.id == id },
+                pendingPlaylistDeletionIds = ui.pendingPlaylistDeletionIds - id)
+            val cleared = if (selected == null) remaining else remaining.copy(selectedPlaylist = null,
+                playlistSongs = emptyList(), playlistLoading = false, playlistDetailError = null)
+            if (!ownsDialog && !(selected != null && ui.screen == Screen.PLAYLIST)) cleared
+            else cleared.navigateTo(Screen.ALL_PLAYLISTS).copy(playlistDeletion = null,
+                playlistNotice = notice, playlistDeletionFocus = deletion.ticket)
+        }
+    }
+
+    private fun invalidateDeletingDetail(id: String, ticket: Long) {
+        playlistEdits[id] = ticket
+        if (current.value.selectedPlaylist?.id != id) return
+        ++playlistDetailGeneration
+        playlistDetailOperation?.cancel()
+        current.update { it.copy(playlistSongs = emptyList(), playlistLoading = false,
+            playlistDetailError = "Deletion couldn’t be verified. Use the playlist menu to check again.") }
+    }
+
     private fun writePlaylist(name: String? = null, destinationId: String? = null) {
         val state = current.value
         val editor = state.playlistEditor ?: return
@@ -839,9 +964,9 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
         val preview = editor.songs ?: return
         val destination = editor.destinations.firstOrNull { it.id == destinationId }
         if (!playlistEditingAllowed(state) || editor.busy || editor.unconfirmed || playlistWriteRunning ||
-            (destinationId != null && (destination == null || preview.isEmpty()))) return
+            (destinationId != null && (destination == null || preview.isEmpty() || playlistDeletionBlocked(destinationId)))) return
         playlistWriteRunning = true
-        current.update { it.copy(playlistEditor = editor.copy(busy = true, creating = name != null, error = null)) }
+        current.update { it.copy(playlistMutationBusy = true, playlistEditor = editor.copy(busy = true, creating = name != null, error = null)) }
         viewModelScope.launch {
             try {
                 fun ensureCurrent() {
@@ -876,7 +1001,9 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
                     if (!graph.networkPolicy.offline) graph.playlists.playlistWritten(credentials, created.id)
                 } else if (destination != null) {
                     val (target, original) = client.verifiedPlaylist(destination.id)
-                    require(client.writablePlaylists().any { it.id == target.id }) { "This playlist is no longer writable." }
+                    require(client.writablePlaylists().any { it.id == target.id } && !playlistDeletionBlocked(target.id)) {
+                        "This playlist is no longer writable."
+                    }
                     ensureCurrent()
                     client.appendToPlaylist(target.id, songIds)
                     if (graph.credentials.value != credentials) return@launch
@@ -902,7 +1029,10 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
                     if (destinationId != null) reconcileEditedPlaylist(credentials, destinationId, editor.ticket)
                     else if (!graph.networkPolicy.offline) graph.playlists.playlistWritten(credentials)
                 }
-            } finally { playlistWriteRunning = false }
+            } finally {
+                playlistWriteRunning = false
+                current.update { it.copy(playlistMutationBusy = false) }
+            }
         }
     }
 
@@ -932,19 +1062,19 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
     override fun retryPlaylistDetail() {
         val state = current.value
         if (state.screen == Screen.PLAYLIST && playlistEditingAllowed(state)) {
-            state.selectedPlaylist?.let { loadPlaylistDetail(it, verify = true) }
+            state.selectedPlaylist?.takeUnless { playlistDeletionBlocked(it.id) }?.let { loadPlaylistDetail(it, verify = true) }
         }
     }
 
     override fun openPlaylist(id: String) {
         if (graph.networkPolicy.offline) { openOfflineCollection("playlist", id); return }
-        if (graph.credentials.value == null) return
+        if (graph.credentials.value == null || playlistDeletionBlocked(id)) return
         val saved = current.value.storage.collections.firstOrNull { it.kind == "playlist" && it.id == id }
         val playlist = current.value.playlists.firstOrNull { it.id == id }
             ?: saved?.let { Playlist(it.id, it.name, it.songs.size, it.coverArtId) } ?: return
         current.update { it.navigateTo(Screen.PLAYLIST).copy(selectedPlaylist = playlist, playlistSongs = emptyList(),
             playlistLoading = true, playlistDetailError = null) }
-        val changed = !canUsePlaylistSnapshot(playlist, saved)
+        val changed = current.value.playlists.none { it.id == id } || !canUsePlaylistSnapshot(playlist, saved)
         loadPlaylistDetail(playlist, preferSaved = !changed, verify = changed)
     }
 
@@ -964,7 +1094,8 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
                 val saved = if (preferSaved && !verifyContents) withContext(Dispatchers.IO) { graph.songCache.collection(credentials, "playlist", id) } else null
                 val confirmed = if (verifyContents) graph.clientFor(credentials).verifiedPlaylist(id) else null
                 val songs = confirmed?.second ?: saved?.songs ?: graph.playlists.fetchContents(credentials, id).songs
-                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials && current.value.selectedPlaylist?.id == id) {
+                if (ticket == playlistDetailGeneration && graph.credentials.value == credentials &&
+                    current.value.selectedPlaylist?.id == id && !playlistDeletionBlocked(id)) {
                     if (expectedSongIds != null) pendingCreatedPlaylists.remove(id)
                     val notice = expectedSongIds?.let {
                         if (it == songs.map(Song::id)) "Created ${(confirmed?.first ?: playlist).name}."
@@ -996,7 +1127,7 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
 
     private fun startPlaylistQueue(id: String, shuffle: Boolean, loadedSongs: List<Song>? = null, requireLiveContents: Boolean = false) {
         if (graph.networkPolicy.offline) { playOfflineCollection("playlist", id); return }
-        if (current.value.loading) return
+        if (current.value.loading || playlistDeletionBlocked(id)) return
         work {
             val credentials = requireNotNull(graph.credentials.value) { "Connect first." }
             val connection = credentials.connection
@@ -1009,14 +1140,14 @@ class AudioViewModel @JvmOverloads constructor(application: Application, private
             val edit = playlistEdits[id]
             val songs = loadedSongs ?: when {
                 // Equal counts or cached catalog data cannot verify the pinned membership.
-                requireLiveContents || !canUsePlaylistSnapshot(playlist, saved) -> graph.clientFor(credentials).verifiedPlaylist(id).second
+                requireLiveContents || current.value.playlists.none { it.id == id } || !canUsePlaylistSnapshot(playlist, saved) -> graph.clientFor(credentials).verifiedPlaylist(id).second
                 saved != null -> saved.songs
                 else -> graph.playlists.fetchContents(credentials, id).songs
             }
             val session = SessionRules.start(connection.id, playlist.id, playlist.name, songs, shuffle = shuffle)
             val controller = controller()
             val detail = current.value
-            require(!graph.networkPolicy.offline && graph.credentials.value == credentials && playlistEdits[id] == edit &&
+            require(!graph.networkPolicy.offline && graph.credentials.value == credentials && playlistEdits[id] == edit && !playlistDeletionBlocked(id) &&
                 (loadedSongs == null || (detail.screen == Screen.PLAYLIST && detail.selectedPlaylist?.id == id &&
                     !detail.playlistLoading && detail.playlistDetailError == null && detail.playlistSongs == loadedSongs))) {
                 "This playlist changed. Reopen it and try again."

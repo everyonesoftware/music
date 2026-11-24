@@ -28,7 +28,18 @@ public sealed partial class MainWindow
         bool hasClaims(IReadOnlyDictionary<string, CachedSong> snapshot) => DeviceAvailability.HasCollectionClaims(snapshot, key);
         bool deviceAvailable() => available() || (current() && !detailLoading && !detailError && !offlineSettings.Offline && hasClaims(CacheSnapshot()));
         var device = CreateDeviceActions(detailTitle, 48, deviceAvailable, hasClaims,
-            () => SaveToDeviceAsync(capturedSongs, key, owner), () => RemoveFromDeviceAsync(null, key, owner));
+            () => SaveToDeviceAsync(capturedSongs, key, owner), () => RemoveFromDeviceAsync(null, key, owner),
+            showAction: identity.Kind == "playlist" ? () => capturedSongs.Count > 0 || hasClaims(CacheSnapshot()) : null);
+        if (detailCollection is Playlist playlist && !detailLoading && !detailError)
+        {
+            var menu = (MenuFlyout)device.Flyout;
+            var label = "More options for " + playlist.Name;
+            AutomationProperties.SetName(device, label);
+            ToolTipService.SetToolTip(device, label);
+            device.IsEnabled = current(); // Even an empty playlist has playlist actions.
+            AddPlaylistAction(device, playlist, owner, menu, current);
+            AddPlaylistDeleteAction(device, playlist, owner, menu, () => current() && !detailLoading && !detailError);
+        }
         var shuffle = new Button { Content = new SymbolIcon(Symbol.Shuffle) { Foreground = Muted }, Width = 48, Height = 48,
             CornerRadius = new CornerRadius(24), MinWidth = 0, IsEnabled = available(), Padding = new Thickness(0),
             VerticalAlignment = VerticalAlignment.Center };

@@ -26,6 +26,7 @@ public sealed record Playlist(string Id, string Name, string? CoverArtId, int So
 {
     // Older servers may omit both owner and readonly; authority remains with the server.
     public bool CanAppend { get; init; } = true;
+    public bool CanDelete { get; init; }
 }
 
 public sealed record PlaylistContents(Playlist Playlist, IReadOnlyList<Song> Songs);

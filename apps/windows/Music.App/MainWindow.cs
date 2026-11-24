@@ -199,7 +199,7 @@ public sealed partial class MainWindow : Window
             InvalidateCollectionMembership();
             // A user-owned browse route still needs the newly published catalog.
             // Pending searches render it on completion; Songs pagination is untouched.
-            if (navigationRevision != startupRevision && !browsePending && !offlineSettings.Offline &&
+            if (navigationRevision != startupRevision && !browsePending && !offlineSettings.Offline && !playlistDeletionActive &&
                 page is "library" or "albums" or "playlists") RenderBrowse();
             await NavigateAsync("library", remember: false, startupRevision: startupRevision);
         }
@@ -335,6 +335,9 @@ public sealed partial class MainWindow : Window
         client = target; connection = profile; albums = newAlbums; playlists = newPlaylists;
         playlistEdits.Clear();
         unverifiedPlaylistIds.Clear();
+        deletedPlaylistIds.Clear();
+        pendingPlaylistDeletions.Clear();
+        RenderPlaylistDeletionChecks();
         ResetRatings(target);
         artists = []; artistsLoaded = false;
         client.Offline = offlineSettings.Offline;
@@ -395,6 +398,9 @@ public sealed partial class MainWindow : Window
     private void SetNavigation()
     {
         UpdatePlaylistActions();
+        var heading = C<ContentControl>("PlaylistHeading");
+        heading.IsTabStop = page == "playlists";
+        AutomationProperties.SetName(heading, C<TextBlock>("PageTitle").Text);
         foreach (var entry in new[] { ("LibraryNav", "library"), ("PlaylistsNav", "playlists"), ("AlbumsNav", "albums"), ("ArtistsNav", "artists"), ("SongsNav", "songs"), ("SettingsNav", "settings") })
         {
             var button = C<Button>(entry.Item1);
@@ -547,6 +553,7 @@ public sealed partial class MainWindow : Window
         ListViewBase view = layout == "grid" ? new GridView() : new ListView();
         view.SelectionMode = ListViewSelectionMode.None; view.IsItemClickEnabled = true;
         view.HorizontalAlignment = HorizontalAlignment.Stretch;
+        if (layout == "list" && page == "playlists") StretchPlaylistRows(view);
         ScrollViewer.SetVerticalScrollMode(view, ScrollMode.Disabled);
         ScrollViewer.SetVerticalScrollBarVisibility(view, ScrollBarVisibility.Disabled);
         if (layout == "row")
@@ -586,7 +593,8 @@ public sealed partial class MainWindow : Window
             Grid.SetColumn(copy, 1); copy.VerticalAlignment = VerticalAlignment.Center;
         }
         outer.Children.Add(cover); outer.Children.Add(copy);
-        AddCollectionPlaylistAction(outer, card.Value);
+        if (card.Value is Playlist playlist && page == "playlists") AddPlaylistRowOverflow(outer, playlist, layout);
+        else AddCollectionPlaylistAction(outer, card.Value);
         AutomationProperties.SetName(outer, card.Title + ", " + card.Subtitle);
         if (!offlineSettings.Offline) _ = artwork.SetAsync(art, card.ArtId, client!, token);
         return outer;
@@ -775,6 +783,7 @@ public sealed partial class MainWindow : Window
         if (value is ArtistNavigation origin) { await OpenArtistAsync(origin.Artist, remember, origin.View); return; }
         if (value is Artist artist) { await OpenArtistAsync(artist, remember); return; }
         if (client is null) return;
+        if (value is Playlist deleted && deletedPlaylistIds.Contains(deleted.Id)) return;
         if (offlineSettings.Offline) { RenderOfflineBrowse(); return; }
         var artistAlbum = value as ArtistAlbumNavigation;
         if (artistAlbum is not null) value = artistAlbum.Album;
@@ -793,6 +802,13 @@ public sealed partial class MainWindow : Window
         C<TextBox>("SearchBox").Visibility = Visibility.Collapsed;
         C<Button>("LayoutButton").Visibility = Visibility.Collapsed;
         SetNavigation();
+        if (value is Playlist pending && pendingPlaylistDeletions.ContainsKey(pending.Id))
+        {
+            detailLoading = false;
+            detailError = true;
+            RenderDetail();
+            return;
+        }
         RenderDetail();
         try
         {

@@ -17,6 +17,9 @@ internal sealed class NavigationHistory
 
     public void Clear() => entries.Clear();
 
+    public void RemoveCollection(Predicate<object> matches) =>
+        entries.RemoveAll(view => view.Collection is { } collection && matches(collection));
+
     public bool TryBack(out NavigationView? previous)
     {
         previous = null;

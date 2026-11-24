@@ -22,7 +22,16 @@ data class PlaylistCatalogState(
     val staleIds: Set<String> = emptySet(),
     val error: String? = null,
     val listError: String? = null,
-)
+    internal val pendingDeletionTargets: Map<String, Playlist> = emptyMap(),
+    val deletedIds: Set<String> = emptySet(),
+) {
+    val pendingDeletionIds: Set<String> get() = pendingDeletionTargets.keys
+
+    // A refresh may omit the target before the write reply arrives. Keep the confirmed
+    // target available for phone recovery without treating it as a live server listing.
+    internal val playlistsForPhone: List<Playlist> get() = if (pendingDeletionTargets.isEmpty()) playlists else
+        playlists.filterNot { it.id in pendingDeletionTargets } + pendingDeletionTargets.values
+}
 
 class PlaylistCatalog(
     private val scope: CoroutineScope,
@@ -79,6 +88,48 @@ class PlaylistCatalog(
         Unit
     }
 
+    internal suspend fun deletionPending(credentials: Credentials, target: Playlist) = lock.withLock {
+        val id = target.id
+        if (active == credentials && id !in current.value.deletedIds) {
+            versions[id] = (versions[id] ?: 0L) + 1
+            current.value = current.value.copy(pendingDeletionTargets = current.value.pendingDeletionTargets + (id to target))
+        }
+    }
+
+    /** Publish the exact-ID result before starting a best-effort catalog refresh. */
+    internal suspend fun deletionResolved(credentials: Credentials, id: String, present: Playlist?, online: Boolean) = lock.withLock {
+        if (active != credentials) return@withLock
+        require(present == null || present.id == id)
+        val absent = present == null
+        ++revision
+        refreshJob?.cancel()
+        refreshJob = null
+        saveJob?.cancel()
+        saveJob = null
+        lastSummariesAt = null
+        versions[id] = (versions[id] ?: 0L) + 1
+        val state = current.value
+        val playlists = when {
+            present == null -> state.playlists.filterNot { it.id == id }
+            state.playlists.any { it.id == id } -> state.playlists.map { if (it.id == id) present else it }
+            else -> state.playlists + present
+        }
+        current.value = state.copy(refreshing = false, pendingDeletionTargets = state.pendingDeletionTargets - id,
+            playlists = playlists, staleIds = if (absent) state.staleIds - id else state.staleIds + id,
+            deletedIds = if (absent) state.deletedIds + id else state.deletedIds)
+        if (absent) ratingDeadlines.remove(id)
+        saveSnapshotLocked(credentials)
+        if (online) startRefreshLocked()
+    }
+
+    private fun PlaylistCatalogState.forBrowse() = copy(playlists = playlists.filterNot { it.id in pendingDeletionIds })
+
+    private fun requireLivePlaylist(id: String) {
+        if (id in current.value.pendingDeletionIds || id in current.value.deletedIds) {
+            throw NavidromeException("This playlist is no longer available online. Refresh playlists.")
+        }
+    }
+
     /** Car browse/search awaits only the summaries, never unrelated detail requests. */
     suspend fun listing(credentials: Credentials, reconcileCounts: Boolean = true): PlaylistCatalogState {
         while (true) {
@@ -86,7 +137,7 @@ class PlaylistCatalog(
                 require(active == credentials) { "The music account changed. Refresh playlists." }
                 if (current.value.listError == null && lastSummariesAt?.let { now() - it < 30_000L } == true) {
                     if (reconcileCounts && current.value.staleIds.isNotEmpty()) startRefreshLocked()
-                    return current.value
+                    return current.value.forBrowse()
                 }
                 startRefreshLocked(if (reconcileCounts) null else emptySet())
                 requireNotNull(summaryReady)
@@ -94,7 +145,7 @@ class PlaylistCatalog(
             val available = ready.await()
             lock.withLock {
                 require(active == credentials) { "The music account changed. Refresh playlists." }
-                if (available || current.value.listError != null) return current.value
+                if (available || current.value.listError != null) return current.value.forBrowse()
                 // A rating invalidated a pending summary request. Retry for this same account.
             }
         }
@@ -165,12 +216,15 @@ class PlaylistCatalog(
     suspend fun fetchContents(credentials: Credentials, id: String): PlaylistContents {
         val token = lock.withLock {
             require(active == credentials) { "The music account changed. Refresh playlists." }
+            requireLivePlaylist(id)
             val version = (versions[id] ?: 0L) + 1
             versions[id] = version
             ratingRevision to version
         }
         val result = contents(credentials, id)
         lock.withLock {
+            require(active == credentials) { "The music account changed. Refresh playlists." }
+            requireLivePlaylist(id)
             if (active == credentials && token.first == ratingRevision && token.second == versions[id]) {
                 publishCount(id, result.songs.size, result.validUntilMs)
                 if (!current.value.refreshing) scheduleSaveLocked(credentials)
@@ -210,14 +264,15 @@ class PlaylistCatalog(
                 if (active != credentials || ticket != revision) return
                 val old = current.value.playlists.associateBy { it.id }
                 // A stale summary must not overwrite a previously reconciled count, even on partial failure.
-                val merged = listed.map { it.copy(songCount = old[it.id]?.songCount ?: it.songCount,
+                val listedLive = listed.filterNot { it.id in current.value.deletedIds }
+                val merged = listedLive.map { it.copy(songCount = old[it.id]?.songCount ?: it.songCount,
                     validUntilMs = it.validUntilMs ?: old[it.id]?.validUntilMs) }
                 val ids = merged.map { it.id }.toSet()
                 current.value = current.value.copy(playlists = merged,
                     staleIds = if (onlyIds == null) ids else (current.value.staleIds + onlyIds + (ids - old.keys)).intersect(ids))
                 lastSummariesAt = now()
                 ready.complete(true)
-                merged.filter { onlyIds == null || it.id in onlyIds }
+                merged.filter { it.id !in current.value.pendingDeletionIds && (onlyIds == null || it.id in onlyIds) }
             }
             // A fixed worker pool bounds both requests and coroutine count for large catalogs.
             val pending = playlists.iterator()

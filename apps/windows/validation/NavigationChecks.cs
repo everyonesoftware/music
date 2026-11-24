@@ -22,6 +22,13 @@ static class NavigationChecks
         check(history.TryBack(out previous) && previous == album, "settings Back restores previous album detail identity");
         check(history.TryBack(out previous) && previous == albums, "album Back restores albums query/layout");
         history.Clear();
+        history.Record(library, playlist);
+        history.Record(playlist, album);
+        history.Record(album, playlists);
+        history.RemoveCollection(collection => Equals(collection, "playlist-one"));
+        check(history.TryBack(out previous) && previous == album, "deletion preserves Back to sibling album");
+        check(history.TryBack(out previous) && previous == library, "deletion skips only the retired playlist route");
+        history.Clear();
         check(!history.TryBack(out _), "account replacement/offline reset removes scoped history");
         history.Record(albums, new NavigationView("settings", "", "grid"));
         check(history.TryBack(out previous) && previous == albums, "settings Back restores filtered collection view");

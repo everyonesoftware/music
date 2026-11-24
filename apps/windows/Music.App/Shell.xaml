@@ -157,7 +157,9 @@
     <Grid Grid.Column="1" Padding="28,22,28,16">
       <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
       <Grid x:Name="PageHeader" Margin="0,0,0,16"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-        <TextBlock x:Name="PageTitle" Text="Library" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0"/>
+        <ContentControl x:Name="PlaylistHeading" AutomationProperties.HeadingLevel="Level1" IsTabStop="False" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Center">
+          <TextBlock x:Name="PageTitle" Text="Library" FontSize="28" FontWeight="SemiBold" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Margin="0,0,12,0"/>
+        </ContentControl>
         <TextBox Grid.Column="1" x:Name="SearchBox" Width="260" PlaceholderText="Search your library" AutomationProperties.Name="Search library" VerticalAlignment="Center"/>
         <Button Grid.Column="2" x:Name="LayoutButton" Margin="10,0,0,0" AutomationProperties.Name="Change content view"><StackPanel Orientation="Horizontal" Spacing="8"><SymbolIcon x:Name="LayoutIcon" Symbol="ViewAll"/><FontIcon Glyph="&#xE70D;" FontSize="10"/></StackPanel><Button.Flyout><MenuFlyout><MenuFlyoutItem x:Name="GridOption" Text="Grid"/><MenuFlyoutItem x:Name="ListOption" Text="List"/></MenuFlyout></Button.Flyout></Button>
         <Button Grid.Row="1" Grid.ColumnSpan="3" x:Name="NewPlaylistButton" Visibility="Collapsed" Margin="0,12,0,0"><StackPanel Orientation="Horizontal" Spacing="8"><SymbolIcon Symbol="Add"/><TextBlock Text="New playlist"/></StackPanel></Button>
@@ -165,6 +167,7 @@
       <StackPanel Grid.Row="1">
         <InfoBar x:Name="Notice" IsOpen="False" IsClosable="True" Severity="Error" Margin="0,0,0,12"/>
         <InfoBar x:Name="PlaylistNotice" IsOpen="False" IsClosable="True" Severity="Success" Margin="0,0,0,12"/>
+        <StackPanel x:Name="PlaylistDeletionChecks"/>
       </StackPanel>
       <ProgressBar Grid.Row="2" x:Name="BusyBar" IsIndeterminate="True" Visibility="Collapsed" Margin="0,0,0,12"/>
       <ScrollViewer Grid.Row="3" x:Name="MainScroll" HorizontalScrollMode="Disabled" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">

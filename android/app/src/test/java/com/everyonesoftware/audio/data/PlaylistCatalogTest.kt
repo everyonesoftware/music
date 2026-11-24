@@ -44,6 +44,110 @@ class PlaylistCatalogTest {
         assertFalse(catalog.state.value.refreshing)
     }
 
+    @Test fun acknowledgedDeleteRetiresDelayedCatalogAndOldOnlineContent() = runTest {
+        val release = CompletableDeferred<Unit>()
+        val survivor = Playlist("other", "Survivor")
+        val fixture = Fixture().apply {
+            cache["a"] = listOf(smart, survivor)
+            fetched = { _, id -> if (id == smart.id) release.await(); emptyList() }
+            listed = { withContext(NonCancellable) { release.await() }; listOf(smart, survivor) }
+        }
+        val catalog = fixture.catalog(this)
+        catalog.activate(a)
+        val oldContents = async { runCatching { catalog.fetchContents(a, smart.id) } }
+        val oldRefresh = catalog.refresh()
+        runCurrent()
+        catalog.deletionPending(a, smart)
+        catalog.deletionResolved(a, smart.id, present = null, online = true)
+        assertEquals(listOf(survivor), fixture.cache["a"])
+        release.complete(Unit)
+        oldRefresh.join()
+        assertTrue(oldContents.await().exceptionOrNull() is NavidromeException)
+        catalog.refresh().join()
+        assertEquals(listOf(survivor), catalog.state.value.playlists)
+        assertEquals(listOf(survivor), fixture.cache["a"])
+    }
+
+    @Test fun pendingDeleteRetainsConfirmedTargetWhenSummaryOmitsItBeforeWriteReply() = runTest {
+        val writeStarted = CompletableDeferred<Unit>()
+        val releaseReply = CompletableDeferred<Unit>()
+        val target = smart.copy(canDelete = true)
+        val survivor = Playlist("other", "Survivor")
+        val fixture = Fixture().apply {
+            cache["a"] = listOf(target, survivor)
+            listed = { listOf(survivor) }
+        }
+        val catalog = fixture.catalog(this)
+        catalog.activate(a)
+        val write = async {
+            writeStarted.complete(Unit)
+            releaseReply.await()
+            catalog.deletionPending(a, target)
+        }
+        writeStarted.await()
+        catalog.refresh().join()
+        assertEquals(listOf(survivor), catalog.state.value.playlistsForPhone)
+        releaseReply.complete(Unit)
+        write.await()
+        assertEquals(target, catalog.state.value.playlistsForPhone.singleOrNull { it.id == target.id })
+        catalog.refresh().join()
+        assertEquals(target, catalog.state.value.playlistsForPhone.singleOrNull { it.id == target.id })
+        assertEquals(listOf(survivor), catalog.listing(a).playlists)
+        assertEquals(listOf(survivor), fixture.cache["a"])
+        catalog.deletionResolved(a, target.id, present = null, online = false)
+        assertEquals(listOf(survivor), catalog.state.value.playlistsForPhone)
+        assertTrue(catalog.state.value.pendingDeletionIds.isEmpty())
+    }
+
+    @Test fun presentReadbackRestoresOmittedRowBeforeRefreshAndPreservesItOnFailure() = runTest {
+        val oldContents = CompletableDeferred<List<Song>>()
+        val staleSummary = CompletableDeferred<Unit>()
+        val staleSummaryStarted = CompletableDeferred<Unit>()
+        val failRefresh = CompletableDeferred<Unit>()
+        val target = smart.copy(canDelete = true)
+        val verified = target.copy(name = "Renamed", songCount = 3, coverArtId = "fresh-art", canDelete = false)
+        val survivor = Playlist("other", "Survivor")
+        val fixture = Fixture().apply {
+            cache["a"] = listOf(target, survivor)
+            listed = { listOf(survivor) }
+            fetched = { _, id -> if (id == target.id) oldContents.await() else emptyList() }
+        }
+        val catalog = fixture.catalog(this)
+        catalog.activate(a)
+        val oldRead = async { catalog.fetchContents(a, target.id) }
+        runCurrent()
+        catalog.refresh().join()
+        catalog.deletionPending(a, target)
+        fixture.listed = {
+            staleSummaryStarted.complete(Unit)
+            withContext(NonCancellable) { staleSummary.await() }
+            listOf(survivor)
+        }
+        val oldRefresh = catalog.refresh()
+        staleSummaryStarted.await()
+        fixture.listed = { failRefresh.await(); error("summary unavailable") }
+
+        try {
+            catalog.deletionResolved(a, target.id, present = verified, online = true)
+            assertEquals(listOf(survivor, verified), catalog.state.value.playlistsForPhone)
+            assertEquals(listOf(survivor, verified), fixture.cache["a"])
+            assertTrue(catalog.state.value.pendingDeletionIds.isEmpty())
+            assertFalse(target.id in catalog.state.value.deletedIds)
+        } finally {
+            staleSummary.complete(Unit)
+        }
+        oldRefresh.join()
+        oldContents.complete(listOf(song, song))
+        oldRead.await()
+        assertEquals(verified, catalog.state.value.playlists.single { it.id == target.id })
+
+        failRefresh.complete(Unit)
+        catalog.refresh().join()
+        assertNotNull(catalog.state.value.listError)
+        assertEquals(listOf(survivor, verified), catalog.state.value.playlists)
+        assertEquals(listOf(survivor, verified), fixture.cache["a"])
+    }
+
     @Test fun cachedRowsStayVisibleWhileDetailsLoadAndRefreshesCoalesce() = runTest {
         val gate = CompletableDeferred<List<Song>>()
         val fixture = Fixture().apply { cache["a"] = listOf(smart.copy(songCount = 7)); fetched = { _, _ -> gate.await() } }

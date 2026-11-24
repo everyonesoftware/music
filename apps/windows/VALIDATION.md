@@ -1,5 +1,40 @@
 # Windows implementation checkpoint — validation
 
+## Playlist deletion
+
+Use a disposable Navidrome account/library. In the native Windows app:
+
+- [ ] Open **Delete playlist** from detail **Play → Shuffle → ⋯** and from
+  the exact row's **⋯** in both Playlists layouts. Exercise mouse and keyboard,
+  including right-click and Shift+F10 on a row, and verify row click/Enter still
+  opens it. Use same-name playlists to check that the selected ID is the target.
+- [ ] Verify empty owned playlists can be deleted; foreign, read-only, unknown
+  ownership and Offline mode do not offer an actionable Delete command.
+- [ ] Verify the confirmation names the playlist, explains that library songs
+  stay, and defaults to **Cancel**. Cancel and Escape send no delete request and
+  return focus to the launching control. Explicit Delete returns to Playlists,
+  focuses its heading, and announces the outcome. Back and a delayed catalog
+  reply must not reopen or restore the deleted playlist.
+- [ ] Keep music playing and save a fixture song before deletion. Confirm the
+  queue, position, play/pause state, saved audio and unrelated playlists survive.
+- [ ] Drop the successful POST reply after the server commits. Confirm only a
+  read of the same ID is sent next, and that an unavailable or malformed read
+  is not reported as success. A preflight ownership/name change must send no POST.
+- [ ] Also fail that first same-ID read. Even if a catalog refresh omits the
+  playlist, **Check deletion again** must stay available for that exact target.
+  Retry with another outage, structured absence, and a still-present playlist.
+  Verify GET only: another failure retains the action, absence removes the
+  stale row and Back history without claiming acknowledgment, and presence
+  lets you reopen or reload the playlist for review. Repeat with a pending
+  response while entering Offline mode or switching accounts.
+
+The Windows Core client was exercised on disposable Navidrome v0.64.2. It
+deleted an empty playlist and reconciled a populated playlist deletion after the
+committed reply was deliberately lost; the same-name sibling and library tracks
+survived. The preflight and POST are separate operations, not an atomic server
+precondition. Linux compilation and source checks do not prove native input,
+dialog focus, or the screen-reader announcement.
+
 ## Playlist creation and Add to Playlist
 
 Use an isolated Navidrome library for acceptance. On native Windows:

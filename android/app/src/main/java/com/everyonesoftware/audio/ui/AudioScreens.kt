@@ -6,6 +6,7 @@ import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -34,6 +35,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.key
@@ -107,6 +110,7 @@ fun AudioApp(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?)
                 }
                 if (state.playlistNotice != null) SnackbarHost(playlistSnackbar, Modifier.fillMaxWidth())
                 state.playlistEditor?.let { PlaylistEditorDialog(it, state.canEditPlaylists, actions) }
+                state.playlistDeletion?.let { PlaylistDeletionDialog(it, state.canEditPlaylists, actions) }
             }
         }
     }
@@ -158,12 +162,15 @@ internal fun SettingsGear() {
 }
 
 @Composable
-private fun Header(title: String, eyebrow: String = "", back: (() -> Unit)? = null) {
+private fun Header(title: String, eyebrow: String = "", headingFocus: Long? = null, back: (() -> Unit)? = null) {
+    val requester = remember { FocusRequester() }
+    LaunchedEffect(headingFocus) { if (headingFocus != null) requester.requestFocus() }
     Row(Modifier.fillMaxWidth().padding(vertical = 8.dp).heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
         if (back != null) AudioIcon(Icons.AutoMirrored.Filled.ArrowBack, "Back", onClick = back)
         Column(Modifier.weight(1f)) {
             if (eyebrow.isNotBlank()) Text(eyebrow, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.semantics { heading() })
+            Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.semantics { heading() }.then(if (headingFocus != null) Modifier.focusRequester(requester).focusable() else Modifier))
         }
         SettingsGear()
     }
@@ -511,7 +518,8 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
     val deviceKind = if (playlists) "playlist" else "album"
     val sourceKind = if (playlists) PlaylistSourceKind.PLAYLIST else PlaylistSourceKind.ALBUM
     Column(Modifier.fillMaxSize()) {
-        Header(if (playlists) "Playlists" else "Albums", state.connection?.name.orEmpty(), back = { actions.showScreen(Screen.PLAYLISTS) })
+        Header(if (playlists) "Playlists" else "Albums", state.connection?.name.orEmpty(),
+            headingFocus = state.playlistDeletionFocus.takeIf { playlists }, back = { actions.showScreen(Screen.PLAYLISTS) })
         if (playlists) NewPlaylistButton(state, actions)
         OutlinedTextField(query, { actions.setCollectionQuery(kind, it) },
             Modifier.fillMaxWidth().testTag("collection-search"), singleLine = true,
@@ -553,7 +561,8 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
             LazyVerticalGrid(GridCells.Adaptive(128.dp), Modifier.weight(1f).fillMaxWidth().testTag("collection-grid"),
                 horizontalArrangement = Arrangement.spacedBy(12.dp), verticalArrangement = Arrangement.spacedBy(18.dp), contentPadding = PaddingValues(bottom = 16.dp)) {
                 gridItems(entries, key = { it.id }) { entry ->
-                    Column(Modifier.fillMaxWidth().clickable(role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}")) {
+                    Column(Modifier.fillMaxWidth().clickable(enabled = !playlists || entry.id !in state.pendingPlaylistDeletionIds,
+                        role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}")) {
                         Box {
                             Artwork(entry.coverArtId, artworkUrl, Modifier.fillMaxWidth().aspectRatio(1f))
                             CollectionPlaylistMenu(state, actions, sourceKind, entry.id, entry.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
@@ -566,7 +575,8 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
         } else {
             LazyColumn(Modifier.weight(1f).fillMaxWidth().testTag("collection-list"), contentPadding = PaddingValues(bottom = 16.dp)) {
                 items(entries, key = { it.id }) { entry ->
-                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).clickable(role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}").padding(vertical = 8.dp),
+                    Row(Modifier.fillMaxWidth().heightIn(min = 76.dp).clickable(enabled = !playlists || entry.id !in state.pendingPlaylistDeletionIds,
+                        role = Role.Button) { open(entry.id) }.testTag("${if (playlists) "playlist" else "album"}-card-${entry.id}").padding(vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         Artwork(entry.coverArtId, artworkUrl, Modifier.size(56.dp))
                         Column(Modifier.weight(1f)) {
@@ -585,7 +595,8 @@ private fun Collection(state: AudioUiState, actions: AudioUiActions, kind: Colle
 
 @Composable
 private fun PlaylistTile(playlist: Playlist, state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?, onOpen: () -> Unit) {
-    Column(Modifier.width(132.dp).clickable(enabled = !state.loading, onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
+    Column(Modifier.width(132.dp).clickable(enabled = !state.loading && playlist.id !in state.pendingPlaylistDeletionIds,
+        onClick = onOpen).testTag("playlist-card-${playlist.id}")) {
         Box {
             Artwork(playlist.coverArtId, artworkUrl, Modifier.size(132.dp))
             CollectionPlaylistMenu(state, actions, PlaylistSourceKind.PLAYLIST, playlist.id, playlist.name, Modifier.align(Alignment.TopEnd), overArtwork = true)
@@ -610,7 +621,7 @@ private fun AlbumTile(album: Album, state: AudioUiState, actions: AudioUiActions
 @Composable
 private fun Search(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val term = state.searchQuery.trim()
-    val playlists = state.playlists.filter { it.name.contains(term, ignoreCase = true) }
+    val playlists = state.playlists.filter { it.id !in state.pendingPlaylistDeletionIds && it.name.contains(term, ignoreCase = true) }
     val albums = state.albums.filter { it.name.contains(term, ignoreCase = true) || it.artist.contains(term, ignoreCase = true) }
     val artists = state.artists.filter { it.name.contains(term, ignoreCase = true) }
     Column(Modifier.fillMaxSize()) {
@@ -678,7 +689,8 @@ internal fun SongRow(song: Song, artworkUrl: (String?) -> String?, state: AudioU
 @Composable
 private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artworkUrl: (String?) -> String?) {
     val playlist = state.selectedPlaylist
-    val confirmedSongs = state.playlistSongs.takeIf { !state.playlistLoading && state.playlistDetailError == null }
+    val deletionPending = playlist?.id in state.pendingPlaylistDeletionIds
+    val confirmedSongs = state.playlistSongs.takeIf { !deletionPending && !state.playlistLoading && state.playlistDetailError == null }
     val transportEnabled = !state.loading && !confirmedSongs.isNullOrEmpty() && !state.storage.settings.offline
     Column(Modifier.fillMaxSize()) {
         CollectionDetailHeader("playlist-header") { actions.showScreen(state.backDestination) }
@@ -706,14 +718,14 @@ private fun PlaylistDetails(state: AudioUiState, actions: AudioUiActions, artwor
             if (state.playlistLoading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
             item {
                 ErrorMessage(state.playlistDetailError)
-                if (state.playlistDetailError != null && playlist != null) TextButton(actions::retryPlaylistDetail, enabled = state.canEditPlaylists) { Text("Retry") }
+                if (!deletionPending && state.playlistDetailError != null && playlist != null) TextButton(actions::retryPlaylistDetail, enabled = state.canEditPlaylists) { Text("Retry") }
                 if (!state.playlistLoading && state.playlistDetailError == null && state.playlistSongs.isEmpty()) {
                     Hint("This playlist has no songs.")
                     TextButton({ actions.showScreen(Screen.PLAYLISTS) }) { Text("Browse Library") }
                 }
             }
             // Playlists may contain the same song more than once; retain the server's order.
-            items(state.playlistSongs.size) { index ->
+            items(if (deletionPending) 0 else state.playlistSongs.size) { index ->
                 val song = state.playlistSongs[index]
                 SongRow(song, artworkUrl, state, actions, transportEnabled, Modifier.testTag("playlist-song-$index")) {
                     if (playlist != null && state.connection != null) actions.playCollectionSong(CollectionSongSelection(state.connection.id, "playlist", playlist.id, index, state.playlistSongs))

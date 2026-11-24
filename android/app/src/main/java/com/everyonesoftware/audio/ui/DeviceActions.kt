@@ -6,10 +6,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -46,12 +49,15 @@ internal fun DeviceMenu(
     canSave: Boolean, canRemove: Boolean, onSave: () -> Unit, onRemove: () -> Unit,
     modifier: Modifier = Modifier,
     onAddToPlaylist: (() -> Unit)? = null,
+    deletion: PlaylistMenuDeletion? = null,
 ) {
     var expanded by remember(accountId, itemKey, removable) { mutableStateOf(false) }
-    val enabled = accountId != null && (canSave || (removable && canRemove) || onAddToPlaylist != null)
+    val enabled = accountId != null && (canSave || (removable && canRemove) || onAddToPlaylist != null || deletion != null)
+    val launcher = remember { FocusRequester() }
+    RestorePlaylistMenuFocus(deletion, enabled, launcher)
     LaunchedEffect(enabled) { if (!enabled) expanded = false }
     Box {
-        IconButton({ expanded = true }, modifier.size(48.dp), enabled = enabled) {
+        IconButton({ expanded = true }, modifier.size(48.dp).focusRequester(launcher), enabled = enabled) {
             Icon(Icons.Default.MoreHoriz, "Device actions for $title")
         }
         DropdownMenu(expanded && enabled, onDismissRequest = { expanded = false }) {
@@ -67,6 +73,7 @@ internal fun DeviceMenu(
                 expanded = false
                 onRemove()
             })
+            deletion?.let { PlaylistDeleteMenuItem(it) { expanded = false } }
         }
     }
 }
@@ -92,12 +99,13 @@ internal fun CollectionDeviceMenu(
     val canSaveRevision = canSave && confirmedSongs != null && retained?.matchesOccurrences(confirmedSongs) != true
     DeviceMenu(state.connection?.id, "$kind:$id", name, retained != null, canSaveRevision, !state.loading,
         onSave, { actions.removeOfflineCollection(kind, id) }, modifier,
-        playlistAction(state, actions, if (kind == "playlist") PlaylistSourceKind.PLAYLIST else PlaylistSourceKind.ALBUM, id, name))
+        playlistAction(state, actions, if (kind == "playlist") PlaylistSourceKind.PLAYLIST else PlaylistSourceKind.ALBUM, id, name),
+        if (kind == "playlist") playlistMenuDeletion(state, actions, id) else null)
 }
 
 private fun playlistAction(state: AudioUiState, actions: AudioUiActions, kind: PlaylistSourceKind, id: String, title: String): (() -> Unit)? {
     val source = PlaylistSource(kind, id, title)
-    return if (state.canEditPlaylists && state.containsPlaylistSource(source)) {
+    return if (state.canEditPlaylists && !state.playlistMutationBusy && state.containsPlaylistSource(source)) {
         { actions.choosePlaylist(state.deviceActionPage, source) }
     } else null
 }
@@ -105,17 +113,55 @@ private fun playlistAction(state: AudioUiState, actions: AudioUiActions, kind: P
 @Composable
 internal fun CollectionPlaylistMenu(state: AudioUiState, actions: AudioUiActions, kind: PlaylistSourceKind,
     id: String, title: String, modifier: Modifier = Modifier, overArtwork: Boolean = false) {
-    val action = playlistAction(state, actions, kind, id, title) ?: return
+    val action = playlistAction(state, actions, kind, id, title)
+    val deletion = if (kind == PlaylistSourceKind.PLAYLIST) playlistMenuDeletion(state, actions, id) else null
+    if (action == null && deletion == null) return
     var expanded by remember(state.deviceActionPage, kind, id) { mutableStateOf(false) }
+    val launcher = remember { FocusRequester() }
+    RestorePlaylistMenuFocus(deletion, true, launcher)
     Box(modifier) {
-        IconButton({ expanded = true }, Modifier.size(48.dp).then(
+        IconButton({ expanded = true }, Modifier.size(48.dp).focusRequester(launcher).then(
             if (overArtwork) Modifier.padding(4.dp).background(MaterialTheme.colorScheme.surface, CircleShape) else Modifier)) {
             Icon(Icons.Default.MoreHoriz, "More actions for $title")
         }
         DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-            DropdownMenuItem(text = { Text("Add to Playlist") }, onClick = { expanded = false; action() })
+            if (action != null) DropdownMenuItem(text = { Text("Add to Playlist") }, onClick = { expanded = false; action() })
+            deletion?.let { PlaylistDeleteMenuItem(it) { expanded = false } }
         }
     }
+}
+
+internal data class PlaylistMenuDeletion(val available: Boolean, val pending: Boolean, val dialogTicket: Long?, val launch: () -> Unit)
+
+private fun playlistMenuDeletion(state: AudioUiState, actions: AudioUiActions, id: String): PlaylistMenuDeletion? {
+    val ticket = state.playlistDeletion?.takeIf { it.id == id }?.ticket
+    val available = state.canOfferPlaylistDeletion(id)
+    if (!available && ticket == null) return null
+    return PlaylistMenuDeletion(available, id in state.pendingPlaylistDeletionIds, ticket) {
+        actions.requestPlaylistDeletion(state.deviceActionPage, id)
+    }
+}
+
+@Composable
+private fun RestorePlaylistMenuFocus(deletion: PlaylistMenuDeletion?, enabled: Boolean, launcher: FocusRequester) {
+    var hadDialog by remember { mutableStateOf(false) }
+    LaunchedEffect(deletion?.dialogTicket, enabled) {
+        if (deletion?.dialogTicket != null) hadDialog = true
+        else if (hadDialog && enabled) {
+            hadDialog = false
+            launcher.requestFocus()
+        }
+    }
+}
+
+@Composable
+private fun PlaylistDeleteMenuItem(deletion: PlaylistMenuDeletion, close: () -> Unit) {
+    if (!deletion.available) return
+    val color = if (deletion.pending) LocalContentColor.current else MaterialTheme.colorScheme.error
+    HorizontalDivider()
+    DropdownMenuItem(text = { Text(if (deletion.pending) "Check deletion" else "Delete playlist", color = color) },
+        leadingIcon = { if (!deletion.pending) Icon(Icons.Default.DeleteOutline, null, tint = color) },
+        onClick = { close(); deletion.launch() })
 }
 
 internal fun SongCacheState.isSaved(kind: String, id: String) =

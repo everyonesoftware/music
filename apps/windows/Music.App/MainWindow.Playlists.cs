@@ -8,6 +8,7 @@ namespace Music.App;
 public sealed partial class MainWindow
 {
     private ContentDialog? playlistDialog;
+    private bool PlaylistActionBusy => playlistDialog is not null || playlistDeletionActive;
     private long playlistCatalogRevision;
     private readonly Dictionary<string, (long Revision, Playlist Playlist)> playlistEdits = new(StringComparer.Ordinal);
     private readonly HashSet<string> unverifiedPlaylistIds = new(StringComparer.Ordinal);
@@ -33,7 +34,10 @@ public sealed partial class MainWindow
     {
         var create = C<Button>("NewPlaylistButton");
         create.Visibility = page == "playlists" && client is not null ? Visibility.Visible : Visibility.Collapsed;
-        create.IsEnabled = CanEditPlaylists(connectionLease) && playlistDialog is null;
+        bool available = CanEditPlaylists(connectionLease) && !PlaylistActionBusy;
+        create.IsEnabled = available;
+        foreach (var child in C<StackPanel>("PlaylistDeletionChecks").Children)
+            if (child is InfoBar { ActionButton: Button retry }) retry.IsEnabled = available;
     }
 
     private void AddCollectionPlaylistAction(FrameworkElement anchor, object source)
@@ -50,7 +54,8 @@ public sealed partial class MainWindow
         var renderedPage = page;
         var renderedDetail = detailIdentity;
         var renderedResults = browseResultsVersion;
-        bool current() => anchor.IsLoaded && anchor.XamlRoot == root.XamlRoot && CanEditPlaylists(owner) && playlistDialog is null &&
+        bool current() => anchor.IsLoaded && anchor.XamlRoot == root.XamlRoot && CanEditPlaylists(owner) && !PlaylistActionBusy &&
+            (source is not Playlist playlist || !pendingPlaylistDeletions.ContainsKey(playlist.Id)) &&
             (valid?.Invoke() ?? (page == renderedPage && (page == "detail" ? detailIdentity == renderedDetail : browseResultsVersion == renderedResults)));
         menu ??= new MenuFlyout();
         var action = new MenuFlyoutItem { Text = "Add to Playlist", Icon = new SymbolIcon(Symbol.Add) };
@@ -91,7 +96,8 @@ public sealed partial class MainWindow
 
     private async Task EditPlaylistAsync(object? source, RequestGate.Lease owner)
     {
-        if (client is not { } target || root.XamlRoot is not { } xamlRoot || playlistDialog is not null || !CanEditPlaylists(owner)) return;
+        if (client is not { } target || root.XamlRoot is not { } xamlRoot || PlaylistActionBusy || !CanEditPlaylists(owner) ||
+            (source is Playlist playlist && pendingPlaylistDeletions.ContainsKey(playlist.Id))) return;
         long revision = navigationRevision;
         bool current() => CanEditPlaylists(owner) && target == client && navigationRevision == revision && root.XamlRoot == xamlRoot;
         using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(owner.Token);
@@ -143,7 +149,8 @@ public sealed partial class MainWindow
                 summary.Text = $"{PlaylistSourceTitle(source)} · {tracks.Count} {(tracks.Count == 1 ? "song" : "songs")}";
                 picker.Items.Clear(); picker.Items.Add(newPlaylist);
                 foreach (var group in destinations.GroupBy(p => p.Id, StringComparer.Ordinal).Where(g => g.Count() == 1)
-                    .Select(g => g.Single()).Where(p => p.CanAppend).GroupBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase))
+                    .Select(g => g.Single()).Where(p => p.CanAppend && !pendingPlaylistDeletions.ContainsKey(p.Id))
+                    .GroupBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase))
                 {
                     int number = 0;
                     foreach (var playlist in group)
@@ -277,6 +284,7 @@ public sealed partial class MainWindow
 
     private void RenderUnverifiedPlaylistAction(StackPanel panel, Playlist playlist)
     {
+        if (pendingPlaylistDeletions.ContainsKey(playlist.Id)) return; // The deletion check is offered in its own banner.
         var owner = connectionLease;
         var revision = navigationRevision;
         panel.Children.Add(Text("Playlist contents could not be verified. Reload to see the server's current songs.", 14, true));
@@ -312,6 +320,7 @@ public sealed partial class MainWindow
         }
         else if (!browsePending && page is "library" or "playlists") RenderBrowse();
         var notice = C<InfoBar>("PlaylistNotice");
+        notice.Severity = InfoBarSeverity.Success;
         notice.Message = $"Added to {confirmed.Playlist.Name}.";
         notice.IsOpen = true;
     }
@@ -319,6 +328,7 @@ public sealed partial class MainWindow
     // A startup/reconnect request predating an edit can still supply the rest of the catalog.
     private IReadOnlyList<Playlist> MergePlaylistCatalog(IReadOnlyList<Playlist> fetched, long requestedRevision)
     {
+        if (deletedPlaylistIds.Count != 0) fetched = fetched.Where(item => !deletedPlaylistIds.Contains(item.Id)).ToArray();
         if (requestedRevision == playlistCatalogRevision) return fetched;
         var latest = playlistEdits.Where(pair => pair.Value.Revision > requestedRevision)
             .ToDictionary(pair => pair.Key, pair => pair.Value.Playlist, StringComparer.Ordinal);

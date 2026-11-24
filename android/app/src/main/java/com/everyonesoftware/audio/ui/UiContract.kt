@@ -18,6 +18,8 @@ data class DeviceActionPage(val connection: Connection?, val screen: Screen, val
 data class DeviceActionFailure(val page: DeviceActionPage, val message: String)
 
 enum class PlaylistSourceKind { SONG, PLAYLIST, ALBUM, ARTIST }
+data class PlaylistDeletion(val ticket: Long, val page: DeviceActionPage, val id: String, val name: String,
+    val busy: Boolean = false, val unconfirmed: Boolean = false, val error: String? = null)
 data class PlaylistSource(val kind: PlaylistSourceKind, val id: String, val title: String)
 
 data class PlaylistEditor(
@@ -75,6 +77,10 @@ data class AudioUiState(
     val error: String? = null,
     val deviceActionFailure: DeviceActionFailure? = null,
     val playlistEditor: PlaylistEditor? = null,
+    val playlistDeletion: PlaylistDeletion? = null,
+    val playlistMutationBusy: Boolean = false,
+    val pendingPlaylistDeletionIds: Set<String> = emptySet(),
+    val playlistDeletionFocus: Long? = null,
     val playlistNotice: String? = null,
     val session: ListeningSession? = null,
     val playing: Boolean = false,
@@ -108,10 +114,14 @@ internal val AudioUiState.deviceActionPage: DeviceActionPage
 internal val AudioUiState.canEditPlaylists: Boolean
     get() = connection != null && !booting && !loading && !storage.settings.offline
 
+internal fun AudioUiState.canOfferPlaylistDeletion(id: String) = canEditPlaylists && !playlistMutationBusy &&
+    (screen == Screen.ALL_PLAYLISTS || (screen == Screen.PLAYLIST && selectedPlaylist?.id == id)) &&
+    playlists.any { it.id == id && (it.canDelete || id in pendingPlaylistDeletionIds) }
+
 internal fun AudioUiState.containsPlaylistSource(source: PlaylistSource): Boolean {
     val id = source.id
     return when (source.kind) {
-        PlaylistSourceKind.PLAYLIST -> when (screen) {
+        PlaylistSourceKind.PLAYLIST -> id !in pendingPlaylistDeletionIds && when (screen) {
             Screen.PLAYLISTS, Screen.ALL_PLAYLISTS, Screen.SEARCH -> playlists.any { it.id == id }
             Screen.PLAYLIST -> selectedPlaylist?.id == id
             else -> false
@@ -157,6 +167,8 @@ fun AudioUiState.navigateTo(destination: Screen): AudioUiState {
         screen = destination,
         deviceActionFailure = deviceActionFailure.takeIf { destination == screen },
         playlistEditor = playlistEditor.takeIf { destination == screen },
+        playlistDeletion = playlistDeletion.takeIf { destination == screen },
+        playlistDeletionFocus = playlistDeletionFocus.takeIf { destination == screen },
         playlistNotice = playlistNotice.takeIf { destination == screen },
         settingsReturnScreen = if (destination == Screen.SETTINGS && screen != Screen.SETTINGS && !returningToSettings) screen else settingsReturnScreen,
         updatesReturnScreen = if (destination == Screen.UPDATES && screen != Screen.UPDATES) screen else updatesReturnScreen,
@@ -211,6 +223,9 @@ interface AudioUiActions {
     fun dismissPlaylistEditor() = Unit
     fun createPlaylist(name: String) = Unit
     fun appendToPlaylist(id: String) = Unit
+    fun requestPlaylistDeletion(page: DeviceActionPage, id: String) = Unit
+    fun dismissPlaylistDeletion() = Unit
+    fun confirmPlaylistDeletion() = Unit
     fun clearPlaylistNotice() = Unit
     fun retryPlaylistDetail() = Unit
     fun loadArtists() = Unit
