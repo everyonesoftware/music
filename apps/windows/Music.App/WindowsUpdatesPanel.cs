@@ -156,7 +156,7 @@ public sealed partial class WindowsUpdatesPanel : IDisposable
         else status.Visibility = Visibility.Visible;
         bool busy = state.Phase is WindowsUpdatePhase.Checking or WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Restarting;
         check.Content = state.Phase == WindowsUpdatePhase.Checking ? "Checking…" : "Check for updates";
-        check.IsEnabled = !busy && state.Phase is not (WindowsUpdatePhase.Ready or WindowsUpdatePhase.NotInstalled);
+        check.IsEnabled = state.Phase != WindowsUpdatePhase.Checking;
         actions.Visibility = state.Phase is WindowsUpdatePhase.Available or WindowsUpdatePhase.Ready ? Visibility.Visible : Visibility.Collapsed;
         download.Visibility = state.Phase == WindowsUpdatePhase.Available ? Visibility.Visible : Visibility.Collapsed;
         download.IsEnabled = !busy;

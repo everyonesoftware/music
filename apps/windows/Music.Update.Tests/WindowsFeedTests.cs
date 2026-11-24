@@ -6,6 +6,7 @@ using System.Text.Json.Nodes;
 using Music.App;
 using Music.Core;
 using Velopack;
+using Velopack.Exceptions;
 using Velopack.Locators;
 using Velopack.Logging;
 using Velopack.Sources;
@@ -125,6 +126,90 @@ public sealed class WindowsFeedTests
         var response = new HttpResponseMessage(status);
         if (location is not null) response.Headers.Location = new Uri(location, UriKind.RelativeOrAbsolute);
         return response;
+    }
+
+    [Fact]
+    public async Task Rechecking_a_downloaded_package_rejects_changed_bytes_under_the_same_version()
+    {
+        var directory = Directory.CreateTempSubdirectory("music-windows-recheck-");
+        try
+        {
+            var downloader = new Downloader { Package = "update fixture"u8.ToArray() };
+            var backend = new WindowsUpdateBackend(new WindowsGithubSource(downloader),
+                new TestVelopackLocator("MusicWindows", "0.1.19", directory.FullName, logger: NullVelopackLogger.Instance));
+            var version = new Version(0, 1, 20);
+            Assert.Equal(version, await backend.CheckAsync());
+            await backend.DownloadAsync(version, _ => { }, CancellationToken.None);
+            Assert.Equal(version, await backend.CheckAsync());
+
+            downloader.Package = "other fixture!"u8.ToArray();
+            await Assert.ThrowsAsync<InvalidDataException>(() => backend.CheckAsync());
+            Assert.Single(downloader.Requests, url => url == Root + PackageName);
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("0.1.19")]
+    [InlineData("0.1.21")]
+    public async Task Rechecking_rejects_a_changed_staged_version_after_an_intervening_offer(string interveningVersion)
+    {
+        var directory = Directory.CreateTempSubdirectory("music-windows-staged-");
+        try
+        {
+            var downloader = new Downloader { Package = "update fixture"u8.ToArray() };
+            var backend = new WindowsUpdateBackend(new WindowsGithubSource(downloader),
+                new TestVelopackLocator("MusicWindows", "0.1.19", directory.FullName, logger: NullVelopackLogger.Instance));
+            var version = new Version(0, 1, 20);
+            Assert.Equal(version, await backend.CheckAsync());
+            await backend.DownloadAsync(version, _ => { }, CancellationToken.None);
+
+            downloader.IndexedVersion = interveningVersion;
+            Assert.Equal(interveningVersion == "0.1.19" ? null : Version.Parse(interveningVersion), await backend.CheckAsync());
+
+            downloader.IndexedVersion = "0.1.20";
+            downloader.Package = "other fixture!"u8.ToArray();
+            await Assert.ThrowsAsync<InvalidDataException>(() => backend.CheckAsync());
+            Assert.Single(downloader.Requests, url => url == Root + PackageName);
+        }
+        finally { directory.Delete(recursive: true); }
+    }
+
+    [Theory]
+    [InlineData("update fixture", true)]
+    [InlineData("other fixture!", false)]
+    [InlineData("short fixture", false)]
+    public async Task Fresh_backend_verifies_cached_package_before_accepting_download(string cachedBytes, bool valid)
+    {
+        var directory = Directory.CreateTempSubdirectory("music-windows-cached-");
+        try
+        {
+            var downloader = new Downloader { Package = "update fixture"u8.ToArray() };
+            var locator = new TestVelopackLocator("MusicWindows", "0.1.19", directory.FullName, logger: NullVelopackLogger.Instance);
+            var backend = new WindowsUpdateBackend(new WindowsGithubSource(downloader), locator);
+            var version = new Version(0, 1, 20);
+            Assert.Equal(version, await backend.CheckAsync());
+            await backend.DownloadAsync(version, _ => { }, CancellationToken.None);
+
+            await File.WriteAllBytesAsync(Path.Combine(directory.FullName, PackageName), Encoding.UTF8.GetBytes(cachedBytes));
+            var freshBackend = new WindowsUpdateBackend(new WindowsGithubSource(downloader), locator);
+            Assert.Equal(version, await freshBackend.CheckAsync());
+            if (valid)
+            {
+                await freshBackend.DownloadAsync(version, _ => { }, CancellationToken.None);
+                Assert.Single(downloader.Requests, url => url == Root + PackageName);
+            }
+            else
+            {
+                await Assert.ThrowsAsync<ChecksumFailedException>(() => freshBackend.DownloadAsync(version, _ => { }, CancellationToken.None));
+                Assert.Single(downloader.Requests, url => url == Root + PackageName);
+                Assert.Equal(version, await freshBackend.CheckAsync());
+                await freshBackend.DownloadAsync(version, _ => { }, CancellationToken.None);
+                Assert.Equal(2, downloader.Requests.Count(url => url == Root + PackageName));
+                Assert.Equal(downloader.Package, await File.ReadAllBytesAsync(Path.Combine(directory.FullName, PackageName)));
+            }
+        }
+        finally { directory.Delete(recursive: true); }
     }
 
     [Theory]
@@ -441,29 +526,35 @@ public sealed class WindowsFeedTests
     private sealed class Downloader : IFileDownloader
     {
         public string? Fault, Tag;
+        public byte[]? Package;
+        public string IndexedVersion = "0.1.20";
         public readonly List<string> Requests = new();
         public Task<string> DownloadString(string url, IDictionary<string, string>? headers = null, double timeout = 30) =>
             throw new InvalidOperationException($"Unexpected string request: {url}");
         public Task<byte[]> DownloadBytes(string url, IDictionary<string, string>? headers = null, double timeout = 30)
         {
             Requests.Add(url);
-            if (url == IndexUrl) return Task.FromResult(Encoding.UTF8.GetBytes(ValidIndex));
-            if (url == TagUrl)
+            if (url == IndexUrl) return Task.FromResult(Encoding.UTF8.GetBytes(ValidIndex.Replace("0.1.20", IndexedVersion, StringComparison.Ordinal)));
+            if (url == TagUrl.Replace("0.1.20", IndexedVersion, StringComparison.Ordinal))
             {
                 var tag = Release();
                 if (Fault == "wrong-origin") tag["assets"]![0]!["browser_download_url"] = "https://example.com/releases.win-x64.json";
                 if (Fault == "missing-package") tag["assets"]!.AsArray().RemoveAt(1);
-                return Task.FromResult(Encoding.UTF8.GetBytes(Tag ?? tag.ToJsonString()));
+                return Task.FromResult(Encoding.UTF8.GetBytes(Tag ?? tag.ToJsonString().Replace("0.1.20", IndexedVersion, StringComparison.Ordinal)));
             }
-            Assert.Equal(Root + FeedName, url);
+            Assert.Equal(Root.Replace("0.1.20", IndexedVersion, StringComparison.Ordinal) + FeedName, url);
             string feed = """
                 {"Assets":[{"PackageId":"MusicWindows","Version":"0.1.20","Type":"Full","FileName":"MusicWindows-0.1.20-win-x64-full.nupkg","Size":100,"SHA256":"ABCD"},{"PackageId":"Android","Version":"0.1.99","Type":"Full","FileName":"music.apk","Size":1}]}
                 """;
+            feed = feed.Replace("0.1.20", IndexedVersion, StringComparison.Ordinal);
             if (Fault == "wrong-version") feed = feed.Replace("0.1.20", "0.1.21", StringComparison.Ordinal);
             if (Fault == "wrong-architecture") feed = feed.Replace("win-x64", "win-arm64", StringComparison.Ordinal);
             if (Fault == "empty-feed") feed = "{\"Assets\":[]}";
             if (Fault == "wrong-package") feed = feed.Replace("MusicWindows", "UnrelatedApp", StringComparison.Ordinal);
             if (Fault == "malformed-feed") feed = "not JSON";
+            if (Package is { } package)
+                feed = feed.Replace("\"Size\":100,\"SHA256\":\"ABCD\"",
+                    $"\"Size\":{package.Length},\"SHA256\":\"{Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(package))}\"", StringComparison.Ordinal);
             if (Fault == "delta-entry") feed = feed.Replace("\"Type\":\"Full\"", "\"Type\":\"Delta\"", StringComparison.Ordinal);
             if (Fault == "duplicate-entry")
             {
@@ -474,6 +565,9 @@ public sealed class WindowsFeedTests
             return Task.FromResult(Encoding.UTF8.GetBytes(feed));
         }
         public Task DownloadFile(string url, string targetFile, Action<int>? progress = null, IDictionary<string, string>? headers = null, double timeout = 30, CancellationToken cancelToken = default)
-        { Requests.Add(url); return Task.CompletedTask; }
+        {
+            Requests.Add(url);
+            return Package is { } package ? File.WriteAllBytesAsync(targetFile, package, cancelToken) : Task.CompletedTask;
+        }
     }
 }

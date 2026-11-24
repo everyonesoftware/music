@@ -21,7 +21,8 @@ public sealed class WindowsUpdateController : IDisposable
     private readonly IWindowsUpdateBackend backend;
     private readonly Func<Task> preserveSession;
     private readonly CancellationTokenSource lifetime = new();
-    private int busy;
+    private readonly SemaphoreSlim operation = new(1, 1);
+    private int checkRequested;
     private int startupRequested;
     private bool disposed;
     public WindowsUpdateStatus Status { get; private set; } = new(WindowsUpdatePhase.Idle, "");
@@ -47,16 +48,32 @@ public sealed class WindowsUpdateController : IDisposable
 
     private async Task CheckAsync(bool background)
     {
-        if (disposed || Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+        if (disposed || Interlocked.CompareExchange(ref checkRequested, 1, 0) != 0) return;
+        // A manual check clicked during download waits rather than interrupting package verification.
+        await operation.WaitAsync();
+        var previous = Status;
         try
         {
-            if (Status.Phase is WindowsUpdatePhase.Ready or WindowsUpdatePhase.Restarting) return;
+            if (disposed || previous.Phase == WindowsUpdatePhase.Restarting) return;
             Set(new(WindowsUpdatePhase.Checking, "Looking for a newer Windows version…"));
             // Reserve the shared gate before dispatch, including lazy package locator initialization.
-            Set(await (background ? Task.Run(() => DiscoverAsync(startup: true)) : DiscoverAsync(startup: false)));
+            var result = await (background ? Task.Run(() => DiscoverAsync(startup: true)) : DiscoverAsync(startup: false));
+            if (previous.Phase == WindowsUpdatePhase.Ready && result.Phase == WindowsUpdatePhase.Available && result.Version == previous.Version)
+                result = result with { Phase = WindowsUpdatePhase.Ready, Message = $"Music {result.Version} is downloaded.", Progress = 100 };
+            Set(result);
         }
-        catch { Set(new(WindowsUpdatePhase.Error, "Could not check for updates. Check your internet connection or try again later (GitHub may be rate-limiting requests).")); }
-        finally { Interlocked.Exchange(ref busy, 0); }
+        catch
+        {
+            const string error = "Could not check for updates. Check your internet connection or try again later (GitHub may be rate-limiting requests).";
+            Set(previous.Phase == WindowsUpdatePhase.Ready
+                ? previous with { Message = error + " The downloaded update is still ready to install." }
+                : new(WindowsUpdatePhase.Error, error));
+        }
+        finally
+        {
+            operation.Release();
+            Interlocked.Exchange(ref checkRequested, 0);
+        }
     }
 
     private async Task<WindowsUpdateStatus> DiscoverAsync(bool startup)
@@ -73,7 +90,7 @@ public sealed class WindowsUpdateController : IDisposable
 
     public async Task DownloadAsync()
     {
-        if (disposed || Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+        if (disposed || !operation.Wait(0)) return;
         try
         {
             if (Status.Phase != WindowsUpdatePhase.Available || Status.Version is not { } version) return;
@@ -87,12 +104,12 @@ public sealed class WindowsUpdateController : IDisposable
             Set(new(WindowsUpdatePhase.Ready, $"Music {version} is downloaded.", version, 100, changelog));
         }
         catch { Set(new(WindowsUpdatePhase.Error, "Download failed or was cancelled. Nothing was installed. Check for updates to try again.")); }
-        finally { Interlocked.Exchange(ref busy, 0); }
+        finally { operation.Release(); }
     }
 
     public async Task RestartAsync()
     {
-        if (disposed || Interlocked.CompareExchange(ref busy, 1, 0) != 0) return;
+        if (disposed || !operation.Wait(0)) return;
         var version = Status.Version;
         var changelog = Status.Changelog;
         try
@@ -103,7 +120,7 @@ public sealed class WindowsUpdateController : IDisposable
             if (!disposed) backend.ApplyAndRestart(version);
         }
         catch { Set(new(WindowsUpdatePhase.Ready, "Could not save your session or start the installer. Music has not requested another restart. Try Restart and install again.", version, 100, changelog)); }
-        finally { Interlocked.Exchange(ref busy, 0); }
+        finally { operation.Release(); }
     }
 
     public void Dispose()

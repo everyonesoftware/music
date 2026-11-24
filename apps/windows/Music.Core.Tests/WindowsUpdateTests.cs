@@ -229,15 +229,61 @@ public sealed class WindowsUpdateTests
     }
 
     [Fact]
-    public async Task A_new_check_cannot_discard_an_already_downloaded_update()
+    public async Task Recheck_replaces_a_downloaded_offer_when_a_newer_version_appears()
     {
         var backend = new Backend();
         using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
         await controller.CheckAsync();
         await controller.DownloadAsync();
+        backend.Offered = new Version(0, 1, 30);
+        await controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Available, controller.Status.Phase);
+        Assert.Equal(backend.Offered, controller.Status.Version);
+        Assert.Equal(2, backend.Checks);
+        await controller.RestartAsync();
+        Assert.Equal(0, backend.Applies);
+        Assert.Equal(1, backend.Downloads);
+        await controller.DownloadAsync();
+        Assert.Equal(WindowsUpdatePhase.Ready, controller.Status.Phase);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Unchanged_offer_or_failed_recheck_keeps_the_download_ready(bool fail)
+    {
+        var backend = new Backend();
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        await controller.CheckAsync();
+        await controller.DownloadAsync();
+        backend.CheckError = fail;
         await controller.CheckAsync();
         Assert.Equal(WindowsUpdatePhase.Ready, controller.Status.Phase);
+        Assert.Equal(2, backend.Checks);
+        if (fail) Assert.Contains("Could not check", controller.Status.Message);
+        await controller.RestartAsync();
+        Assert.Equal(1, backend.Applies);
+        Assert.Equal(1, backend.Downloads);
+    }
+
+    [Fact]
+    public async Task Check_requested_during_download_runs_once_after_it_finishes()
+    {
+        var pending = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var backend = new Backend { PendingDownload = pending.Task };
+        using var controller = new WindowsUpdateController(backend, () => Task.CompletedTask);
+        await controller.CheckAsync();
+        var download = controller.DownloadAsync();
+        backend.Offered = new Version(0, 1, 30);
+        var check = controller.CheckAsync();
+        await controller.CheckAsync();
+        Assert.Equal(WindowsUpdatePhase.Downloading, controller.Status.Phase);
         Assert.Equal(1, backend.Checks);
+        pending.SetResult();
+        await Task.WhenAll(download, check);
+        Assert.Equal(2, backend.Checks);
+        Assert.Equal(WindowsUpdatePhase.Available, controller.Status.Phase);
+        Assert.Equal(backend.Offered, controller.Status.Version);
     }
 
     private sealed class Backend : IWindowsUpdateBackend
@@ -250,9 +296,10 @@ public sealed class WindowsUpdateTests
         public Version? Offered = new(0, 1, 20);
         public bool CheckError, DownloadError;
         public Task<Version?>? PendingCheck;
+        public Task? PendingDownload;
         public int Checks, Downloads, Applies;
         public Task<Version?> CheckAsync() { Checks++; return CheckError ? Task.FromException<Version?>(new IOException("secret url")) : PendingCheck ?? Task.FromResult(Offered); }
-        public Task DownloadAsync(Version version, Action<int> progress, CancellationToken token) { Downloads++; progress(51); return DownloadError ? Task.FromException(new IOException("secret path")) : Task.CompletedTask; }
+        public Task DownloadAsync(Version version, Action<int> progress, CancellationToken token) { Downloads++; progress(51); return DownloadError ? Task.FromException(new IOException("secret path")) : PendingDownload ?? Task.CompletedTask; }
         public Action? BeforeApply;
         public void ApplyAndRestart(Version version) { BeforeApply?.Invoke(); Applies++; }
     }

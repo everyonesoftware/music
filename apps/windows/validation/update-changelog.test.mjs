@@ -19,8 +19,10 @@ test('notes are delivered with check status; disclosure cannot start network wor
   assert.doesNotMatch(panel, /WindowsChangelogClient|ChangelogExpanding|notes\.LoadAsync|Assembly.GetExecutingAssembly/);
   assert.match(panel, /RetryNotesClicked[^\n]*await controller.CheckAsync\(\)/);
   assert.match(panel, /notes\.Dispose\(\)/);
-  assert.match(backend, /Changelog = source.GetChangelog\(CurrentVersion, update.TargetFullRelease\)/);
-  assert.match(backend, /new UpdateManager\(source,/);
+  assert.match(backend, /var target = update\.TargetFullRelease;/);
+  assert.match(backend, /var changelog = source\.GetChangelog\(CurrentVersion, target\);\s*offered = update;\s*Changelog = changelog;/);
+  assert.match(backend, /new PackageUpdateManager\(source,/);
+  assert.match(backend, /: UpdateManager\(source, options, locator\)/);
   assert.doesNotMatch(client, /HttpClient|compare\/|commits\/|IsRelevant|Regex.Replace/);
 });
 test('initial status and retry copy describe a new update check, not disclosure fetching', () => {

@@ -4,6 +4,7 @@ using System.Net;
 using System.Text.Json;
 using Music.Core;
 using Velopack;
+using Velopack.Exceptions;
 using Velopack.Locators;
 using Velopack.Logging;
 using Velopack.Sources;
@@ -336,13 +337,13 @@ public sealed class WindowsGithubSource : GithubSource
 public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
 {
     private readonly WindowsGithubSource source;
-    private readonly Lazy<UpdateManager> manager;
+    private readonly Lazy<PackageUpdateManager> manager;
     public WindowsUpdateBackend() : this(new WindowsGithubSource()) { }
 
     internal WindowsUpdateBackend(WindowsGithubSource source, IVelopackLocator? locator = null)
     {
         this.source = source;
-        manager = new(() => new UpdateManager(source, new UpdateOptions
+        manager = new(() => new PackageUpdateManager(source, new UpdateOptions
         {
             ExplicitChannel = WindowsGithubSource.Channel,
             AllowVersionDowngrade = false,
@@ -350,6 +351,7 @@ public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
         }, locator));
     }
     private UpdateInfo? offered;
+    private VelopackAsset? staged;
     private bool downloaded;
     public bool IsInstalled => manager.Value.IsInstalled;
     public bool IsStartupCheckDeferred => source.IsStartupCheckDeferred;
@@ -358,16 +360,30 @@ public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
 
     public async Task<Version?> CheckAsync()
     {
-        offered = null;
-        Changelog = null;
-        downloaded = false;
         var update = await manager.Value.CheckForUpdatesAsync();
-        if (update is null) return null;
-        var version = Version.Parse(update.TargetFullRelease.Version.ToString());
-        if (version <= CurrentVersion || update.IsDowngrade || update.TargetFullRelease.PackageId != "MusicWindows")
+        if (update is null)
+        {
+            offered = null;
+            Changelog = null;
+            downloaded = false;
+            return null;
+        }
+        var target = update.TargetFullRelease;
+        var version = Version.Parse(target.Version.ToString());
+        if (version <= CurrentVersion || update.IsDowngrade || target.PackageId != "MusicWindows")
             throw new InvalidDataException("Unsafe Windows update target.");
+
+        // An intervening check can replace the offer without removing the verified package from disk.
+        bool sameVersion = staged is not null && staged.Version == target.Version;
+        if (staged is not null && sameVersion && (staged.FileName != target.FileName || staged.Size != target.Size
+            || !string.Equals(staged.SHA256, target.SHA256, StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(staged.SHA1, target.SHA1, StringComparison.OrdinalIgnoreCase)))
+            throw new InvalidDataException("The staged Windows release differs from the published package.");
+
+        var changelog = source.GetChangelog(CurrentVersion, target);
         offered = update;
-        Changelog = source.GetChangelog(CurrentVersion, update.TargetFullRelease);
+        Changelog = changelog;
+        downloaded = downloaded && sameVersion;
         return version;
     }
 
@@ -381,8 +397,13 @@ public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
     public async Task DownloadAsync(Version version, Action<int> progress, CancellationToken token)
     {
         downloaded = false;
-        await manager.Value.DownloadUpdatesAsync(RequireOffer(version), progress, token);
+        var update = RequireOffer(version);
+        await manager.Value.DownloadUpdatesAsync(update, progress, token);
         token.ThrowIfCancellationRequested();
+        // Velopack can return without checking an already-cached package. Verify before granting Ready.
+        await manager.Value.VerifyStagedPackageAsync(update.TargetFullRelease, token);
+        token.ThrowIfCancellationRequested();
+        staged = update.TargetFullRelease;
         downloaded = true;
     }
 
@@ -391,5 +412,24 @@ public sealed class WindowsUpdateBackend : IWindowsUpdateBackend
         var update = RequireOffer(version);
         if (!downloaded) throw new InvalidOperationException("Download the Windows update first.");
         manager.Value.ApplyUpdatesAndRestart(update.TargetFullRelease, Array.Empty<string>());
+    }
+
+    private sealed class PackageUpdateManager(IUpdateSource source, UpdateOptions options, IVelopackLocator? locator)
+        : UpdateManager(source, options, locator)
+    {
+        public async Task VerifyStagedPackageAsync(VelopackAsset asset, CancellationToken token)
+        {
+            using var updateLock = await AcquireUpdateLock().ConfigureAwait(false);
+            token.ThrowIfCancellationRequested();
+            // The feed validator requires the exact, version-derived package filename.
+            string path = Path.Combine(Locator.PackagesDir!, asset.FileName);
+            try { await VerifyPackageChecksumAsync(asset, path).ConfigureAwait(false); }
+            catch (ChecksumFailedException)
+            {
+                // Clear only the rejected package so the next explicit Download can fetch fresh bytes.
+                File.Delete(path);
+                throw;
+            }
+        }
     }
 }

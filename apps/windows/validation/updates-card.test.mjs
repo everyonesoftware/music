@@ -49,3 +49,7 @@ test('current card collapses the entire action row, preserving explicit download
   assert.doesNotMatch(panel, /\.Parent\b/);
   assert.match(main, /new WindowsUpdatesPanel\(root, DispatcherQueue, \(\) =>\s*TrySavePlayback\(\)/);
 });
+
+test('the manual check button is disabled only during discovery', () => {
+  assert.match(panel, /check\.IsEnabled = state\.Phase != WindowsUpdatePhase\.Checking;/);
+});
