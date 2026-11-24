@@ -50,12 +50,9 @@ public sealed class UpdatesPanelContractTests
     }
 
     [Fact]
-    public void Music_specific_recheck_starts_hidden_beside_the_shared_panel()
+    public void No_duplicate_recheck_button_is_declared()
     {
         var named = ReadNamedControls();
-        var recheck = named["RecheckUpdateButton"];
-        Assert.Equal("Button", recheck.Name.LocalName);
-        Assert.Equal(named["UpdatesPanelHost"].Parent, recheck.Parent);
-        Assert.Equal("Collapsed", recheck.Attribute("Visibility")?.Value);
+        Assert.DoesNotContain("RecheckUpdateButton", named.Keys);
     }
 }

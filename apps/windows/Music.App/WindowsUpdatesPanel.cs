@@ -17,7 +17,7 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
     private readonly TextBlock notesStatus;
     private readonly Expander changelog;
     private readonly StackPanel notesContent;
-    private readonly Button retryNotes, recheck;
+    private readonly Button retryNotes;
     private readonly WindowsChangelogController notes;
     private Version? shownOffer;
     private bool disposed;
@@ -34,13 +34,11 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
         notesStatus = (TextBlock)root.FindName("ChangelogStatus");
         notesContent = (StackPanel)root.FindName("ChangelogContent");
         retryNotes = (Button)root.FindName("RetryChangelogButton");
-        recheck = (Button)root.FindName("RecheckUpdateButton");
         // Resolve names before moving the notes subtree into the shared panel's details slot.
         ((ContentControl)root.FindName("ChangelogParkingHost")).Content = null;
         ((ContentControl)root.FindName("UpdatesPanelHost")).Content = panel.View;
         notes = new WindowsChangelogController();
         retryNotes.Click += RetryNotesClicked;
-        recheck.Click += RecheckClicked;
         notes.Changed += NotesChanged;
         panel.CheckRequested += CheckRequested;
         panel.DownloadRequested += DownloadRequested;
@@ -55,7 +53,6 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
     private async void DownloadRequested(object? sender, EventArgs e) => await controller.DownloadAsync();
     private async void RestartRequested(object? sender, EventArgs e) => await controller.RestartAsync();
     private async void RetryNotesClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
-    private async void RecheckClicked(object sender, RoutedEventArgs e) => await controller.CheckAsync();
 
     private void NotesChanged()
     {
@@ -135,12 +132,11 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
         shownOffer = state.Version;
         notes.SetOffer(state.Version, state.Changelog);
         retryNotes.IsEnabled = state.Phase == WindowsUpdatePhase.Available;
-        // The pinned shared panel disables its Check button in these phases. Music supports
-        // checking for a replacement of a staged offer, queued behind an in-flight download.
-        recheck.Visibility = state.Phase is WindowsUpdatePhase.Downloading or WindowsUpdatePhase.Ready
-            ? Visibility.Visible : Visibility.Collapsed;
-        panel.Render(new UpdateSnapshot(ToSharedPhase(state.Phase), state.Message, state.Version, state.Progress),
-            restartAllowed: true, changelog: changelog);
+        // Music's controller queues checks behind an in-flight download and can recheck a staged offer.
+        panel.Render(new UpdateSnapshot(ToSharedPhase(state.Phase), state.Message, state.Version, state.Progress)
+        {
+            AllowRecheckDuringDownloadOrReady = true
+        }, restartAllowed: true, changelog: changelog);
     }
 
     private static UpdatePhase ToSharedPhase(WindowsUpdatePhase phase) => phase switch
@@ -167,7 +163,6 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
         panel.RestartRequested -= RestartRequested;
         panel.Dispose();
         retryNotes.Click -= RetryNotesClicked;
-        recheck.Click -= RecheckClicked;
         notes.Changed -= NotesChanged;
         notes.Dispose();
         controller.Changed -= OnChanged;

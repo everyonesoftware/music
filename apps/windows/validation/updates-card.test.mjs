@@ -10,7 +10,7 @@ const main = read('MainWindow.cs');
 const controller = read('../Music.Core/WindowsUpdateController.cs');
 
 test('Music mounts the published shared Updates panel without a parallel local status card', () => {
-  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.0-alpha\.1\]"\s*\/>/);
+  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.0-alpha\.2\]"\s*\/>/);
   const shell = read('Shell.xaml');
   assert.match(shell, /<ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch"\s*\/>/);
   assert.doesNotMatch(shell, /x:Name="(?:VersionText|CheckUpdatesButton|UpdateTitle|UpdateStatus|UpdateOfferedVersion|UpdateProgress|UpdateActions|DownloadUpdateButton|RestartUpdateButton)"/);
@@ -28,17 +28,14 @@ test('shared actions drive Music operations and snapshot rendering stays on the 
     assert.match(panel, new RegExp(`${event}\\([^\\n]+=> await controller\\.${method}\\(\\)`));
   }
   assert.match(panel, /dispatcher\.TryEnqueue\(\(\) =>[\s\S]*?if \(!disposed\) Render\(controller\.Status\)/);
-  assert.match(panel, /panel\.Render\(new UpdateSnapshot\(ToSharedPhase\(state\.Phase\), state\.Message, state\.Version, state\.Progress\),\s*restartAllowed: true, changelog: changelog\)/);
+  assert.match(panel, /panel\.Render\(new UpdateSnapshot\(ToSharedPhase\(state\.Phase\), state\.Message, state\.Version, state\.Progress\)\s*\{\s*AllowRecheckDuringDownloadOrReady = true\s*\},\s*restartAllowed: true, changelog: changelog\)/);
   assert.match(panel, /panel\.Dispose\(\)/);
   assert.match(panel, /controller\.Changed -= OnChanged/);
 });
 
-test('Music retains a manual recheck for a downloaded or downloading offer', () => {
-  assert.match(read('Shell.xaml'), /<Button x:Name="RecheckUpdateButton"[^>]*Content="Check for a newer update"[^>]*Visibility="Collapsed"/);
-  assert.match(panel, /recheck\.Click \+= RecheckClicked/);
-  assert.match(panel, /recheck\.Click -= RecheckClicked/);
-  assert.match(panel, /RecheckClicked[^\n]*await controller\.CheckAsync\(\)/);
-  assert.match(panel, /recheck\.Visibility = state\.Phase is WindowsUpdatePhase\.Downloading or WindowsUpdatePhase\.Ready/);
+test('Music uses no separate recheck control or click handler', () => {
+  assert.doesNotMatch(read('Shell.xaml'), /RecheckUpdateButton|Check for a newer update/);
+  assert.doesNotMatch(panel, /RecheckUpdateButton|RecheckClicked/);
 });
 
 test('normal Windows activation starts discovery without waiting for account restoration', () => {

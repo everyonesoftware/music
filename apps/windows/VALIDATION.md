@@ -110,9 +110,9 @@ native rendering or input acceptance.
 
 Settings hosts the published `EveryoneSoftware.WindowsCommon` WinUI panel. Music
 owns discovery, download/apply, the cached changelog and playback preservation.
-The pinned shared Check button is disabled while downloading or Ready; the
-Music-only **Check for a newer update** action preserves rechecking in those
-states. During download the controller queues the check behind the package work.
+Music opts into keeping the shared **Check for updates** button enabled while
+downloading or ready to install. During download the controller queues the check
+behind the package work; there is no separate recheck button.
 The opt-in native acceptance harness checks that Settings realizes the idle
 shared panel with the running assembly version and an enabled Check button.
 
@@ -172,7 +172,7 @@ Native Windows acceptance remains required:
   notes must be fetched during Check, never during either disclosure.
 - [ ] Collapse/reopen before and after Download; retain the same notes and inspect
   the Ready to install card at restored/maximized sizes and increased font scale.
-- [ ] Use **Check for a newer update** during download and from Ready. Verify a
+- [ ] Use the same **Check for updates** button during download and from Ready. Verify a
   queued check does not interrupt download, and Ready survives a failed recheck
   or an unchanged offer. A newer offer still requires a separate download.
 - [ ] Simulate missing/malformed/rate-limited manifests and absent installed

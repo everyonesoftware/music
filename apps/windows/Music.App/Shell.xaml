@@ -259,7 +259,6 @@
                   </StackPanel>
                 </Expander>
               </ContentControl>
-              <Button x:Name="RecheckUpdateButton" Content="Check for a newer update" Visibility="Collapsed"/>
             </StackPanel>
             <StackPanel Spacing="12"><TextBlock Text="Connection" FontSize="21" FontWeight="SemiBold"/><TextBlock Text="Connect to your Navidrome server over HTTPS. Your password is stored in Windows Credential Locker, never in the profile file." Foreground="{StaticResource Muted}" TextWrapping="Wrap"/>
               <Border Background="{StaticResource SettingsCardBackground}" BorderBrush="{StaticResource SettingsCardBorder}" BorderThickness="1" CornerRadius="6" Padding="20"><StackPanel Spacing="12">
