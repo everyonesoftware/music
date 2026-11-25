@@ -10,7 +10,7 @@ const main = read('MainWindow.cs');
 const controller = read('../Music.Core/WindowsUpdateController.cs');
 
 test('Music mounts the published shared Updates panel without a parallel local status card', () => {
-  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.0-alpha\.2\]"\s*\/>/);
+  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.5\]"\s*\/>/);
   const shell = read('Shell.xaml');
   assert.match(shell, /<ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch"\s*\/>/);
   assert.doesNotMatch(shell, /x:Name="(?:VersionText|CheckUpdatesButton|UpdateTitle|UpdateStatus|UpdateOfferedVersion|UpdateProgress|UpdateActions|DownloadUpdateButton|RestartUpdateButton)"/);
