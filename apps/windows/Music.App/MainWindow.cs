@@ -382,7 +382,7 @@ public sealed partial class MainWindow : Window
         C<TextBlock>("PageTitle").Text = char.ToUpperInvariant(target[0]) + target[1..];
         C<TextBox>("SearchBox").Visibility = target == "settings" ? Visibility.Collapsed : Visibility.Visible;
         C<Button>("LayoutButton").Visibility = target is "library" or "settings" ? Visibility.Collapsed : Visibility.Visible;
-        C<StackPanel>("SettingsPanel").Visibility = target == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        C<Grid>("SettingsLayout").Visibility = target == "settings" ? Visibility.Visible : Visibility.Collapsed;
         C<StackPanel>("WelcomePanel").Visibility = target != "settings" && client is null ? Visibility.Visible : Visibility.Collapsed;
         C<StackPanel>("BrowsePanel").Visibility = target != "settings" && client is not null ? Visibility.Visible : Visibility.Collapsed;
         C<ProgressBar>("BusyBar").Visibility = Visibility.Collapsed;

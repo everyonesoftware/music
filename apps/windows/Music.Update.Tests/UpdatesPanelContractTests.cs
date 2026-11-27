@@ -19,11 +19,23 @@ public sealed class UpdatesPanelContractTests
         var scroll = named["MainScroll"];
         Assert.Equal("ContentControl", host.Name.LocalName);
         Assert.Equal("Stretch", host.Attribute("HorizontalContentAlignment")?.Value);
+        Assert.Equal("False", host.Attribute("IsTabStop")?.Value);
         Assert.Empty(host.Elements());
         Assert.Equal(settings, host.Parent!.Parent);
-        Assert.Equal("720", settings.Attribute("MaxWidth")?.Value);
-        Assert.Equal("Stretch", settings.Attribute("HorizontalAlignment")?.Value);
-        Assert.Contains(scroll, settings.Ancestors());
+        Assert.Equal(new[] { "Updates", "Connection", "Connection info" },
+            settings.Elements().Select(section => section.Elements().First().Attribute("Text")?.Value));
+        Assert.Null(settings.Attribute("MaxWidth"));
+        var layout = named["SettingsLayout"];
+        Assert.Equal(layout, settings.Parent);
+        Assert.Equal("Collapsed", layout.Attribute("Visibility")?.Value);
+        Assert.Equal("Grid", layout.Name.LocalName);
+        var columns = layout.Element(layout.Name.Namespace + "Grid.ColumnDefinitions")!.Elements().ToArray();
+        Assert.Equal("*", columns[0].Attribute("Width")?.Value);
+        Assert.Equal("760", columns[0].Attribute("MaxWidth")?.Value);
+        Assert.Equal("Auto", columns[1].Attribute("Width")?.Value);
+        Assert.Equal(scroll, layout.Parent!.Parent);
+        Assert.Null(layout.Parent.Attribute("MaxWidth"));
+        Assert.Equal("Stretch", scroll.Attribute("HorizontalContentAlignment")?.Value);
         Assert.Equal("Disabled", scroll.Attribute("HorizontalScrollMode")?.Value);
         Assert.Equal("Disabled", scroll.Attribute("HorizontalScrollBarVisibility")?.Value);
         Assert.Equal("Auto", scroll.Attribute("VerticalScrollBarVisibility")?.Value);

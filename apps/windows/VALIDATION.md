@@ -108,7 +108,9 @@ native rendering or input acceptance.
 
 ## Precomputed Windows update changelog
 
-Settings hosts the published `EveryoneSoftware.WindowsCommon` WinUI panel. Music
+Settings hosts the `EveryoneSoftware.WindowsCommon` WinUI panel directly. The
+shared card uses the rounded border, theme brushes and sage icon badge modeled
+on YourTube’s FFmpeg card. Settings caps the leading column at 760 DIPs. Music
 owns discovery, download/apply, the cached changelog and playback preservation.
 Music opts into keeping the shared **Check for updates** button enabled while
 downloading or ready to install. During download the controller queues the check
@@ -166,6 +168,9 @@ These are retrieval/policy/source/compile checks, not native acceptance.
 
 Native Windows acceptance remains required:
 
+- [ ] At narrow and wide widths, check that the update card aligns with the page
+  heading and the Check button is reachable by Tab. Repeat during download with
+  **What’s new** open; check the badge and border in high contrast.
 - [ ] Offer an update across skipped releases; expand **What’s new**, verify its
   complete installed-to-offered source range and grouped bullets, then expand
   **Commit details** using keyboard and a screen reader. Inspect HTTP tracing:

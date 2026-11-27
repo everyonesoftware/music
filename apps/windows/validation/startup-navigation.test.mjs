@@ -377,6 +377,7 @@ ${method(navigation, '    private NavigationView CaptureNavigation()', '    priv
             window.ping.TrySetResult(); window.catalog.TrySetResult();
             await startup;
             Check(window.page == "settings" && window.albums.Count == 0, "superseded account must fence startup routes and data");
+            Check(window.C<Grid>("SettingsLayout").Visibility == Visibility.Visible, "Settings layout must remain visible after startup finishes");
             Console.WriteLine("PASS account fence " + delay + (fail ? " failure" : " success"));
         }
     }
@@ -421,6 +422,7 @@ class Button
     public void Invoke() => Click?.Invoke(this, EventArgs.Empty);
 }
 class StackPanel { public Visibility Visibility; public int Spacing; public List<object> Children = []; }
+class Grid { public Visibility Visibility; }
 class ProgressBar { public Visibility Visibility; }
 class Border { public Visibility Visibility; }
 class SymbolIcon { public Symbol Symbol; }

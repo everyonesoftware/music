@@ -2,7 +2,6 @@ using EveryoneSoftware.WindowsCommon;
 using Microsoft.UI.Dispatching;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
-using Microsoft.UI.Xaml.Media;
 using Music.Core;
 using SharedUpdatesPanel = EveryoneSoftware.WindowsCommon.WindowsUpdatesPanel;
 
@@ -27,9 +26,7 @@ internal sealed partial class WindowsUpdatesPanel : IDisposable
         this.dispatcher = dispatcher;
         var backend = new WindowsUpdateBackend();
         controller = new WindowsUpdateController(backend, preserveSession);
-        panel = new SharedUpdatesPanel("Music", installedVersion,
-            cardBackground: (Brush)root.Resources["SettingsCardBackground"],
-            cardBorder: (Brush)root.Resources["SettingsCardBorder"]);
+        panel = new SharedUpdatesPanel("Music", installedVersion);
         changelog = (Expander)root.FindName("UpdateChangelog");
         notesStatus = (TextBlock)root.FindName("ChangelogStatus");
         notesContent = (StackPanel)root.FindName("ChangelogContent");

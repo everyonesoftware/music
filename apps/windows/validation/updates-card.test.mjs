@@ -10,12 +10,12 @@ const main = read('MainWindow.cs');
 const controller = read('../Music.Core/WindowsUpdateController.cs');
 
 test('Music mounts the published shared Updates panel without a parallel local status card', () => {
-  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.5\]"\s*\/>/);
+  assert.match(read('Music.App.csproj'), /<PackageReference Include="EveryoneSoftware\.WindowsCommon" Version="\[0\.1\.6\]"\s*\/>/);
   const shell = read('Shell.xaml');
-  assert.match(shell, /<ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch"\s*\/>/);
+  assert.match(shell, /<ContentControl x:Name="UpdatesPanelHost" HorizontalContentAlignment="Stretch" IsTabStop="False"\s*\/>/);
   assert.doesNotMatch(shell, /x:Name="(?:VersionText|CheckUpdatesButton|UpdateTitle|UpdateStatus|UpdateOfferedVersion|UpdateProgress|UpdateActions|DownloadUpdateButton|RestartUpdateButton)"/);
   assert.match(panel, /using SharedUpdatesPanel = EveryoneSoftware\.WindowsCommon\.WindowsUpdatesPanel;/);
-  assert.match(panel, /new SharedUpdatesPanel\("Music", installedVersion,/);
+  assert.match(panel, /new SharedUpdatesPanel\("Music", installedVersion\);/);
   assert.match(panel, /FindName\("UpdatesPanelHost"\)\)\.Content = panel\.View;/);
 });
 
@@ -38,6 +38,11 @@ test('Music uses no separate recheck control or click handler', () => {
   assert.doesNotMatch(panel, /RecheckUpdateButton|RecheckClicked/);
 });
 
+test('only the Settings route shows the Settings card layout', () => {
+  assert.match(read('Shell.xaml'), /<Grid x:Name="SettingsLayout" Visibility="Collapsed">/);
+  assert.match(main, /C<Grid>\("SettingsLayout"\)\.Visibility = target == "settings" \? Visibility\.Visible : Visibility\.Collapsed;/);
+});
+
 test('normal Windows activation starts discovery without waiting for account restoration', () => {
   const program = read('Program.cs');
   assert.match(program, /window\.Activate\(\);[\s\S]*?_ = window\.CheckForUpdatesOnStartupAsync\(\);/);
@@ -58,10 +63,7 @@ test('every Music update phase maps to its distinct shared phase', () => {
   assert.doesNotMatch(controller, /Windows preview|preview updates|preview releases/);
 });
 
-test('shared card receives the Music settings palette without probing native parents', () => {
-  assert.match(panel, /cardBackground: .*root.Resources\["SettingsCardBackground"\]/);
-  assert.match(panel, /cardBorder: .*root.Resources\["SettingsCardBorder"\]/);
-  assert.match(read('Shell.xaml'), /x:Key="SettingsCardBackground" Color="#2a332d"/);
-  assert.match(read('Shell.xaml'), /x:Key="SettingsCardBorder" Color="#39453d"/);
+test('the update card uses shared theme brushes without probing native parents', () => {
+  assert.doesNotMatch(panel, /cardBackground:|cardBorder:|SettingsCardBackground|SettingsCardBorder/);
   assert.doesNotMatch(panel, /\.Parent\b/);
 });
